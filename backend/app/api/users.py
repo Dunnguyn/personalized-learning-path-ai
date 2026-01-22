@@ -1,15 +1,11 @@
 from fastapi import APIRouter
-from app.database.mongo import get_db
+from backend.app.database.mongo import get_db
+from backend.app.api.schemas import UserCreate
 
-router = APIRouter(prefix="/users", tags=["Users"])
+router = APIRouter()
 
-db = get_db()
-users_col = db["users"]
-
-@router.get("/{user_email}")
-def get_user(user_email: str):
-    user = users_col.find_one(
-        {"user_email": user_email},
-        {"_id": 0, "password": 0}
-    )
-    return user
+@router.post("/", summary="Tạo người dùng mới")
+def create_user(user: UserCreate):
+    db = get_db()
+    db.users.insert_one(user.dict())
+    return {"message": "User created successfully"}

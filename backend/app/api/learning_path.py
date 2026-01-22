@@ -1,38 +1,72 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
-from datetime import datetime
-from app.services.ai_service import generate_learning_path
-from app.database.mongo import get_db
+from typing import List, Dict
+from backend.app.database.mongo import db
 
-router = APIRouter(prefix="/learning-path", tags=["Learning Path"])
 
-db = get_db()
-paths_col = db["learning_paths"]
+# ===== 1. LOAD DATA =====
 
-class LearningPathRequest(BaseModel):
-    user_email: str
-    goal: str
-    level: str
+def get_all_concepts(goal: str) -> List[Dict]:
+    """
+    Lấy danh sách concept theo goal (course)
+    """
+    return list(db.concepts.find({"course": goal}))
 
-@router.post("/generate")
-def generate_path(data: LearningPathRequest):
-    path = generate_learning_path(data.goal, data.level)
 
-    record = {
-        "user_email": data.user_email,
-        "goal": data.goal,
-        "level": data.level,
-        "path": path,
-        "created_at": datetime.now()
-    }
+def get_user_progress(user_id: str) -> Dict[str, float]:
+    """
+    Trả về dict: {concept_name: mastery}
+    """
+    progress = db.progress.find({"user_id": user_id})
+    return {p["concept"]: p.get("mastery", 0.0) for p in progress}
 
-    paths_col.insert_one(record)
-    return record
 
-@router.get("/by-user/{user_email}")
-def get_paths_by_user(user_email: str):
-    paths = list(paths_col.find(
-        {"user_email": user_email},
-        {"_id": 0}
-    ))
-    return paths
+# ===== 2. PRIORITY FUNCTION =====
+
+def compute_priority(concept: Dict, mastery: float) -> float:
+    """
+    priority = (1 - mastery) * prerequisite_weight
+    """
+    weight = concept.get("weight", 1.0)
+    return (1 - mastery) * weight
+
+
+# ===== 3. LEARNING PATH ENGINE =====
+
+def generate_learning_path(
+    user_id: str,
+    goal: str,
+    max_items: int = 5
+) -> List[Dict]:
+    """
+    Sinh lộ trình học tập cá nhân hóa
+    """
+
+    concepts = get_all_concepts(goal)
+    mastery_map = get_user_progress(user_id)
+
+    candidates = []
+
+    for c in concepts:
+        name = c["name"]
+        mastery = mastery_map.get(name, 0.0)
+
+        # Bỏ qua nếu đã nắm vững
+        if mastery >= 0.8:
+            continue
+
+        priority = compute_priority(c, mastery)
+
+        candidates.append({
+            "concept": name,
+            "mastery": mastery,
+            "priority": round(priority, 3),
+            "reason": (
+                "Chưa nắm vững kiến thức nền"
+                if mastery < 0.5
+                else "Cần củng cố để học nâng cao"
+            )
+        })
+
+    # Sắp xếp theo độ ưu tiên
+    candidates.sort(key=lambda x: x["priority"], reverse=True)
+
+    return candidates[:max_items]

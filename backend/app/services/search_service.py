@@ -1,4 +1,3 @@
-import numpy as np
-
-def cosine_similarity(a, b):
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+def semantic_search(query: str, documents: list):
+    # Demo search
+    return documents[:3]

@@ -1,40 +1,63 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
 from datetime import datetime
-from app.database.mongo import get_db
+from typing import Dict
+from backend.app.database.mongo import db
 
-router = APIRouter(prefix="/progress", tags=["Progress"])
 
-db = get_db()
-progress_col = db["progress"]
+# ===== 1. UPDATE PROGRESS =====
 
-class ProgressRequest(BaseModel):
-    user_email: str
-    concept: str
-    completed: bool
+def update_progress(
+    user_id: str,
+    concept: str,
+    success: bool
+) -> Dict:
+    """
+    Cập nhật tiến độ học tập cho 1 concept
+    """
 
-@router.post("/update")
-def update_progress(data: ProgressRequest):
-    progress_col.update_one(
-        {
-            "user_email": data.user_email,
-            "concept": data.concept
-        },
+    record = db.progress.find_one({
+        "user_id": user_id,
+        "concept": concept
+    })
+
+    if record:
+        total = record.get("total_attempts", 0) + 1
+        successful = record.get("successful_attempts", 0) + (1 if success else 0)
+    else:
+        total = 1
+        successful = 1 if success else 0
+
+    mastery = min(1.0, round(successful / total, 2))
+
+    db.progress.update_one(
+        {"user_id": user_id, "concept": concept},
         {
             "$set": {
-                "completed": data.completed,
-                "updated_at": datetime.now()
+                "total_attempts": total,
+                "successful_attempts": successful,
+                "mastery": mastery,
+                "last_updated": datetime.utcnow()
             }
         },
         upsert=True
     )
 
-    return {"message": "Cập nhật tiến độ thành công"}
+    return {
+        "user_id": user_id,
+        "concept": concept,
+        "mastery": mastery,
+        "total_attempts": total,
+        "successful_attempts": successful
+    }
 
-@router.get("/by-user/{user_email}")
-def get_progress_by_user(user_email: str):
-    progress = list(progress_col.find(
-        {"user_email": user_email},
-        {"_id": 0}
-    ))
-    return progress
+
+# ===== 2. GET USER MASTERY MAP =====
+
+def get_user_mastery(user_id: str) -> Dict[str, float]:
+    """
+    Trả về {concept: mastery}
+    """
+    progress = db.progress.find({"user_id": user_id})
+    return {
+        p["concept"]: p.get("mastery", 0.0)
+        for p in progress
+    }
