@@ -1,0 +1,9 @@
+# Môi trường ảo
+venv/
+
+# File cấu hình bảo mật (Chứa API Key, Password)
+.env
+
+# Các file rác khác của Python
+__pycache__/
+*.pyc

@@ -1,0 +1,25 @@
+# ===== Core Backend =====
+fastapi
+uvicorn
+python-dotenv
+pydantic
+
+# ===== Database =====
+pymongo
+
+# ===== AI / LLM =====
+openai
+tiktoken
+
+# ===== Embedding & Vector Search =====
+numpy
+
+# ===== PDF Import =====
+pypdf
+
+# ===== YouTube Import =====
+pytube
+youtube-transcript-api
+
+# ===== Optional (Future extension) =====
+requests
