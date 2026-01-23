@@ -1,72 +1,59 @@
-from typing import List, Dict
-from backend.app.database.mongo import db
+from fastapi import APIRouter
+from backend.app.api.schemas import (
+    LearningPathRequest,
+    LearningPathResponse,
+    ProgressUpdate
+)
+from backend.app.services.ai_service import generate_learning_path
+from backend.app.api.progress import update_progress, get_user_mastery
+
+router = APIRouter(prefix="/learning-path", tags=["Learning Path"])
 
 
-# ===== 1. LOAD DATA =====
+# ==================================================
+# 1️⃣ GENERATE LEARNING PATH (RAG CORE)
+# ==================================================
+@router.post(
+    "/generate",
+    response_model=LearningPathResponse,
+    summary="Sinh lộ trình học tập cá nhân hóa (RAG)"
+)
+def generate_path(data: LearningPathRequest):
+    # Nếu có user_id → lấy mastery map
+    completed = data.completed_concepts
 
-def get_all_concepts(goal: str) -> List[Dict]:
-    """
-    Lấy danh sách concept theo goal (course)
-    """
-    return list(db.concepts.find({"course": goal}))
+    if data.user_id:
+        mastery_map = get_user_mastery(data.user_id)
+        completed = [k for k, v in mastery_map.items() if v >= 0.8]
 
-
-def get_user_progress(user_id: str) -> Dict[str, float]:
-    """
-    Trả về dict: {concept_name: mastery}
-    """
-    progress = db.progress.find({"user_id": user_id})
-    return {p["concept"]: p.get("mastery", 0.0) for p in progress}
-
-
-# ===== 2. PRIORITY FUNCTION =====
-
-def compute_priority(concept: Dict, mastery: float) -> float:
-    """
-    priority = (1 - mastery) * prerequisite_weight
-    """
-    weight = concept.get("weight", 1.0)
-    return (1 - mastery) * weight
+    return generate_learning_path(
+        goal=data.goal,
+        level=data.level,
+        completed_concepts=completed
+    )
 
 
-# ===== 3. LEARNING PATH ENGINE =====
+# ==================================================
+# 2️⃣ UPDATE PROGRESS
+# ==================================================
+@router.post(
+    "/update",
+    summary="Cập nhật tiến độ học tập"
+)
+def update_learning_progress(data: ProgressUpdate):
+    return update_progress(
+        user_id=data.user_id,
+        concept=data.concept,
+        success=data.success
+    )
 
-def generate_learning_path(
-    user_id: str,
-    goal: str,
-    max_items: int = 5
-) -> List[Dict]:
-    """
-    Sinh lộ trình học tập cá nhân hóa
-    """
 
-    concepts = get_all_concepts(goal)
-    mastery_map = get_user_progress(user_id)
-
-    candidates = []
-
-    for c in concepts:
-        name = c["name"]
-        mastery = mastery_map.get(name, 0.0)
-
-        # Bỏ qua nếu đã nắm vững
-        if mastery >= 0.8:
-            continue
-
-        priority = compute_priority(c, mastery)
-
-        candidates.append({
-            "concept": name,
-            "mastery": mastery,
-            "priority": round(priority, 3),
-            "reason": (
-                "Chưa nắm vững kiến thức nền"
-                if mastery < 0.5
-                else "Cần củng cố để học nâng cao"
-            )
-        })
-
-    # Sắp xếp theo độ ưu tiên
-    candidates.sort(key=lambda x: x["priority"], reverse=True)
-
-    return candidates[:max_items]
+# ==================================================
+# 3️⃣ GET USER MASTERY MAP
+# ==================================================
+@router.get(
+    "/{user_id}",
+    summary="Lấy bản đồ mastery của người học"
+)
+def get_progress(user_id: str):
+    return get_user_mastery(user_id)

@@ -9,8 +9,9 @@ class UserCreate(BaseModel):
     level: str = Field(example="beginner")
 
 
-# ===== LEARNING PATH =====
+# ===== LEARNING PATH (RAG) =====
 class LearningPathRequest(BaseModel):
+    user_id: Optional[str] = None
     goal: str = Field(example="Python Backend")
     level: str = Field(example="beginner")
     completed_concepts: List[str] = []
@@ -26,14 +27,15 @@ class LearningPathResponse(BaseModel):
 class ProgressUpdate(BaseModel):
     user_id: str
     concept: str
-    status: str = Field(example="completed")
+    success: bool
 
 
 # ===== RESOURCE =====
 class Resource(BaseModel):
     title: str
-    url: str
+    url: Optional[str] = None
     topic: str
+
 
 class ResourceImport(BaseModel):
     title: str
