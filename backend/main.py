@@ -1,11 +1,14 @@
 from fastapi import FastAPI
-from backend.app.api import auth, users, resources, learning_path, ask
+from backend.app.api import auth, progress, users, resources, learning_path, ask
 
 app = FastAPI(title="AI Personalized Learning Path System")
 
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(resources.router, prefix="/resources", tags=["Resources"])
+app.include_router(learning_path.router, prefix="/learning-path", tags=["Learning Path"])
+app.include_router(progress.router, prefix="/progress", tags=["Progress"])
+app.include_router(ask.router, prefix="/ask", tags=["Ask AI"])
 app.include_router(learning_path.router)
 app.include_router(ask.router)
 

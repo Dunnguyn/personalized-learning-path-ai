@@ -4,7 +4,7 @@ from backend.app.services.embedding_service import (
     semantic_search
 )
 from backend.app.services.resource_importer import import_resources
-from backend.app.api.schemas import Resource, ResourceImportRequest
+from backend.app.api.schemas import ResourceCreate, ResourceImportRequest
 from fastapi import UploadFile, File, Form
 import shutil
 import os
@@ -16,7 +16,7 @@ router = APIRouter()
 
 # ===== Thêm 1 học liệu (có embedding) =====
 @router.post("/", summary="Thêm học liệu (có embedding)")
-def add_resource(resource: Resource):
+def add_resource(resource: ResourceCreate):
     doc = store_resource(
         title=resource.title,
         content=resource.title,  # demo: dùng title làm content
