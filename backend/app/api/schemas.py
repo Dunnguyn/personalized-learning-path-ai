@@ -75,7 +75,7 @@ class LearningPathResponse(BaseModel):
 
 # ===== ASK =====
 class AskRequest(BaseModel):
-    user_id: int
+    user_id: int      # ✅ INT
     question: str
     goal: str
     level: str

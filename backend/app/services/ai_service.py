@@ -1,167 +1,90 @@
-import os
-from typing import List, Dict
+from fastapi import APIRouter
+from pydantic import BaseModel
+from typing import List, Optional
 
-from backend.app.database.mongo import get_db
-from backend.app.services.embedding_service import semantic_search
-
-# ===== Optional LLM =====
-USE_LLM = True
-try:
-    from openai import OpenAI
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-except Exception:
-    USE_LLM = False
-    client = None
+from backend.app.services.rag_pipeline import RAGPipeline
+from backend.app.api.progress import update_progress
+from backend.app.api.learning_path import generate_learning_path
+from backend.app.database.mongo import db
 
 
-# ===== RULE-BASED BASE PATH (FALLBACK) =====
-BASE_PATHS = {
-    "python backend": [
-        "Python Basics",
-        "Control Flow",
-        "Functions",
-        "OOP",
-        "Virtual Environment",
-        "FastAPI Fundamentals",
-        "Request/Response & Validation",
-        "Authentication (JWT)",
-        "MongoDB Basics",
-        "Async & Background Tasks",
-        "Testing",
-        "Deployment"
-    ],
-    "data science": [
-        "Python Basics",
-        "NumPy",
-        "Pandas",
-        "Data Visualization",
-        "Statistics",
-        "Machine Learning Basics",
-        "Model Evaluation",
-        "Mini Project"
-    ]
-}
+# ===== ROUTER =====
+router = APIRouter()
+rag = RAGPipeline()
 
 
-# ======================================================
-# 1️⃣ RETRIEVE – Truy hồi học liệu (RAG)
-# ======================================================
-def retrieve_resources(goal: str, level: str, k: int = 5) -> List[Dict]:
+# ===== REQUEST SCHEMA =====
+class AskRequest(BaseModel):
+    user_id: int      # ✅ INT
+    question: str
+    goal: str
+    level: str
+    completed: list[str] = []
+
+
+# ===== RESPONSE SCHEMA =====
+class AskResponse(BaseModel):
+    answer: dict
+    learning_path: List[str]
+
+
+# ===== SIMPLE CONCEPT DETECTION =====
+def detect_concept(question: str) -> str:
+    q = question.lower()
+    if "list" in q:
+        return "Python List"
+    if "dictionary" in q or "dict" in q:
+        return "Python Dictionary"
+    if "loop" in q:
+        return "Python Loop"
+    return "General Python"
+
+
+# ===== MAP CONCEPT NAME → CONCEPT_ID (THEO ERD) =====
+def get_concept_id_by_name(concept_name: str) -> Optional[int]:
+    concept = db.concepts.find_one(
+        {"concept_name": concept_name},
+        {"concept_id": 1}
+    )
+    return concept["concept_id"] if concept else None
+
+
+# ===== API ENDPOINT =====
+@router.post("/ask", response_model=AskResponse)
+def ask_ai(request: AskRequest):
     """
-    Truy hồi học liệu bằng semantic search (embedding-based).
+    API trung tâm của hệ thống AI (RAG + Progress + Learning Path)
     """
-    query = f"{goal} {level}"
-    return semantic_search(query, k=k)
 
+    # ===== 1. RUN RAG PIPELINE =====
+    rag_result = rag.run(
+        question=request.question,
+        goal=request.goal,
+        level=request.level,
+        completed=request.completed
+    )
 
-# ======================================================
-# 2️⃣ CONTEXT BUILDER
-# ======================================================
-def build_context(resources: List[Dict]) -> str:
-    """
-    Chuyển học liệu thành context text cho LLM.
-    """
-    context_blocks = []
-    for r in resources:
-        context_blocks.append(
-            f"- {r.get('title')} ({r.get('topic')}): {r.get('content', '')[:300]}"
+    # ===== 2. DETECT CONCEPT & UPDATE PROGRESS =====
+    concept_name = detect_concept(request.question)
+    concept_id = get_concept_id_by_name(concept_name)
+
+    # Chỉ update progress nếu concept tồn tại trong DB
+    if concept_id is not None:
+        update_progress(
+            user_id=request.user_id,
+            concept_id=concept_id,
+            success=True
         )
-    return "\n".join(context_blocks)
+
+    # ===== 3. GENERATE LEARNING PATH =====
+    learning_path = generate_learning_path(
+        user_id=request.user_id,
+        goal=request.goal,
+        level=request.level
+    )
 
 
-# ======================================================
-# 3️⃣ PROMPT TEMPLATE (RAG)
-# ======================================================
-def build_prompt(
-    goal: str,
-    level: str,
-    completed: List[str],
-    context: str
-) -> str:
-    return f"""
-You are an AI learning path advisor.
-
-Learner profile:
-- Goal: {goal}
-- Level: {level}
-- Completed concepts: {completed}
-
-Relevant learning materials:
-{context}
-
-Task:
-- Generate a personalized learning path.
-- Avoid concepts already completed.
-- Order topics from basic to advanced.
-- Output STRICT JSON with fields:
-  goal, level, recommended_path (array of strings).
-"""
-
-
-# ======================================================
-# 4️⃣ RULE-BASED FALLBACK
-# ======================================================
-def rule_based_path(goal: str, level: str, completed: List[str]) -> Dict:
-    goal_key = goal.lower().strip()
-    base = BASE_PATHS.get(goal_key, BASE_PATHS.get("python backend", []))
     return {
-        "goal": goal,
-        "level": level,
-        "recommended_path": [c for c in base if c not in completed]
+        "answer": rag_result,
+        "learning_path": learning_path["recommended_path"]
     }
-
-
-# ======================================================
-# 5️⃣ CORE – GENERATE LEARNING PATH (RAG-READY)
-# ======================================================
-def generate_learning_path(
-    goal: str,
-    level: str,
-    completed_concepts: List[str]
-) -> Dict:
-    """
-    Sinh lộ trình học cá nhân hóa theo RAG pipeline:
-    Retrieve → Context → Prompt → LLM → Post-process → Fallback
-    """
-
-    # ----- Retrieve -----
-    resources = retrieve_resources(goal, level)
-
-    # ----- Build context -----
-    context = build_context(resources)
-
-    # ----- Build prompt -----
-    prompt = build_prompt(goal, level, completed_concepts, context)
-
-    # ----- LLM Generation -----
-    if USE_LLM and client:
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You output JSON only."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3
-            )
-            content = response.choices[0].message.content
-
-            if content.strip().startswith("{"):
-                result = eval(content)
-
-                # ----- Post-process -----
-                filtered = [
-                    c for c in result.get("recommended_path", [])
-                    if c not in completed_concepts
-                ]
-
-                return {
-                    "goal": goal,
-                    "level": level,
-                    "recommended_path": filtered
-                }
-        except Exception:
-            pass
-
-    # ----- Fallback -----
-    return rule_based_path(goal, level, completed_concepts)

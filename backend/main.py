@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 from fastapi import FastAPI
 from backend.app.api import auth, progress, users, resources, learning_path, ask
 

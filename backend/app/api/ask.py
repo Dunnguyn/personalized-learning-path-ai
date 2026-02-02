@@ -3,48 +3,45 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from backend.app.services.rag_pipeline import RAGPipeline
-from backend.app.api.progress import update_progress
-from backend.app.api.learning_path import generate_learning_path
+from backend.app.services.progress_service import update_progress
+from backend.app.services.learning_path_service import generate_learning_path
+from backend.app.database.mongo import db
 
-
-# ===== ROUTER (⚠️ PHẢI Ở TRÊN CÙNG) =====
-router = APIRouter()
+router = APIRouter(prefix="/ask", tags=["Ask AI"])
 rag = RAGPipeline()
 
 
-# ===== REQUEST SCHEMA =====
 class AskRequest(BaseModel):
-    user_id: str
+    user_id: int      # ✅ INT
     question: str
     goal: str
     level: str
-    completed: Optional[List[str]] = []
+    completed: list[str] = []
 
 
-# ===== RESPONSE SCHEMA =====
 class AskResponse(BaseModel):
     answer: dict
     learning_path: List[str]
 
 
-# ===== SIMPLE CONCEPT DETECTION =====
 def detect_concept(question: str) -> str:
     q = question.lower()
     if "list" in q:
         return "Python List"
-    if "dictionary" in q or "dict" in q:
+    if "dictionary" in q:
         return "Python Dictionary"
     if "loop" in q:
         return "Python Loop"
     return "General Python"
 
 
-# ===== API ENDPOINT =====
-@router.post("/ask", response_model=AskResponse)
+def get_concept_id(name: str):
+    c = db.concepts.find_one({"concept_name": name})
+    return c["concept_id"] if c else None
+
+
+@router.post("/", response_model=AskResponse)
 def ask_ai(request: AskRequest):
-    """
-    API trung tâm của hệ thống AI (RAG + Progress + Learning Path)
-    """
 
     # 1. RAG
     rag_result = rag.run(
@@ -55,21 +52,24 @@ def ask_ai(request: AskRequest):
     )
 
     # 2. Update progress
-    concept = detect_concept(request.question)
-    update_progress(
-        user_id=request.user_id,
-        concept=concept,
-        success=True
-    )
+    concept_name = detect_concept(request.question)
+    concept_id = get_concept_id(concept_name)
 
-    # 3. Generate learning path
-    learning_path = generate_learning_path(
+    if concept_id:
+        update_progress(
+            user_id=request.user_id,
+            concept_id=concept_id,
+            success=True
+        )
+
+    # 3. Learning path
+    lp = generate_learning_path(
+        user_id=request.user_id,
         goal=request.goal,
-        level=request.level,
-        completed_concepts=request.completed
+        level=request.level
     )
 
     return {
         "answer": rag_result,
-        "learning_path": learning_path["recommended_path"]
+        "learning_path": lp["recommended_path"]
     }

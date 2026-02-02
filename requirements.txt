@@ -8,8 +8,10 @@ pydantic
 pymongo
 
 # ===== AI / LLM =====
-openai
+google-genai
 tiktoken
+google-generativeai>=0.4.1
+
 
 # ===== Embedding & Vector Search =====
 numpy

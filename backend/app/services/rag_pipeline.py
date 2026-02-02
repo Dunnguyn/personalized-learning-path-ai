@@ -1,14 +1,29 @@
 from typing import List, Dict
-from backend.app.services.embedding_service import semantic_search
 import os
-import json
 
-# ===== Optional LLM =====
+from backend.app.services.embedding_service import semantic_search
+
+# =========================
+# Gemini LLM (SDK mới)
+# =========================
 USE_LLM = True
+client = None
+
+# Chọn model xịn nhất + fallback
+PRIMARY_MODEL = "models/gemini-flash-latest"
+FALLBACK_MODEL = None   # hoặc trả text fallback
+
 try:
-    from openai import OpenAI
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-except Exception:
+    from google import genai
+
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY not set")
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+
+except Exception as e:
+    print("❌ Gemini init error:", e)
     USE_LLM = False
     client = None
 
@@ -16,17 +31,21 @@ except Exception:
 class RAGPipeline:
     """
     Retrieval-Augmented Generation (QA-RAG)
-    Trả lời câu hỏi dựa trên học liệu (PDF, YouTube, v.v.)
+    Trả lời câu hỏi dựa trên học liệu đã index (PDF, text, video transcript, ...)
     """
 
-    # ===== 1. RETRIEVE =====
+    # =========================
+    # 1. RETRIEVE
+    # =========================
     def retrieve_context(self, query: str, k: int = 5) -> List[Dict]:
         """
         Semantic search học liệu liên quan
         """
         return semantic_search(query, k=k)
 
-    # ===== 2. BUILD CONTEXT =====
+    # =========================
+    # 2. BUILD CONTEXT
+    # =========================
     def build_context(self, resources: List[Dict]) -> str:
         """
         Ghép các chunk học liệu thành context cho LLM
@@ -38,15 +57,17 @@ class RAGPipeline:
         for r in resources:
             blocks.append(
                 f"[Source: {r.get('title', 'unknown')}]\n"
-                f"{r.get('content', '')[:400]}"
+                f"{r.get('content', '')[:500]}"
             )
 
         return "\n\n".join(blocks)
 
-    # ===== 3. PROMPT =====
+    # =========================
+    # 3. BUILD PROMPT
+    # =========================
     def build_prompt(self, question: str, context: str) -> str:
         """
-        Prompt QA-RAG: bắt buộc dùng context
+        Prompt QA-RAG (giảm hallucination)
         """
         return f"""
 You are an AI tutor for beginner learners.
@@ -63,40 +84,47 @@ Learning materials:
 Question:
 {question}
 
-Answer clearly, simply, and suitable for a beginner.
+Answer clearly, simply, and suitable for beginners.
 """
 
-    # ===== 4. GENERATE =====
+    # =========================
+    # 4. GENERATE (Gemini)
+    # =========================
     def generate(self, prompt: str) -> str:
         """
-        Gọi LLM sinh câu trả lời
+        Gọi Gemini sinh câu trả lời
+        Ưu tiên Pro → fallback Flash
         """
-        if USE_LLM and client:
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You answer questions based on provided materials only."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    temperature=0.2
-                )
+        if not (USE_LLM and client):
+            return "LLM is unavailable. Cannot generate answer at this time."
 
-                return response.choices[0].message.content.strip()
+        # ---- 1. Try PRIMARY MODEL ----
+        try:
+            response = client.models.generate_content(
+                model=PRIMARY_MODEL,
+                contents=prompt
+            )
+            return response.text.strip()
 
-            except Exception as e:
-                print("LLM error:", e)
+        except Exception as e:
+            print(f"⚠️ Gemini PRIMARY model error ({PRIMARY_MODEL}):", e)
 
-        # ===== Fallback =====
+        # ---- 2. Fallback MODEL ----
+        try:
+            response = client.models.generate_content(
+                model=FALLBACK_MODEL,
+                contents=prompt
+            )
+            return response.text.strip()
+
+        except Exception as e:
+            print(f"❌ Gemini FALLBACK model error ({FALLBACK_MODEL}):", e)
+
         return "LLM is unavailable. Cannot generate answer at this time."
 
-    # ===== 5. PIPELINE RUN =====
+    # =========================
+    # 5. RUN PIPELINE
+    # =========================
     def run(
         self,
         question: str,
@@ -108,7 +136,7 @@ Answer clearly, simply, and suitable for a beginner.
         Chạy toàn bộ QA-RAG pipeline
         """
 
-        # 1. Retrieve relevant materials
+        # 1. Retrieve
         resources = self.retrieve_context(question)
 
         # 2. Build context
@@ -120,7 +148,7 @@ Answer clearly, simply, and suitable for a beginner.
         # 4. Generate answer
         answer_text = self.generate(prompt)
 
-        # 5. Return structured response
+        # 5. Structured response
         return {
             "question": question,
             "answer": answer_text,

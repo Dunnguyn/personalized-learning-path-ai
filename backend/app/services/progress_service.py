@@ -1,16 +1,16 @@
-from fastapi import APIRouter
 from datetime import datetime
 from backend.app.database.mongo import db
 
-router = APIRouter()
 
-
-@router.post("/update")
-def update_progress_api(
+def update_progress(
     user_id: int,
     concept_id: int,
     success: bool
-):
+) -> float:
+    """
+    Update mastery theo attempt
+    """
+
     record = db.progress.find_one({
         "user_id": user_id,
         "concept_id": concept_id
@@ -31,8 +31,4 @@ def update_progress_api(
         upsert=True
     )
 
-    return {
-        "user_id": user_id,
-        "concept_id": concept_id,
-        "mastery": mastery
-    }
+    return mastery
