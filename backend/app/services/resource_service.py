@@ -102,13 +102,12 @@ def import_pdf_service(
 def import_youtube_service(
     youtube_url: str,
     topic: str,
+    concept_id: int,
     level: str
 ):
-    """
-    Import học liệu từ YouTube (transcript).
-    """
     return import_youtube(
         youtube_url=youtube_url,
         topic=topic,
+        concept_id=concept_id,
         level=level
     )

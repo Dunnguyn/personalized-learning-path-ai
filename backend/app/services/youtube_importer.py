@@ -1,8 +1,29 @@
-from typing import List
+from typing import List, Optional
 from pytube import YouTube
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import (
+    YouTubeTranscriptApi,
+    TranscriptsDisabled,
+    NoTranscriptFound,
+)
 from backend.app.database.mongo import get_db
 from backend.app.services.embedding_service import embed_text
+from backend.app.services.concept_mapper import resolve_concept_id
+
+
+# =========================
+# UTILS
+# =========================
+def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
+    chunks = []
+    start = 0
+    length = len(text)
+
+    while start < length:
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start = end - overlap
+
+    return chunks
 
 
 def extract_video_id(url: str) -> str:
@@ -11,93 +32,89 @@ def extract_video_id(url: str) -> str:
     return url.rstrip("/").split("/")[-1]
 
 
-def chunk_text(text: str, chunk_size=500, overlap=50) -> List[str]:
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + chunk_size
-        chunks.append(text[start:end])
-        start = end - overlap
-    return chunks
-
-
+# =========================
+# MAIN IMPORT
+# =========================
 def import_youtube(
     youtube_url: str,
     topic: str,
     level: str = "beginner",
-    concept_id: int | None = None
-) -> dict:
-
+    concept_id: Optional[int] = None,   # 🔥 AUTO MAP
+):
     db = get_db()
     video_id = extract_video_id(youtube_url)
 
-    # =========================
-    # 1. TITLE (SAFE)
-    # =========================
+    # ===== 0. Resolve concept_id nếu chưa có =====
+    if concept_id is None:
+        concept_id = resolve_concept_id(topic)
+
+    # ===== 1. Lấy title (AN TOÀN – không crash) =====
     try:
         yt = YouTube(youtube_url)
         title = yt.title
-    except Exception:
+    except Exception as e:
+        print("⚠️ pytube title fetch failed:", e)
         title = f"YouTube Video ({video_id})"
 
-    # =========================
-    # 2. TRANSCRIPT (SAFE MODE)
-    # =========================
+    # ===== 2. Lấy transcript (KHÔNG ĐƯỢC throw 500) =====
+    full_text = ""
+    has_transcript = False
+
     try:
         transcript = YouTubeTranscriptApi.get_transcript(video_id)
-        full_text = " ".join([t["text"] for t in transcript])
+        full_text = " ".join(t["text"] for t in transcript)
         has_transcript = True
+    except (TranscriptsDisabled, NoTranscriptFound):
+        pass
     except Exception as e:
-        # ⚠️ KHÔNG CRASH
-        print(f"⚠️ Transcript unavailable for {video_id}: {e}")
+        print("⚠️ Transcript error:", e)
 
-        # Lưu metadata video để sau này xử lý
+    # ===== 3. Nếu KHÔNG có transcript → chỉ lưu metadata =====
+    if not full_text.strip():
         db.resources.insert_one({
             "title": title,
             "topic": topic,
-            "level": level,
             "concept_id": concept_id,
+            "level": level,
             "source": "youtube",
             "video_url": youtube_url,
-            "video_id": video_id,
-            "has_transcript": False
+            "has_transcript": False,
         })
 
         return {
             "video_id": video_id,
             "title": title,
+            "concept_id": concept_id,
             "inserted_chunks": 0,
             "has_transcript": False,
-            "message": "Video saved, transcript unavailable"
+            "message": "Video saved, transcript unavailable",
         }
 
-    # =========================
-    # 3. CHUNK + EMBEDDING
-    # =========================
+    # ===== 4. Chunk + embedding =====
     chunks = chunk_text(full_text)
     inserted = 0
 
     for idx, chunk in enumerate(chunks):
+        embedding = embed_text(chunk)
+
         db.resources.insert_one({
             "title": title,
             "content": chunk,
             "topic": topic,
-            "level": level,
             "concept_id": concept_id,
-            "embedding": embed_text(chunk),
+            "level": level,
+            "embedding": embedding,
             "source": "youtube",
             "video_url": youtube_url,
-            "video_id": video_id,
             "chunk_index": idx + 1,
-            "has_transcript": True
         })
+
         inserted += 1
 
     return {
         "video_id": video_id,
         "title": title,
-        "total_chunks": len(chunks),
+        "concept_id": concept_id,
         "inserted_chunks": inserted,
         "has_transcript": True,
-        "concept_id": concept_id
     }

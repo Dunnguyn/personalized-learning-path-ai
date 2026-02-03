@@ -60,14 +60,16 @@ def import_pdf_resource(
 # =========================
 # IMPORT YOUTUBE
 # =========================
-@router.post("/import-youtube", summary="Import learning materials from YouTube")
+@router.post("/import-youtube")
 def import_youtube_resource(
     youtube_url: str,
     topic: str,
-    level: str = "beginner"
+    level: str = "beginner",
+    concept_id: int | None = None
 ):
     return import_youtube_service(
         youtube_url=youtube_url,
         topic=topic,
-        level=level
+        level=level,
+        concept_id=concept_id
     )
