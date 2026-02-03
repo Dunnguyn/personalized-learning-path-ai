@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from backend.app.services.progress_service import update_progress
+from backend.app.services.progress_service import update_progress_with_confidence
 
 router = APIRouter(prefix="/progress", tags=["Progress"])
 

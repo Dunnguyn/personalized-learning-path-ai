@@ -1,11 +1,12 @@
 from fastapi import APIRouter
-from typing import List
 
 from backend.app.api.schemas import AskRequest, AskResponse
 from backend.app.services.rag_pipeline import RAGPipeline
-from backend.app.services.progress_service import update_progress
 from backend.app.services.learning_path_service import generate_learning_path
+from backend.app.services.confidence_scorer import score_confidence
+from backend.app.services.progress_service import update_progress_with_confidence
 from backend.app.database.mongo import db
+
 
 # =========================
 # ROUTER
@@ -19,8 +20,8 @@ rag = RAGPipeline()
 # =========================
 def detect_concept(question: str) -> str:
     """
-    Detect learning concept from question (simple heuristic).
-    Sau này có thể thay bằng NLP / classifier.
+    Detect learning concept from question (heuristic-based).
+    Có thể thay bằng NLP classifier sau.
     """
     q = question.lower()
     if "list" in q:
@@ -49,10 +50,11 @@ def get_concept_id_by_name(concept_name: str) -> int | None:
 @router.post("/", response_model=AskResponse)
 def ask_ai(request: AskRequest):
     """
-    Core API:
-    - RAG trả lời câu hỏi
-    - Update progress
-    - Gợi ý learning path
+    Core AI endpoint:
+    - Answer question using RAG
+    - Evaluate confidence
+    - Update learning progress
+    - Generate personalized learning path
     """
 
     # ===== 1. RAG =====
@@ -63,15 +65,20 @@ def ask_ai(request: AskRequest):
         completed=request.completed
     )
 
-    # ===== 2. UPDATE PROGRESS =====
+    # ===== 2. UPDATE PROGRESS (CONFIDENCE-BASED) =====
     concept_name = detect_concept(request.question)
     concept_id = get_concept_id_by_name(concept_name)
 
     if concept_id is not None:
-        update_progress(
+        confidence = score_confidence(
+            question=request.question,
+            answer=rag_result["answer"]
+        )
+
+        update_progress_with_confidence(
             user_id=request.user_id,
             concept_id=concept_id,
-            success=True
+            confidence=confidence
         )
 
     # ===== 3. LEARNING PATH =====

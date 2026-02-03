@@ -1,6 +1,15 @@
 from backend.app.database.mongo import db
 from datetime import datetime
-from typing import Dict, Set, List
+from typing import Dict, Set
+from backend.app.services.resource_recommender import (
+    recommend_resources_for_concept
+)
+
+LEVEL_FACTOR = {
+    "beginner": 1.2,
+    "intermediate": 1.0,
+    "advanced": 0.8,
+}
 
 
 def generate_learning_path(
@@ -9,19 +18,12 @@ def generate_learning_path(
     level: str,
     mastery_threshold: float = 0.8
 ) -> Dict:
-    """
-    Generate personalized learning path using:
-    - prerequisite graph
-    - mastery
-    - difficulty
-    - weight
-    """
 
     # =========================
-    # 1. LOAD CONCEPTS BY GOAL
+    # 1. LOAD CONCEPTS
     # =========================
     concepts = list(db.concepts.find(
-        {"course": {"$regex": goal, "$options": "i"}},
+        {"topic": {"$regex": goal, "$options": "i"}},
         {"_id": 0}
     ))
 
@@ -39,10 +41,7 @@ def generate_learning_path(
         {"_id": 0}
     )
 
-    mastery_map = {
-        p["concept_id"]: p.get("mastery", 0)
-        for p in progress
-    }
+    mastery_map = {p["concept_id"]: p.get("mastery", 0) for p in progress}
 
     # =========================
     # 3. FILTER TARGET CONCEPTS
@@ -69,53 +68,49 @@ def generate_learning_path(
             graph[p["to_concept_id"]].add(p["from_concept_id"])
 
     # =========================
-    # 5. TOPOLOGICAL SORT (DFS)
+    # 5. TOPOLOGICAL SORT
     # =========================
     visited = set()
-    topo_order: List[int] = []
+    ordered = []
 
-    def dfs(cid: int):
+    def dfs(cid):
         if cid in visited:
             return
         for pre in graph.get(cid, []):
             dfs(pre)
         visited.add(cid)
-        topo_order.append(cid)
+        ordered.append(cid)
 
     for cid in targets:
         dfs(cid)
 
     # =========================
-    # 6. PRIORITY SCORING
+    # 6. SCORING (🔥 CORE)
     # =========================
-    def priority_score(cid: int) -> float:
-        concept = concept_map[cid]
-        weight = concept.get("weight", 1.0)
-        difficulty = concept.get("difficulty", 1)
+    level_factor = LEVEL_FACTOR.get(level.lower(), 1.0)
+
+    scored = []
+    for cid in ordered:
+        c = concept_map[cid]
         mastery = mastery_map.get(cid, 0)
 
-        return round(
-            weight * (1 + difficulty / 5) * (1 - mastery),
-            4
+        difficulty = c.get("difficulty", 1)
+        weight = c.get("weight", 1.0)
+
+        score = (
+            (1 - mastery)
+            * difficulty
+            * weight
+            * level_factor
         )
 
-    scored = [
-        {
-            "concept_id": cid,
-            "score": priority_score(cid)
-        }
-        for cid in topo_order
-    ]
+        scored.append((cid, round(score, 4)))
+
+    # Sort theo score giảm dần
+    scored.sort(key=lambda x: x[1], reverse=True)
 
     # =========================
-    # 7. SORT BY PRIORITY
-    # =========================
-    scored.sort(key=lambda x: x["score"], reverse=True)
-
-    final_order = [item["concept_id"] for item in scored]
-
-    # =========================
-    # 8. SAVE LEARNING PATH
+    # 7. SAVE LEARNING PATH
     # =========================
     path_id = db.learning_paths.insert_one({
         "user_id": user_id,
@@ -125,11 +120,12 @@ def generate_learning_path(
     }).inserted_id
 
     items = []
-    for idx, cid in enumerate(final_order):
+    for idx, (cid, score) in enumerate(scored):
         items.append({
             "path_id": path_id,
             "concept_id": cid,
             "order_index": idx + 1,
+            "priority_score": score,
             "status": "pending"
         })
 
@@ -142,8 +138,13 @@ def generate_learning_path(
             {
                 "concept_id": cid,
                 "concept_name": concept_map[cid]["concept_name"],
-                "priority_score": priority_score(cid)
+                "priority_score": score,
+                "resources": recommend_resources_for_concept(
+                    concept_id=cid,
+                    level=level,
+                    query=concept_map[cid]["concept_name"]
+                )
             }
-            for cid in final_order
+            for cid, score in scored
         ]
     }
