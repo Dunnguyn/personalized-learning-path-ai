@@ -1,101 +1,103 @@
 from typing import List
 from pytube import YouTube
 from youtube_transcript_api import YouTubeTranscriptApi
+from backend.app.database.mongo import get_db
+from backend.app.services.embedding_service import embed_text
 
-from backend.app.services.embedding_service import store_resource
+
+def extract_video_id(url: str) -> str:
+    if "v=" in url:
+        return url.split("v=")[-1].split("&")[0]
+    return url.rstrip("/").split("/")[-1]
 
 
-# =========================
-# CHUNKING
-# =========================
-def chunk_text(
-    text: str,
-    chunk_size: int = 500,
-    overlap: int = 50
-) -> List[str]:
-    """
-    Chia transcript thành các đoạn nhỏ có overlap
-    """
+def chunk_text(text: str, chunk_size=500, overlap=50) -> List[str]:
     chunks = []
     start = 0
-    length = len(text)
-
-    while start < length:
+    while start < len(text):
         end = start + chunk_size
         chunks.append(text[start:end])
         start = end - overlap
-
     return chunks
 
 
-# =========================
-# VIDEO ID
-# =========================
-def extract_video_id(url: str) -> str:
-    """
-    Trích video_id từ URL YouTube
-    """
-    if "v=" in url:
-        return url.split("v=")[-1].split("&")[0]
-    return url.split("/")[-1]
-
-
-# =========================
-# IMPORT YOUTUBE
-# =========================
 def import_youtube(
     youtube_url: str,
     topic: str,
-    level: str = "beginner"
+    level: str = "beginner",
+    concept_id: int | None = None
 ) -> dict:
-    """
-    Import học liệu từ YouTube vào hệ thống RAG:
 
-    Steps:
-    1. Lấy title video
-    2. Lấy transcript
-    3. Chunking
-    4. Inject learning context
-    5. Store resource + embedding
-    """
-
-    # 1. Extract video info
+    db = get_db()
     video_id = extract_video_id(youtube_url)
-    yt = YouTube(youtube_url)
-    title = yt.title
 
-    # 2. Get transcript
-    transcript = YouTubeTranscriptApi.get_transcript(video_id)
-    full_text = " ".join([t["text"] for t in transcript])
+    # =========================
+    # 1. TITLE (SAFE)
+    # =========================
+    try:
+        yt = YouTube(youtube_url)
+        title = yt.title
+    except Exception:
+        title = f"YouTube Video ({video_id})"
 
-    # 3. Chunking
+    # =========================
+    # 2. TRANSCRIPT (SAFE MODE)
+    # =========================
+    try:
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        full_text = " ".join([t["text"] for t in transcript])
+        has_transcript = True
+    except Exception as e:
+        # ⚠️ KHÔNG CRASH
+        print(f"⚠️ Transcript unavailable for {video_id}: {e}")
+
+        # Lưu metadata video để sau này xử lý
+        db.resources.insert_one({
+            "title": title,
+            "topic": topic,
+            "level": level,
+            "concept_id": concept_id,
+            "source": "youtube",
+            "video_url": youtube_url,
+            "video_id": video_id,
+            "has_transcript": False
+        })
+
+        return {
+            "video_id": video_id,
+            "title": title,
+            "inserted_chunks": 0,
+            "has_transcript": False,
+            "message": "Video saved, transcript unavailable"
+        }
+
+    # =========================
+    # 3. CHUNK + EMBEDDING
+    # =========================
     chunks = chunk_text(full_text)
-
     inserted = 0
 
-    # 4. Process chunks
     for idx, chunk in enumerate(chunks):
-        if len(chunk.strip()) < 100:
-            continue  # bỏ chunk quá ngắn → giảm nhiễu
-
-        contextual_content = (
-            f"This transcript is from a YouTube video about {topic} "
-            f"for {level} learners.\n\n{chunk}"
-        )
-
-        store_resource(
-            title=f"{title} - chunk {idx + 1}",
-            content=contextual_content,
-            topic=topic,
-            level=level,
-            source="youtube"
-        )
-
+        db.resources.insert_one({
+            "title": title,
+            "content": chunk,
+            "topic": topic,
+            "level": level,
+            "concept_id": concept_id,
+            "embedding": embed_text(chunk),
+            "source": "youtube",
+            "video_url": youtube_url,
+            "video_id": video_id,
+            "chunk_index": idx + 1,
+            "has_transcript": True
+        })
         inserted += 1
 
-    # 5. Result
     return {
-        "video_title": title,
+        "video_id": video_id,
+        "title": title,
         "total_chunks": len(chunks),
-        "inserted_chunks": inserted
+        "inserted_chunks": inserted,
+        "has_transcript": True,
+        "concept_id": concept_id
     }
