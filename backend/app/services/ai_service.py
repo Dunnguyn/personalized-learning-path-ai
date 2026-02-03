@@ -1,88 +1,70 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
-from typing import List, Optional
-
+from typing import List, Dict
 from backend.app.services.rag_pipeline import RAGPipeline
-from backend.app.api.progress import update_progress
-from backend.app.api.learning_path import generate_learning_path
+from backend.app.services.progress_service import update_progress
+from backend.app.services.learning_path_service import generate_learning_path
 from backend.app.database.mongo import db
 
-
-# ===== ROUTER =====
-router = APIRouter()
 rag = RAGPipeline()
 
 
-# ===== REQUEST SCHEMA =====
-class AskRequest(BaseModel):
-    user_id: int      # ✅ INT
-    question: str
-    goal: str
-    level: str
-    completed: list[str] = []
-
-
-# ===== RESPONSE SCHEMA =====
-class AskResponse(BaseModel):
-    answer: dict
-    learning_path: List[str]
-
-
-# ===== SIMPLE CONCEPT DETECTION =====
 def detect_concept(question: str) -> str:
+    """
+    Rule-based concept detection (baseline)
+    """
     q = question.lower()
     if "list" in q:
         return "Python List"
-    if "dictionary" in q or "dict" in q:
+    if "dictionary" in q:
         return "Python Dictionary"
     if "loop" in q:
         return "Python Loop"
     return "General Python"
 
 
-# ===== MAP CONCEPT NAME → CONCEPT_ID (THEO ERD) =====
-def get_concept_id_by_name(concept_name: str) -> Optional[int]:
-    concept = db.concepts.find_one(
-        {"concept_name": concept_name},
-        {"concept_id": 1}
-    )
+def get_concept_id(concept_name: str) -> int | None:
+    concept = db.concepts.find_one({"concept_name": concept_name})
     return concept["concept_id"] if concept else None
 
 
-# ===== API ENDPOINT =====
-@router.post("/ask", response_model=AskResponse)
-def ask_ai(request: AskRequest):
+def ask_ai_service(
+    user_id: int,
+    question: str,
+    goal: str,
+    level: str,
+    completed: List[str]
+) -> Dict:
     """
-    API trung tâm của hệ thống AI (RAG + Progress + Learning Path)
+    Core AI orchestration logic:
+    - RAG
+    - Progress update
+    - Learning path generation
     """
 
-    # ===== 1. RUN RAG PIPELINE =====
+    # 1. RAG
     rag_result = rag.run(
-        question=request.question,
-        goal=request.goal,
-        level=request.level,
-        completed=request.completed
+        question=question,
+        goal=goal,
+        level=level,
+        completed=completed
     )
 
-    # ===== 2. DETECT CONCEPT & UPDATE PROGRESS =====
-    concept_name = detect_concept(request.question)
-    concept_id = get_concept_id_by_name(concept_name)
+    # 2. Update progress
+    concept_name = detect_concept(question)
+    concept_id = get_concept_id(concept_name)
 
-    # Chỉ update progress nếu concept tồn tại trong DB
     if concept_id is not None:
         update_progress(
-            user_id=request.user_id,
+            user_id=user_id,
             concept_id=concept_id,
             success=True
         )
 
-    # ===== 3. GENERATE LEARNING PATH =====
+    # 3. Learning path
     learning_path = generate_learning_path(
-        user_id=request.user_id,
-        goal=request.goal,
-        level=request.level
+        user_id=user_id,
+        goal=goal,
+        level=level
     )
-
 
     return {
         "answer": rag_result,

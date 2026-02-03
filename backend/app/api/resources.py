@@ -1,77 +1,73 @@
-from fastapi import APIRouter
-from backend.app.services.embedding_service import (
-    store_resource,
-    semantic_search
+from fastapi import APIRouter, UploadFile, File, Form
+from backend.app.api.schemas import (
+    ResourceCreate,
+    ResourceImportRequest
 )
-from backend.app.services.resource_importer import import_resources
-from backend.app.api.schemas import ResourceCreate, ResourceImportRequest
-from fastapi import UploadFile, File, Form
-import shutil
-import os
-from backend.app.services.pdf_importer import import_pdf
-from backend.app.services.youtube_importer import import_youtube
+from backend.app.services.resource_service import (
+    add_resource_service,
+    import_resources_service,
+    search_resources_service,
+    import_pdf_service,
+    import_youtube_service
+)
 
-router = APIRouter()
+router = APIRouter(
+    prefix="/resources",
+    tags=["Learning Resources"]
+)
 
 
-# ===== Thêm 1 học liệu (có embedding) =====
-@router.post("/", summary="Thêm học liệu (có embedding)")
+# =========================
+# ADD SINGLE RESOURCE
+# =========================
+@router.post("/", summary="Add a learning resource")
 def add_resource(resource: ResourceCreate):
-    doc = store_resource(
-        title=resource.title,
-        content=resource.title,  # demo: dùng title làm content
-        topic=resource.topic
-    )
-    return {"message": "Resource added", "resource": doc}
+    return add_resource_service(resource)
 
 
-# ===== Import nhiều học liệu =====
-@router.post("/import", summary="Import nhiều học liệu vào hệ thống")
+# =========================
+# IMPORT MULTIPLE RESOURCES
+# =========================
+@router.post("/import", summary="Import multiple learning resources")
 def import_learning_resources(data: ResourceImportRequest):
-    result = import_resources(
-        resources=[r.dict() for r in data.resources]
-    )
-    return result
+    return import_resources_service(data)
 
 
-# ===== Tìm kiếm học liệu theo ngữ nghĩa =====
-@router.get("/search", summary="Tìm kiếm học liệu theo ngữ nghĩa")
+# =========================
+# SEMANTIC SEARCH
+# =========================
+@router.get("/search", summary="Semantic search learning resources")
 def search_resources(q: str):
-    return semantic_search(q)
+    return search_resources_service(q)
 
 
-UPLOAD_DIR = "backend/uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-@router.post("/import-pdf", summary="Import học liệu từ file PDF")
+# =========================
+# IMPORT PDF
+# =========================
+@router.post("/import-pdf", summary="Import learning materials from PDF")
 def import_pdf_resource(
     file: UploadFile = File(...),
     topic: str = Form(...),
     level: str = Form("beginner")
 ):
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    result = import_pdf(
-        file_path=file_path,
+    return import_pdf_service(
+        file=file,
         topic=topic,
         level=level
     )
 
-    return result
 
-    
-
-@router.post("/import-youtube", summary="Import học liệu từ YouTube")
+# =========================
+# IMPORT YOUTUBE
+# =========================
+@router.post("/import-youtube", summary="Import learning materials from YouTube")
 def import_youtube_resource(
     youtube_url: str,
     topic: str,
     level: str = "beginner"
 ):
-    result = import_youtube(
+    return import_youtube_service(
         youtube_url=youtube_url,
         topic=topic,
         level=level
     )
-    return result

@@ -1,10 +1,42 @@
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
-router = APIRouter()
+# =========================
+# ROUTER
+# =========================
+router = APIRouter(prefix="/auth", tags=["Auth"])
 
-@router.post("/login")
-def login(email: str, password: str):
-    # Demo login
-    if email == "test@gmail.com" and password == "123456":
+
+# =========================
+# SCHEMAS
+# =========================
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+
+
+# =========================
+# API
+# =========================
+@router.post("/login", response_model=LoginResponse)
+def login(request: LoginRequest):
+    """
+    Demo login API.
+    Sau này thay bằng:
+    - DB check
+    - password hash
+    - JWT thật
+    """
+
+    # ===== DEMO AUTH =====
+    if request.email == "test@gmail.com" and request.password == "123456":
         return {"token": "fake-jwt-token"}
-    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    raise HTTPException(
+        status_code=401,
+        detail="Invalid email or password"
+    )

@@ -1,27 +1,37 @@
-# ===== Core Backend =====
-fastapi
-uvicorn
-python-dotenv
-pydantic
+# =========================
+# Core Backend
+# =========================
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-dotenv>=1.0.1
 
-# ===== Database =====
-pymongo
+# =========================
+# Database
+# =========================
+pymongo>=4.6.0
 
-# ===== AI / LLM =====
-google-genai
-tiktoken
-google-generativeai>=0.4.1
+# =========================
+# Validation
+# =========================
+pydantic>=2.6.0
 
+# =========================
+# Gemini AI (NEW SDK)
+# =========================
+google-genai>=0.3.0
 
-# ===== Embedding & Vector Search =====
-numpy
+# =========================
+# Math / Vector
+# =========================
+numpy>=1.26.0
 
-# ===== PDF Import =====
-pypdf
+# =========================
+# PDF Processing
+# =========================
+pypdf>=4.0.0
 
-# ===== YouTube Import =====
-pytube
-youtube-transcript-api
-
-# ===== Optional (Future extension) =====
-requests
+# =========================
+# YouTube Import
+# =========================
+pytube>=15.0.0
+youtube-transcript-api>=0.6.2

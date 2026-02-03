@@ -4,14 +4,17 @@ import os
 from backend.app.services.embedding_service import semantic_search
 
 # =========================
-# Gemini LLM (SDK mới)
+# Gemini LLM (NEW SDK)
 # =========================
 USE_LLM = True
 client = None
 
-# Chọn model xịn nhất + fallback
+# Ưu tiên model ổn định + ít bị khóa
 PRIMARY_MODEL = "models/gemini-flash-latest"
-FALLBACK_MODEL = None   # hoặc trả text fallback
+FALLBACK_MODEL = None   # fallback = trả lời không dùng LLM
+
+MAX_CONTEXT_CHARS = 2000  # chống vượt quota
+
 
 try:
     from google import genai
@@ -31,7 +34,9 @@ except Exception as e:
 class RAGPipeline:
     """
     Retrieval-Augmented Generation (QA-RAG)
-    Trả lời câu hỏi dựa trên học liệu đã index (PDF, text, video transcript, ...)
+
+    Pipeline:
+        Query → Retrieve → Context → Prompt → Gemini → Answer
     """
 
     # =========================
@@ -49,16 +54,25 @@ class RAGPipeline:
     def build_context(self, resources: List[Dict]) -> str:
         """
         Ghép các chunk học liệu thành context cho LLM
+        Có giới hạn độ dài để tránh vượt quota
         """
         if not resources:
             return "No learning materials found."
 
         blocks = []
+        total_chars = 0
+
         for r in resources:
-            blocks.append(
+            block = (
                 f"[Source: {r.get('title', 'unknown')}]\n"
                 f"{r.get('content', '')[:500]}"
             )
+
+            total_chars += len(block)
+            if total_chars > MAX_CONTEXT_CHARS:
+                break
+
+            blocks.append(block)
 
         return "\n\n".join(blocks)
 
@@ -67,14 +81,16 @@ class RAGPipeline:
     # =========================
     def build_prompt(self, question: str, context: str) -> str:
         """
-        Prompt QA-RAG (giảm hallucination)
+        Prompt QA-RAG (ép LLM không hallucinate)
         """
         return f"""
 You are an AI tutor for beginner learners.
 
-Use ONLY the learning materials below to answer the question.
-If the answer is NOT contained in the materials, say:
-"I cannot find the answer in the provided learning materials."
+RULES:
+- Use ONLY the learning materials below.
+- Do NOT use outside knowledge.
+- If the answer is not found, say exactly:
+  "I cannot find the answer in the provided learning materials."
 
 Learning materials:
 --------------------
@@ -93,12 +109,12 @@ Answer clearly, simply, and suitable for beginners.
     def generate(self, prompt: str) -> str:
         """
         Gọi Gemini sinh câu trả lời
-        Ưu tiên Pro → fallback Flash
+        Có fallback an toàn khi hết quota
         """
         if not (USE_LLM and client):
             return "LLM is unavailable. Cannot generate answer at this time."
 
-        # ---- 1. Try PRIMARY MODEL ----
+        # ---- Try PRIMARY MODEL ----
         try:
             response = client.models.generate_content(
                 model=PRIMARY_MODEL,
@@ -107,20 +123,10 @@ Answer clearly, simply, and suitable for beginners.
             return response.text.strip()
 
         except Exception as e:
-            print(f"⚠️ Gemini PRIMARY model error ({PRIMARY_MODEL}):", e)
+            print(f"⚠️ Gemini PRIMARY error ({PRIMARY_MODEL}):", e)
 
-        # ---- 2. Fallback MODEL ----
-        try:
-            response = client.models.generate_content(
-                model=FALLBACK_MODEL,
-                contents=prompt
-            )
-            return response.text.strip()
-
-        except Exception as e:
-            print(f"❌ Gemini FALLBACK model error ({FALLBACK_MODEL}):", e)
-
-        return "LLM is unavailable. Cannot generate answer at this time."
+        # ---- Fallback: no-LLM answer ----
+        return "LLM is temporarily unavailable due to quota limits."
 
     # =========================
     # 5. RUN PIPELINE
@@ -136,7 +142,7 @@ Answer clearly, simply, and suitable for beginners.
         Chạy toàn bộ QA-RAG pipeline
         """
 
-        # 1. Retrieve
+        # 1. Retrieve learning materials
         resources = self.retrieve_context(question)
 
         # 2. Build context

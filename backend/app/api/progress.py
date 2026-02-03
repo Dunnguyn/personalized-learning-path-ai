@@ -1,38 +1,43 @@
 from fastapi import APIRouter
-from datetime import datetime
-from backend.app.database.mongo import db
+from pydantic import BaseModel
 
-router = APIRouter()
+from backend.app.services.progress_service import update_progress
+
+router = APIRouter(prefix="/progress", tags=["Progress"])
 
 
-@router.post("/update")
-def update_progress_api(
-    user_id: int,
-    concept_id: int,
+# =========================
+# SCHEMAS
+# =========================
+class ProgressUpdateRequest(BaseModel):
+    user_id: int
+    concept_id: int
     success: bool
-):
-    record = db.progress.find_one({
-        "user_id": user_id,
-        "concept_id": concept_id
-    })
 
-    total = (record["total_attempts"] if record else 0) + 1
-    success_cnt = (record["successful_attempts"] if record else 0) + (1 if success else 0)
-    mastery = round(success_cnt / total, 2)
 
-    db.progress.update_one(
-        {"user_id": user_id, "concept_id": concept_id},
-        {"$set": {
-            "total_attempts": total,
-            "successful_attempts": success_cnt,
-            "mastery": mastery,
-            "last_updated": datetime.utcnow()
-        }},
-        upsert=True
+class ProgressUpdateResponse(BaseModel):
+    user_id: int
+    concept_id: int
+    mastery: float
+
+
+# =========================
+# API
+# =========================
+@router.post("/update", response_model=ProgressUpdateResponse)
+def update_progress_api(request: ProgressUpdateRequest):
+    """
+    Update learning progress & mastery for a concept
+    """
+
+    mastery = update_progress(
+        user_id=request.user_id,
+        concept_id=request.concept_id,
+        success=request.success
     )
 
     return {
-        "user_id": user_id,
-        "concept_id": concept_id,
+        "user_id": request.user_id,
+        "concept_id": request.concept_id,
         "mastery": mastery
     }
