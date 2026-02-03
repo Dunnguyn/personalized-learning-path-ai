@@ -10,7 +10,7 @@ USE_LLM = True
 client = None
 
 # Ưu tiên model ổn định + ít bị khóa
-PRIMARY_MODEL = "models/gemini-flash-latest"
+PRIMARY_MODEL = "models/gemini-2.0-flash"
 FALLBACK_MODEL = None   # fallback = trả lời không dùng LLM
 
 MAX_CONTEXT_CHARS = 2000  # chống vượt quota
