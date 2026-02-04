@@ -35,3 +35,8 @@ pypdf>=4.0.0
 # =========================
 pytube>=15.0.0
 youtube-transcript-api>=0.6.2
+
+python-jose>=3.3.0
+email-validator 
+passlib[argon2] 
+argon2-cffi 

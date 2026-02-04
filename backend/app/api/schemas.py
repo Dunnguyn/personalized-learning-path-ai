@@ -1,23 +1,24 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import List, Optional
 from datetime import datetime
+
 
 # =========================
 # USERS
 # =========================
 class UserCreate(BaseModel):
     name: str
-    email: str
+    email: EmailStr
+    password: str
     level: str
 
 
 class UserResponse(BaseModel):
     user_id: int
     name: str
-    email: str
+    email: EmailStr
     level: str
     created_at: datetime
-
 
 # =========================
 # LEARNER PROFILE
@@ -121,19 +122,23 @@ class ProgressResponse(BaseModel):
 # =========================
 # LEARNING PATH
 # =========================
-class LearningPathItem(BaseModel):
+class LearningPathItemResponse(BaseModel):
     concept_id: int
     concept_name: str
-    order: int
+    difficulty: int
+    bloom_level: Optional[str]
+    mode: str
+    priority_score: float
+    resources: list
 
 
 class LearningPathResponse(BaseModel):
-    path_id: int
+    path_id: str
     user_id: int
     goal: str
     level: str
     generated_at: datetime
-    items: List[LearningPathItem]
+    recommended_path: List[LearningPathItemResponse]
 
 
 # =========================
