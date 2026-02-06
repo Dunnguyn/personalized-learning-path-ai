@@ -29,6 +29,7 @@ numpy>=1.26.0
 # PDF Processing
 # =========================
 pypdf>=4.0.0
+PyMuPDF>=1.22.0
 
 # =========================
 # YouTube Import
@@ -37,7 +38,7 @@ pytube>=15.0.0
 youtube-transcript-api>=0.6.2
 
 python-jose>=3.3.0
-email-validator 
-passlib[argon2] 
-argon2-cffi 
-python-multipart
+email-validator>=2.0.0
+passlib[argon2]>=1.7.4
+argon2-cffi>=21.3.0
+python-multipart>=0.0.6
