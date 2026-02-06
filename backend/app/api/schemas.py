@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from typing import List, Optional
 from datetime import datetime
 from enum import Enum
@@ -26,24 +26,38 @@ class PedagogyEnum(str, Enum):
 # USERS
 # =========================
 class UserCreate(BaseModel):
-    name: str
+    name: str = Field(..., min_length=2, max_length=200)
     email: EmailStr
-    password: str
-    level: LevelEnum
+    password: str = Field(..., min_length=8, max_length=100)
+    level: LevelEnum = LevelEnum.beginner
+    
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "name": "John Doe",
+            "email": "john@example.com",
+            "password": "securepassword123",
+            "level": "beginner"
+        }
+    })
 
 
 class UserResponse(BaseModel):
-    user_id: int
+    """User response with MongoDB ObjectId as string."""
+    user_id: str = Field(..., description="MongoDB ObjectId as string")
     name: str
     email: EmailStr
     level: LevelEnum
     created_at: datetime
+    
+    model_config = ConfigDict(from_attributes=True)
+
 
 # =========================
 # LEARNER PROFILE
 # =========================
 class LearnerProfileCreate(BaseModel):
-    learning_goal: str
+    user_id: str = Field(..., description="MongoDB ObjectId")
+    learning_goal: str = Field(..., min_length=10, max_length=500)
     preferred_style: Optional[str] = None
     time_constraint: Optional[str] = None
 
@@ -52,26 +66,26 @@ class LearnerProfileCreate(BaseModel):
 # COURSE
 # =========================
 class CourseCreate(BaseModel):
-    course_name: str
+    course_name: str = Field(..., min_length=3, max_length=200)
     description: Optional[str] = None
 
 
 class CourseResponse(CourseCreate):
-    course_id: int
+    course_id: str = Field(..., description="MongoDB ObjectId")
 
 
 # =========================
 # CONCEPT
 # =========================
 class ConceptCreate(BaseModel):
-    course_id: int
-    concept_name: str
-    topic: str
-    difficulty: int
+    course_id: Optional[str] = None  # Optional, MongoDB ObjectId
+    concept_name: str = Field(..., min_length=3, max_length=200)
+    topic: str = Field(..., min_length=2, max_length=200)
+    difficulty: int = Field(..., ge=1, le=10)
 
 
 class ConceptResponse(ConceptCreate):
-    concept_id: int
+    concept_id: int = Field(..., description="Integer ID for concepts (can be auto-increment or ObjectId)")
 
 
 # =========================
@@ -86,59 +100,61 @@ class PrerequisiteCreate(BaseModel):
 # RESOURCE
 # =========================
 class ResourceCreate(BaseModel):
-    title: str
-    content: str
-    source: SourceEnum              # pdf / youtube / web
-    topic: str                      # python / fastapi / database
-    level: LevelEnum                # beginner / intermediate / advanced
-    concept_id: int
+    title: str = Field(..., min_length=3, max_length=500)
+    content: str = Field(..., min_length=10)
+    source: SourceEnum
+    topic: str = Field(..., min_length=2, max_length=200)
+    level: LevelEnum
+    concept_id: int = Field(..., ge=1)
     url: Optional[str] = None
 
 
 class ResourceResponse(ResourceCreate):
-    resource_id: int
+    resource_id: str = Field(..., description="MongoDB ObjectId")
     created_at: datetime
 
 
 class ResourceMetadataCreate(BaseModel):
-    pedagogy_type: Optional[PedagogyEnum] = None   # video / text / quiz
-    bloom_level: Optional[str] = None     # remember / apply / analyze
+    pedagogy_type: Optional[PedagogyEnum] = None
+    bloom_level: Optional[str] = None
 
 
 # =========================
 # RESOURCE IMPORT (BATCH)
 # =========================
 class ResourceImport(BaseModel):
-    title: str
-    content: str
+    title: str = Field(..., min_length=3, max_length=500)
+    content: str = Field(..., min_length=10)
     source: SourceEnum
     url: Optional[str] = None
-    concept_id: int
+    concept_id: int = Field(..., ge=1)
     pedagogy_type: Optional[PedagogyEnum] = None
     bloom_level: Optional[str] = None
 
 
 class ResourceImportRequest(BaseModel):
-    resources: List[ResourceImport]
+    resources: List[ResourceImport] = Field(..., min_items=1, max_items=1000)
 
 
 # =========================
 # PROGRESS
 # =========================
 class ProgressUpdate(BaseModel):
-    user_id: int
-    concept_id: int
-    mastery: float = Field(ge=0, le=1)
-    confidence: float = Field(ge=0, le=1)
-    total_attempts: int = Field(ge=0)
+    """Update learner progress on a concept."""
+    user_id: str = Field(..., description="MongoDB ObjectId as string")
+    concept_id: int = Field(..., ge=1)
+    mastery: float = Field(..., ge=0, le=1)
+    confidence: float = Field(..., ge=0, le=1)
+    total_attempts: int = Field(default=1, ge=1)
 
 
 class ProgressUpdateResponse(BaseModel):
-    user_id: int
+    user_id: str
     concept_id: int
     mastery: float
     confidence: float
     total_attempts: int
+    status: str  # "not_started" | "in_progress" | "proficient" | "complete"
     updated_at: datetime
 
 
@@ -149,32 +165,38 @@ class LearningPathItemResponse(BaseModel):
     concept_id: int
     concept_name: str
     difficulty: int
-    bloom_level: Optional[str]
+    bloom_level: Optional[str] = None
     mode: str
     priority_score: float
-    resources: list
+    resources: list = Field(default_factory=list)
 
 
 class LearningPathResponse(BaseModel):
-    path_id: str
-    user_id: int
+    path_id: str = Field(..., description="UUID")
+    user_id: str = Field(..., description="MongoDB ObjectId")
     goal: str
     level: LevelEnum
     generated_at: datetime
     recommended_path: List[LearningPathItemResponse]
+    message: str = ""
 
 
 # =========================
 # ASK (AI Q&A)
 # =========================
 class AskRequest(BaseModel):
-    user_id: int
-    question: str
-    goal: str
+    """Main Q&A request."""
+    user_id: str = Field(..., description="MongoDB ObjectId as string")
+    question: str = Field(..., min_length=5, max_length=2000)
+    goal: str = Field(..., min_length=3, max_length=500)
     level: LevelEnum
     completed: Optional[List[str]] = None
 
 
 class AskResponse(BaseModel):
+    success: bool
     answer: dict
-    learning_path: List[LearningPathItemResponse]
+    learning_path: Optional[List[LearningPathItemResponse]] = None
+    concept_detected: Optional[dict] = None
+    adaptive_info: Optional[dict] = None
+    progress_updated: bool = False

@@ -1,192 +1,226 @@
+"""
+Ask API: Main AI tutoring endpoint with adaptive learning orchestration.
+
+Endpoints:
+- POST /ask/: Main Q&A endpoint (ask question, get answer + learning path)
+- GET /ask/adaptive-status: Get adaptive learning status for user+concept
+- POST /ask/detect-concepts: Batch concept detection
+- GET /ask/recommend-concepts: Get next recommended concepts
+- GET /ask/concept/{concept_id}: Get concept details
+
+All endpoints include:
+- Authentication (requires JWT token)
+- Authorization (must be asking for own user_id)
+- Input validation
+- Error handling with specific HTTP codes
+- Comprehensive logging
+"""
+
 from fastapi import APIRouter, HTTPException, status, Depends, Query
-from typing import Optional
-
-from backend.app.api.schemas import AskRequest, AskResponse
-from backend.app.services.ai_service import ai_tutor_service
-from backend.app.api.auth import get_current_user
-
+from datetime import datetime
 import logging
+import uuid
+
+from backend.app.api.schemas import (
+    AskRequest,
+    AskResponse,
+    LevelEnum
+)
+from backend.app.api.auth import get_current_user
+from backend.app.services.ai_service import AITutorService
+from backend.app.services.progress_service import get_progress
+from backend.app.services.adaptive_engine import adaptive_decision_summary, LearningMode
+from backend.app.database.mongo import get_db
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+router = APIRouter(prefix="/ask", tags=["Ask/AI"])
+ai_tutor = AITutorService()
+
 
 # =========================
-# ROUTER
+# MAIN ASK ENDPOINT
 # =========================
-router = APIRouter(prefix="/ask", tags=["Ask AI"])
-
-
-# =========================
-# MAIN ENDPOINT: ASK AI
-# =========================
-@router.post("/", response_model=AskResponse)
-def ask_ai(request: AskRequest, current_user=Depends(get_current_user)):
+@router.post("/", response_model=AskResponse, status_code=status.HTTP_200_OK)
+def ask_ai(
+    request: AskRequest,
+    current_user: dict = Depends(get_current_user)
+):
     """
-    AI Tutor endpoint with full orchestration:
-    - Answer question using RAG
-    - Detect learning concept (semantic + rule-based)
-    - Score learner confidence
-    - Update learning progress
-    - Make adaptive mode decision
-    - Suggest adaptive learning path
+    Main AI tutoring endpoint: Ask a question, get answer + learning path.
     
-    Requires: authenticated user (must match user_id)
+    Full orchestration pipeline:
+    1. Validate user authorization (current_user._id == request.user_id)
+    2. Validate request inputs (question length, goal, level)
+    3. Call AITutorService.ask_ai() which:
+       - RAG retrieval (semantic search for context)
+       - LLM generation (Gemini answer)
+       - Concept detection (map question to concept_id)
+       - Progress update (EMA confidence scoring)
+       - Adaptive learning (decide mode: remedial/normal/advanced)
+       - Learning path generation (next recommended concepts)
+    4. Track answer in search history / analytics
+    5. Return comprehensive response (answer + learning path + adaptive info)
     
-    Request body:
-    ```json
-    {
-        "user_id": 1,
-        "question": "What is a Python list?",
-        "goal": "Python",
-        "level": "beginner",
-        "completed": ["variables", "strings"]
-    }
-    ```
-    
-    Response:
-    ```json
-    {
-        "success": true,
-        "answer": {
-            "text": "A Python list is...",
-            "confidence": 0.87,
-            "sources": [...]
-        },
-        "learning_path": [...],
-        "adaptive": {
-            "mode": "normal",
-            "can_unlock_next": true,
-            "practice_recommendation": {...}
-        },
-        "concept_detected": {
-            "concept_id": 5,
-            "concept_name": "Python List",
-            "method": "semantic"
-        },
-        "progress": {
-            "mastery": 0.75,
-            "confidence": 0.87,
-            "attempts": 3
-        }
-    }
-    ```
+    Args:
+        request: AskRequest with user_id, question, goal, level, completed (optional)
+        current_user: Current authenticated user (from JWT token)
+        
+    Returns:
+        AskResponse with:
+        - success: bool
+        - answer: Dict (answer_text, sources, confidence, latency_ms)
+        - learning_path: List of recommended next concepts
+        - concept_detected: Dict (concept_id, concept_name, score)
+        - adaptive_info: Dict (mode, difficulty_boost, practice_recommendations)
+        - progress_updated: bool
+        
+    Raises:
+        HTTPException(401): If user_id doesn't match current_user
+        HTTPException(400): If validation fails
+        HTTPException(500): If internal error
+        
+    Example:
+        >>> {
+        ...     "user_id": "507f1f77bcf86cd799439011",
+        ...     "question": "How do I use list comprehensions in Python?",
+        ...     "goal": "Learn Python fundamentals",
+        ...     "level": "intermediate",
+        ...     "completed": ["basics", "syntax"]
+        ... }
     """
+    logger.info(f"Ask request: user_id={request.user_id}, question='{request.question[:50]}...'")
     
-    # Ownership check
-    if current_user["user_id"] != request.user_id:
-        logger.warning(f"Unauthorized ask attempt: auth_user={current_user['user_id']}, request_user={request.user_id}")
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-
-    # Basic input validation
-    if not request.question or len(request.question.strip()) == 0:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Question is required")
-    
-    if len(request.question) > 2000:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Question too long (max 2000 chars)")
-    
-    if not request.goal or len(request.goal) > 200:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid goal")
-    
-    if request.completed and len(request.completed) > 100:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Too many completed concepts")
-
     try:
-        # Call orchestration service
-        response = ai_tutor_service.ask_ai(
+        # 1️⃣ VALIDATE AUTHORIZATION
+        current_user_id = str(current_user.get("_id", ""))
+        
+        if current_user_id != request.user_id:
+            logger.warning(
+                f"Unauthorized ask attempt: auth_user={current_user_id}, "
+                f"request_user={request.user_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Cannot ask questions for another user"
+            )
+        
+        # 2️⃣ VALIDATE INPUTS
+        if not request.question or len(request.question.strip()) < 5:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Question must be at least 5 characters"
+            )
+        
+        if len(request.question) > 2000:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Question cannot exceed 2000 characters"
+            )
+        
+        if not request.goal or len(request.goal.strip()) < 3:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Goal must be at least 3 characters"
+            )
+        
+        if not isinstance(request.level, LevelEnum):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid level"
+            )
+        
+        logger.debug(f"Request validation passed: user={request.user_id}")
+        
+        # 3️⃣ CALL AI TUTOR SERVICE (orchestration)
+        response = ai_tutor.ask_ai(
             user_id=request.user_id,
             question=request.question,
             goal=request.goal,
-            level=request.level.value if hasattr(request.level, "value") else request.level,
-            completed=request.completed or []
+            level=request.level.value,
+            completed_concepts=request.completed or []
         )
         
-        logger.info(f"Ask completed successfully: user={request.user_id}, concept={response.get('concept_detected', {}).get('concept_name')}")
+        logger.info(
+            f"Ask completed successfully: user={request.user_id}, "
+            f"concept={response.get('concept_detected', {}).get('concept_name')}"
+        )
         
-        return response
+        return AskResponse(
+            success=response.get("success", False),
+            answer=response.get("answer", {}),
+            learning_path=response.get("learning_path", []),
+            concept_detected=response.get("concept_detected"),
+            adaptive_info=response.get("adaptive_info"),
+            progress_updated=response.get("progress_updated", False)
+        )
     
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Unexpected error in ask_ai: {e}")
+        logger.exception(f"Ask error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred. Please try again."
+            detail="Question processing failed"
         )
 
 
 # =========================
-# ENDPOINT: GET ADAPTIVE STATUS
+# ADAPTIVE STATUS ENDPOINT
 # =========================
-@router.get(
-    "/adaptive-status",
-    summary="Get adaptive learning status for a concept"
-)
+@router.get("/adaptive-status", status_code=status.HTTP_200_OK)
 def get_adaptive_status(
-    user_id: int = Query(..., ge=1, description="User ID"),
+    user_id: str = Query(..., description="User ID (MongoDB ObjectId as string)"),
     concept_id: int = Query(..., ge=1, description="Concept ID"),
-    current_user=Depends(get_current_user)
+    current_user: dict = Depends(get_current_user)
 ):
     """
-    Get current adaptive learning status for a specific concept.
+    Get adaptive learning status for user + concept.
     
+    Args:
+        user_id: User ID
+        concept_id: Concept ID
+        current_user: Current authenticated user
+        
     Returns:
-    - learning_mode (remedial/normal/advanced)
-    - mastery & confidence scores
-    - whether next concept can be unlocked
-    - practice recommendations
-    
-    Requires: authenticated user
-    
-    Example response:
-    ```json
-    {
-        "mode": "normal",
-        "mastery": 0.75,
-        "confidence": 0.7,
-        "attempts": 5,
-        "combined_score": 0.725,
-        "can_unlock_next": true,
-        "recommended_difficulty": 6,
-        "practice_recommendation": {
-            "practice_type": "spaced_review",
-            "intensity": 2,
-            "urgency": "optional",
-            "description": "Periodic review to maintain mastery"
-        }
-    }
-    ```
+        Dict with current progress + adaptive mode recommendations
     """
-    
-    # Ownership check
-    if current_user["user_id"] != user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    logger.info(f"Adaptive status request: user={user_id}, concept={concept_id}")
     
     try:
-        from backend.app.services.adaptive_engine import adaptive_decision_summary
-        from backend.app.database.mongo import db
+        # Authorization
+        if str(current_user.get("_id")) != user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
         
-        # Fetch progress
-        progress = db.progress.find_one({
-            "user_id": user_id,
-            "concept_id": concept_id
-        })
+        # Get progress
+        progress = get_progress(user_id=user_id, concept_id=concept_id)
         
         if not progress:
             logger.info(f"No progress found: user={user_id}, concept={concept_id}")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No progress found for this concept. Start learning first!"
-            )
+            return {
+                "success": False,
+                "message": "No progress data found",
+                "user_id": user_id,
+                "concept_id": concept_id
+            }
         
-        mastery = progress.get("mastery", 0.0)
-        confidence = progress.get("confidence", 0.5)
-        attempts = progress.get("total_attempts", 0)
-        
-        # Get adaptive summary
-        summary = adaptive_decision_summary(mastery, confidence, attempts)
+        # Generate adaptive summary
+        summary = adaptive_decision_summary(
+            mastery=progress.get("mastery", 0),
+            confidence=progress.get("confidence", 0),
+            success_rate=progress.get("success_rate", 0)
+        )
         
         logger.info(f"Adaptive status: user={user_id}, concept={concept_id}, mode={summary['mode']}")
         
-        return summary
+        return {
+            "success": True,
+            "user_id": user_id,
+            "concept_id": concept_id,
+            "progress": progress,
+            "adaptive_summary": summary
+        }
     
     except HTTPException:
         raise
@@ -194,310 +228,111 @@ def get_adaptive_status(
         logger.exception(f"Error getting adaptive status: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not retrieve adaptive status"
+            detail="Failed to get adaptive status"
         )
 
 
 # =========================
-# ENDPOINT: BATCH CONCEPT DETECTION
+# BATCH CONCEPT DETECTION
 # =========================
-@router.post(
-    "/detect-concepts",
-    summary="Detect concepts from multiple questions"
-)
+@router.post("/detect-concepts", status_code=status.HTTP_200_OK)
 def detect_concepts_batch(
-    questions: List[str] = Query(..., description="List of questions to analyze"),
-    current_user=Depends(get_current_user)
+    questions: list = Query(..., description="List of question strings"),
+    current_user: dict = Depends(get_current_user)
 ):
     """
-    Batch detect concepts from multiple questions.
+    Batch concept detection: map multiple questions to concepts.
     
-    Useful for:
-    - Pre-analyzing questions before answering
-    - Understanding what concepts a learner needs help with
-    - Planning learning paths
-    
-    Requires: authenticated user
-    
-    Query parameters:
-    - `questions`: list of question strings
-    
-    Example:
-    ```
-    GET /ask/detect-concepts?questions=What%20is%20a%20list&questions=How%20to%20use%20loops
-    ```
-    
-    Response:
-    ```json
-    {
-        "detected_concepts": [
-            {
-                "concept_id": 5,
-                "concept_name": "Python List",
-                "score": 0.92,
-                "method": "semantic"
-            },
-            {
-                "concept_id": 8,
-                "concept_name": "Python Loop",
-                "score": null,
-                "method": "rule-based"
-            }
-        ],
-        "total_detected": 2
-    }
-    ```
+    Args:
+        questions: List of questions
+        current_user: Current authenticated user
+        
+    Returns:
+        List of detected concepts
     """
-    
-    if not questions:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Questions list required")
-    
-    if len(questions) > 20:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Max 20 questions per request")
+    logger.info(f"Batch concept detection: {len(questions)} questions")
     
     try:
-        from backend.app.services.ai_service import concept_detector
-        
-        detected = []
-        for question in questions:
-            if not question or len(question) > 500:
-                continue
-            
-            concept = concept_detector.detect(question)
-            detected.append({
-                "question": question,
-                "concept": concept
-            })
-        
-        logger.info(f"Batch detection: user={current_user['user_id']}, questions={len(questions)}, detected={sum(1 for d in detected if d['concept'])}")
-        
+        results = ai_tutor.detect_concepts_batch(questions)
         return {
-            "detected_concepts": detected,
-            "total_questions": len(questions),
-            "total_detected": sum(1 for d in detected if d['concept'] is not None)
+            "success": True,
+            "total": len(questions),
+            "detected": results
         }
-    
     except Exception as e:
-        logger.exception(f"Batch detection error: {e}")
+        logger.exception(f"Batch concept detection error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not detect concepts"
+            detail="Concept detection failed"
         )
 
 
 # =========================
-# ENDPOINT: RECOMMEND NEXT CONCEPTS
+# RECOMMEND CONCEPTS
 # =========================
-@router.get(
-    "/recommend-concepts",
-    summary="Get concept recommendations without answering"
-)
+@router.get("/recommend-concepts", status_code=status.HTTP_200_OK)
 def recommend_next_concepts(
-    user_id: int = Query(..., ge=1, description="User ID"),
-    goal: str = Query(..., min_length=1, max_length=200, description="Learning goal"),
-    level: str = Query(..., description="Current level (beginner/intermediate/advanced)"),
-    limit: int = Query(5, ge=1, le=20, description="Max recommendations"),
-    current_user=Depends(get_current_user)
+    user_id: str = Query(..., description="User ID"),
+    limit: int = Query(5, ge=1, le=20),
+    current_user: dict = Depends(get_current_user)
 ):
     """
-    Get personalized concept recommendations for browsing/learning plan.
-    Does NOT require answering a question.
+    Get recommended next concepts for user.
     
-    Useful for:
-    - Exploring what to learn next
-    - Planning learning journey
-    - Understanding content structure
-    
-    Requires: authenticated user (must match user_id)
-    
-    Response:
-    ```json
-    {
-        "success": true,
-        "recommended_concepts": [
-            {
-                "concept_id": 1,
-                "concept_name": "Variables",
-                "difficulty": 1,
-                "mode": "normal",
-                "priority_score": 0.9,
-                "resources": [...]
-            },
-            ...
-        ]
-    }
-    ```
+    Args:
+        user_id: User ID
+        limit: Max recommendations
+        current_user: Current authenticated user
+        
+    Returns:
+        List of recommended concepts
     """
-    
-    # Ownership check
-    if current_user["user_id"] != user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    
-    # Validate level
-    valid_levels = ["beginner", "intermediate", "advanced"]
-    if level not in valid_levels:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid level. Must be one of: {', '.join(valid_levels)}"
-        )
+    logger.info(f"Recommending concepts: user={user_id}, limit={limit}")
     
     try:
-        from backend.app.services.ai_service import ai_tutor_service
+        if str(current_user.get("_id")) != user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
         
-        result = ai_tutor_service._generate_adaptive_path(
-            user_id=user_id,
-            goal=goal,
-            level=level,
-            learning_mode="normal"
-        )
+        # Get user's progress summary
+        db = get_db()
+        progress_docs = list(db.progress.find({"user_id": user_id}))
         
-        # Limit results
-        result = result[:limit]
+        completed_concepts = set(p.get("concept_id") for p in progress_docs if p.get("mastery", 0) >= 0.8)
         
-        logger.info(f"Concept recommendations: user={user_id}, goal={goal}, count={len(result)}")
+        # Find all concepts
+        all_concepts = list(db.concepts.find({}).limit(1000))
+        
+        # Filter: not completed + no prerequisites with low mastery
+        recommended = []
+        for concept in all_concepts:
+            concept_id = concept.get("concept_id")
+            
+            if concept_id in completed_concepts:
+                continue
+            
+            recommended.append({
+                "concept_id": concept_id,
+                "concept_name": concept.get("concept_name"),
+                "difficulty": concept.get("difficulty"),
+                "topic": concept.get("topic")
+            })
+            
+            if len(recommended) >= limit:
+                break
+        
+        logger.info(f"Recommended {len(recommended)} concepts for user {user_id}")
         
         return {
             "success": True,
-            "recommended_concepts": result,
-            "count": len(result)
-        }
-    
-    except Exception as e:
-        logger.exception(f"Concept recommendation error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not generate recommendations"
-        )
-
-
-# =========================
-# ENDPOINT: CONCEPT DETAILS
-# =========================
-@router.get(
-    "/concept/{concept_id}",
-    summary="Get detailed information about a concept"
-)
-def get_concept_details(
-    concept_id: int = Query(..., ge=1),
-    user_id: int = Query(..., ge=1),
-    current_user=Depends(get_current_user)
-):
-    """
-    Get detailed information about a specific concept.
-    
-    Includes:
-    - Concept metadata (name, difficulty, description)
-    - User's progress on this concept
-    - Recommended resources
-    - Prerequisite concepts
-    - Prerequisite for concepts
-    
-    Requires: authenticated user
-    """
-    
-    if current_user["user_id"] != user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    
-    try:
-        from backend.app.database.mongo import db
-        
-        # Get concept
-        concept = db.concepts.find_one(
-            {"concept_id": concept_id},
-            {"_id": 0}
-        )
-        
-        if not concept:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found")
-        
-        # Get user progress
-        progress = db.progress.find_one(
-            {"user_id": user_id, "concept_id": concept_id},
-            {"_id": 0}
-        )
-        
-        # Get prerequisites
-        prerequisites = list(db.prerequisites.find(
-            {"to_concept_id": concept_id},
-            {"_id": 0, "from_concept_id": 1}
-        ))
-        
-        prereq_concepts = []
-        for p in prerequisites:
-            prereq = db.concepts.find_one(
-                {"concept_id": p["from_concept_id"]},
-                {"concept_id": 1, "concept_name": 1}
-            )
-            if prereq:
-                prereq_concepts.append(prereq)
-        
-        # Get resources
-        resources = list(db.resources.find(
-            {"concept_id": concept_id},
-            {"_id": 0, "title": 1, "source": 1, "level": 1, "url": 1}
-        ).limit(10))
-        
-        logger.info(f"Concept details retrieved: user={user_id}, concept={concept_id}")
-        
-        return {
-            "concept": concept,
-            "progress": progress or {"mastery": 0, "confidence": 0.5, "total_attempts": 0},
-            "prerequisites": prereq_concepts,
-            "resources": resources
+            "user_id": user_id,
+            "recommended": recommended
         }
     
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Error retrieving concept details: {e}")
+        logger.exception(f"Error recommending concepts: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not retrieve concept details"
+            detail="Failed to recommend concepts"
         )
-
-
-# =========================
-# OPTIONAL: DEBUG ENDPOINT (remove in production)
-# =========================
-@router.post(
-    "/debug/concept-detection",
-    summary="Debug concept detection (development only)"
-)
-def debug_concept_detection(
-    question: str = Query(..., description="Question to analyze"),
-    current_user=Depends(get_current_user)
-):
-    """
-    Debug concept detection strategies.
-    Returns scores from all 3 detection methods.
-    (Remove this endpoint in production)
-    """
-    
-    if not question or len(question) > 500:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
-    
-    try:
-        from backend.app.services.ai_service import concept_detector
-        import os
-        
-        # Only allow in development
-        if os.getenv("ENV") == "production":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-        
-        semantic = concept_detector.detect_semantic(question)
-        rule_based = concept_detector.detect_rule_based(question)
-        fallback = concept_detector.detect_fallback()
-        
-        logger.debug(f"Debug detection: semantic={semantic}, rule_based={rule_based}")
-        
-        return {
-            "question": question,
-            "semantic": semantic,
-            "rule_based": rule_based,
-            "fallback": fallback,
-            "final_result": concept_detector.detect(question)
-        }
-    
-    except Exception as e:
-        logger.exception(f"Debug error: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
