@@ -9,7 +9,8 @@ from backend.app.api import (
     resources,
     learning_path,
     progress,
-    ask
+    ask,
+    recommendations
 )
 
 # =========================
@@ -30,6 +31,7 @@ app.include_router(resources.router)
 app.include_router(learning_path.router)
 app.include_router(progress.router)
 app.include_router(ask.router)
+app.include_router(recommendations.router)
 
 # =========================
 # ROOT ENDPOINT
