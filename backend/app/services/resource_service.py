@@ -1,6 +1,10 @@
 import os
 import shutil
+from datetime import datetime
+from typing import Optional
+
 from fastapi import UploadFile
+from bson import ObjectId
 
 from backend.app.services.embedding_service import (
     store_resource,
@@ -22,16 +26,27 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 # =========================
+# HELPER
+# =========================
+def serialize_mongo(doc: dict) -> dict:
+    if "_id" in doc and isinstance(doc["_id"], ObjectId):
+        doc["_id"] = str(doc["_id"])
+    return doc
+
+
+# =========================
 # ADD SINGLE RESOURCE
 # =========================
 def add_resource_service(resource: ResourceCreate):
     """
-    Thêm 1 học liệu đơn lẻ vào hệ thống (manual input).
-    Có tạo embedding để phục vụ RAG.
+    Thêm 1 học liệu đơn lẻ:
+    - Lưu embedding (RAG)
+    - Gắn metadata (concept_id, url)
     """
 
     content = resource.content.strip() if resource.content else resource.title
 
+    # 1️⃣ CHỈ TRUYỀN CÁC FIELD MÀ store_resource HỖ TRỢ
     doc = store_resource(
         title=resource.title,
         content=content,
@@ -39,6 +54,13 @@ def add_resource_service(resource: ResourceCreate):
         level=resource.level,
         source=resource.source or "manual"
     )
+
+    # 2️⃣ GẮN METADATA Ở TẦNG SERVICE
+    doc["concept_id"] = resource.concept_id
+    doc["url"] = resource.url
+    doc["created_at"] = datetime.utcnow()
+
+    doc = serialize_mongo(doc)
 
     return {
         "message": "Resource added successfully",
@@ -50,22 +72,18 @@ def add_resource_service(resource: ResourceCreate):
 # IMPORT MULTIPLE RESOURCES
 # =========================
 def import_resources_service(data: ResourceImportRequest):
-    """
-    Import nhiều học liệu cùng lúc (batch import).
-    """
-    return import_resources(
-        resources=[r.dict() for r in data.resources]
+    docs = import_resources(
+        resources=[r.model_dump() for r in data.resources]
     )
+    return [serialize_mongo(d) for d in docs]
 
 
 # =========================
 # SEMANTIC SEARCH
 # =========================
 def search_resources_service(query: str):
-    """
-    Tìm kiếm học liệu theo ngữ nghĩa (cosine similarity).
-    """
-    return semantic_search(query)
+    results = semantic_search(query)
+    return [serialize_mongo(r) for r in results]
 
 
 # =========================
@@ -74,26 +92,23 @@ def search_resources_service(query: str):
 def import_pdf_service(
     file: UploadFile,
     topic: str,
-    level: str
+    level: str,
+    concept_id: Optional[int] = None
 ):
-    """
-    Import học liệu từ file PDF:
-    - Lưu file
-    - Chunking
-    - Embedding
-    """
-
     filename = file.filename.replace(" ", "_")
     file_path = os.path.join(UPLOAD_DIR, filename)
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    return import_pdf(
+    docs = import_pdf(
         file_path=file_path,
         topic=topic,
-        level=level
+        level=level,
+        concept_id=concept_id
     )
+
+    return [serialize_mongo(d) for d in docs]
 
 
 # =========================
@@ -102,12 +117,14 @@ def import_pdf_service(
 def import_youtube_service(
     youtube_url: str,
     topic: str,
-    concept_id: int,
-    level: str
+    level: str,
+    concept_id: Optional[int] = None
 ):
-    return import_youtube(
+    docs = import_youtube(
         youtube_url=youtube_url,
         topic=topic,
-        concept_id=concept_id,
-        level=level
+        level=level,
+        concept_id=concept_id
     )
+
+    return [serialize_mongo(d) for d in docs]

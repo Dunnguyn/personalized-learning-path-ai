@@ -40,3 +40,4 @@ python-jose>=3.3.0
 email-validator 
 passlib[argon2] 
 argon2-cffi 
+python-multipart

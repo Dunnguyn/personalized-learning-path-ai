@@ -1,6 +1,25 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional
 from datetime import datetime
+from enum import Enum
+
+
+class LevelEnum(str, Enum):
+    beginner = "beginner"
+    intermediate = "intermediate"
+    advanced = "advanced"
+
+
+class SourceEnum(str, Enum):
+    pdf = "pdf"
+    youtube = "youtube"
+    web = "web"
+
+
+class PedagogyEnum(str, Enum):
+    video = "video"
+    text = "text"
+    quiz = "quiz"
 
 
 # =========================
@@ -10,14 +29,14 @@ class UserCreate(BaseModel):
     name: str
     email: EmailStr
     password: str
-    level: str
+    level: LevelEnum
 
 
 class UserResponse(BaseModel):
     user_id: int
     name: str
     email: EmailStr
-    level: str
+    level: LevelEnum
     created_at: datetime
 
 # =========================
@@ -69,9 +88,11 @@ class PrerequisiteCreate(BaseModel):
 class ResourceCreate(BaseModel):
     title: str
     content: str
-    source: str              # pdf / youtube / web
-    url: Optional[str] = None
+    source: SourceEnum              # pdf / youtube / web
+    topic: str                      # python / fastapi / database
+    level: LevelEnum                # beginner / intermediate / advanced
     concept_id: int
+    url: Optional[str] = None
 
 
 class ResourceResponse(ResourceCreate):
@@ -80,7 +101,7 @@ class ResourceResponse(ResourceCreate):
 
 
 class ResourceMetadataCreate(BaseModel):
-    pedagogy_type: Optional[str] = None   # video / text / quiz
+    pedagogy_type: Optional[PedagogyEnum] = None   # video / text / quiz
     bloom_level: Optional[str] = None     # remember / apply / analyze
 
 
@@ -90,10 +111,10 @@ class ResourceMetadataCreate(BaseModel):
 class ResourceImport(BaseModel):
     title: str
     content: str
-    source: str
+    source: SourceEnum
     url: Optional[str] = None
     concept_id: int
-    pedagogy_type: Optional[str] = None
+    pedagogy_type: Optional[PedagogyEnum] = None
     bloom_level: Optional[str] = None
 
 
@@ -107,16 +128,18 @@ class ResourceImportRequest(BaseModel):
 class ProgressUpdate(BaseModel):
     user_id: int
     concept_id: int
-    success: bool
+    mastery: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    total_attempts: int = Field(ge=0)
 
 
-class ProgressResponse(BaseModel):
+class ProgressUpdateResponse(BaseModel):
     user_id: int
     concept_id: int
     mastery: float
+    confidence: float
     total_attempts: int
-    successful_attempts: int
-    last_updated: datetime
+    updated_at: datetime
 
 
 # =========================
@@ -136,7 +159,7 @@ class LearningPathResponse(BaseModel):
     path_id: str
     user_id: int
     goal: str
-    level: str
+    level: LevelEnum
     generated_at: datetime
     recommended_path: List[LearningPathItemResponse]
 
@@ -148,10 +171,10 @@ class AskRequest(BaseModel):
     user_id: int
     question: str
     goal: str
-    level: str
-    completed: Optional[List[str]] = []
+    level: LevelEnum
+    completed: Optional[List[str]] = None
 
 
 class AskResponse(BaseModel):
     answer: dict
-    learning_path: List[str]
+    learning_path: List[LearningPathItemResponse]

@@ -1,9 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 
 from backend.app.services.learning_path_service import generate_learning_path
+from backend.app.api.auth import get_current_user
+from backend.app.api.schemas import LevelEnum, LearningPathResponse, LearningPathItemResponse
 
 # =========================
 # ROUTER
@@ -17,46 +19,23 @@ router = APIRouter(prefix="/learning-path", tags=["Learning Path"])
 class LearningPathRequest(BaseModel):
     user_id: int
     goal: str
-    level: str
-
-
-# =========================
-# RESPONSE SCHEMAS
-# =========================
-class LearningPathItemResponse(BaseModel):
-    concept_id: int
-    concept_name: str
-    difficulty: int
-    bloom_level: Optional[str]
-    mode: str
-    priority_score: float
-    resources: list
-
-
-class LearningPathResponse(BaseModel):
-    path_id: str
-    user_id: int
-    goal: str
-    level: str
-    generated_at: datetime
-    recommended_path: List[LearningPathItemResponse]
+    level: LevelEnum
 
 
 # =========================
 # API
 # =========================
 @router.post("/generate", response_model=LearningPathResponse)
-def generate_learning_path_api(payload: LearningPathRequest):
+def generate_learning_path_api(payload: LearningPathRequest, current_user=Depends(get_current_user)):
     """
-    Sinh learning path dựa trên:
-    - goal
-    - level
-    - progress + prerequisite
+    Generate learning path; ensure the authenticated user matches requested user_id
     """
+    if current_user["user_id"] != payload.user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
     result = generate_learning_path(
         user_id=payload.user_id,
         goal=payload.goal,
-        level=payload.level
+        level=payload.level.value if hasattr(payload.level, "value") else payload.level
     )
     return result
