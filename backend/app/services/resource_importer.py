@@ -63,6 +63,16 @@ def _validate_resource(resource: Dict, idx: int) -> tuple[bool, Optional[str]]:
     return True, None
 
 
+def validate_resource(resource: Dict, idx: int = 0) -> None:
+    """
+    Validate a single resource.
+    Raises ValueError if validation fails.
+    """
+    is_valid, error_message = _validate_resource(resource, idx)
+    if not is_valid:
+        raise ValueError(error_message)
+
+
 def _normalize_resource(resource: Dict) -> Dict:
     """
     Normalize and enrich a resource document.

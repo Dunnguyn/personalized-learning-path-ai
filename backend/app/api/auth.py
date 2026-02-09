@@ -207,9 +207,108 @@ class LoginResponse(BaseModel):
     name: str = Field(..., description="User full name")
 
 
+class SignupRequest(BaseModel):
+    """Signup request payload."""
+    email: EmailStr = Field(..., description="User email")
+    password: str = Field(..., min_length=6, description="User password")
+    fullName: str = Field(..., min_length=2, max_length=200, description="User full name")
+
+
+class SignupResponse(BaseModel):
+    """Signup response with JWT token."""
+    token: str = Field(..., description="JWT token")
+    user: dict = Field(..., description="User information")
+
+
 # =========================
 # API
 # =========================
+@router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
+def signup(payload: SignupRequest):
+    """
+    User signup: Create new account with email + password, return JWT token.
+    
+    Pipeline:
+    1. Check if user already exists
+    2. Hash password
+    3. Create new user in database
+    4. Create JWT token
+    5. Return token + user info
+    
+    Args:
+        payload: SignupRequest with email, password, fullName
+        
+    Returns:
+        SignupResponse with access_token and user data
+        
+    Raises:
+        HTTPException(400): If user already exists
+        HTTPException(500): If database error
+    """
+    logger.info(f"Signup attempt: email={payload.email}")
+    
+    try:
+        db = get_db()
+        
+        # Check if user already exists (case-insensitive email)
+        existing_user = db.users.find_one({
+            "email": {"$regex": f"^{payload.email}$", "$options": "i"}
+        })
+        
+        if existing_user:
+            logger.warning(f"Signup failed: user already exists for email {payload.email}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        
+        # Hash password
+        hashed_password = hash_password(payload.password)
+        
+        # Create new user document
+        new_user = {
+            "email": payload.email,
+            "password": hashed_password,
+            "name": payload.fullName,
+            "level": "beginner",
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+        }
+        
+        # Insert into database
+        result = db.users.insert_one(new_user)
+        user_id = str(result.inserted_id)
+        
+        # Create JWT token
+        access_token = create_access_token(
+            data={"sub": user_id}
+        )
+        
+        logger.info(f"Signup successful: user={payload.email}, user_id={user_id}")
+        
+        user_response = {
+            "user_id": user_id,
+            "email": payload.email,
+            "name": payload.fullName,
+            "level": "beginner",
+            "created_at": new_user["created_at"].isoformat()
+        }
+        
+        return SignupResponse(
+            token=access_token,
+            user=user_response
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Signup error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Signup failed"
+        )
+
+
 @router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
 def login(payload: LoginRequest):
     """

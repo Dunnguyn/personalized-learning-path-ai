@@ -1,44 +1,84 @@
+# =============================================================================
+# COMPREHENSIVE REQUIREMENTS - Personalized Learning Path AI Backend
+# =============================================================================
+
 # =========================
-# Core Backend
+# CORE FRAMEWORK & SERVER
 # =========================
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 python-dotenv>=1.0.1
+fastapi-cors>=0.0.6  # CORS support for frontend
 
 # =========================
-# Database
+# DATABASE & DRIVERS
 # =========================
 pymongo>=4.6.0
+# bson is included with pymongo
 
 # =========================
-# Validation
+# REQUEST/RESPONSE VALIDATION & SERIALIZATION
 # =========================
 pydantic>=2.6.0
+pydantic[email]>=2.6.0
+email-validator>=2.0.0
 
 # =========================
-# Gemini AI (NEW SDK)
+# AUTHENTICATION & SECURITY
+# =========================
+python-jose[cryptography]>=3.3.0
+passlib[argon2]>=1.7.4
+argon2-cffi>=21.3.0
+python-multipart>=0.0.6
+cryptography>=41.0.0
+
+# =========================
+# AI/LLM - GOOGLE GEMINI (NEW SDK)
 # =========================
 google-genai>=0.3.0
+google-ai-generativelanguage>=0.4.0
 
 # =========================
-# Math / Vector
+# NUMERICAL & VECTOR LIBRARIES
 # =========================
 numpy>=1.26.0
 
 # =========================
-# PDF Processing
+# PDF PROCESSING
 # =========================
 pypdf>=4.0.0
 PyMuPDF>=1.22.0
+fitz>=0.0.1  # Alias for PyMuPDF (optional)
 
 # =========================
-# YouTube Import
+# YOUTUBE & MEDIA PROCESSING
 # =========================
 pytube>=15.0.0
 youtube-transcript-api>=0.6.2
+yt-dlp>=2023.0.0  # Modern YouTube downloader (optional fallback)
 
-python-jose>=3.3.0
-email-validator>=2.0.0
-passlib[argon2]>=1.7.4
-argon2-cffi>=21.3.0
-python-multipart>=0.0.6
+# =========================
+# DEVELOPMENT & TESTING (optional, for development)
+# =========================
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
+
+# =========================
+# ADDITIONAL UTILITIES (recommended context from code analysis)
+# =========================
+python-dateutil>=2.8.2  # Date handling (implicit in requests)
+requests>=2.31.0  # HTTP client (implicit in pytube/youtube-transcript-api)
+urllib3>=2.0.0  # HTTP connection pool (implicit dependency)
+httpx>=0.25.0  # Async HTTP client (better for FastAPI)
+typing-extensions>=4.8.0  # Enhanced type hints
+aiofiles>=23.2.0  # Async file I/O operations
+
+# =========================
+# OPTIONAL: PERFORMANCE & OBSERVABILITY
+# =========================
+# redis>=5.0.0  # Caching (recommended for production)
+# sentry-sdk>=1.38.0  # Error tracking (recommended for production)
+# prometheus-client>=0.19.0  # Metrics (recommended for production)
