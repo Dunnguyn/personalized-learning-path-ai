@@ -71,19 +71,54 @@ export default function SignupStep2() {
     setLoading(true);
 
     try {
-      const data = await authService.signup({
+      // First, create the account
+      const signupData = await authService.signup({
         email: formData.email,
         password: formData.password,
         fullName: formData.fullName,
       });
 
-      localStorage.setItem('token', data.token);
+      // Store token FIRST before making any authenticated requests
+      localStorage.setItem('token', signupData.token);
+      
+      // Store user info
+      authService.setStoredUser(signupData.user);
+      
+      // Map Vietnamese level to English
+      const levelMap: { [key: string]: string } = {
+        'Bước đầu': 'beginner',
+        'Trung cấp': 'intermediate',
+        'Nâng cao': 'advanced'
+      };
+      const englishLevel = levelMap[step2Data.level] || 'beginner';
+
+      // Update user level and goal
+      try {
+        // Wait a bit to ensure localStorage is updated
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        await authService.updateUserLevel({
+          user_id: signupData.user.user_id,
+          level: englishLevel,
+          learning_goal: step2Data.goal
+        });
+        
+        // Update stored user with new level
+        authService.setStoredUser({
+          ...signupData.user,
+          level: englishLevel
+        });
+      } catch (updateErr) {
+        console.error('Failed to update user level:', updateErr);
+        // Continue anyway, user can update later
+      }
+
+      // Store user goal
       localStorage.setItem('userGoal', step2Data.goal);
-      localStorage.setItem('userLevel', step2Data.level);
 
       navigate('/dashboard');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Có lỗi xảy ra');
+      setError(err instanceof Error ? err.message : 'Có lỗi xảy ra. Vui lòng thử lại.');
     } finally {
       setLoading(false);
     }

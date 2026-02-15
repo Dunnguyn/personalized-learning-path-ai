@@ -42,13 +42,13 @@ app.add_middleware(
 # =========================
 # REGISTER ROUTERS
 # =========================
-app.include_router(auth.router)
-app.include_router(users.router)
-app.include_router(resources.router)
-app.include_router(learning_path.router)
-app.include_router(progress.router)
-app.include_router(ask.router)
-app.include_router(recommendations.router)
+app.include_router(auth.router, prefix="/api")
+app.include_router(users.router, prefix="/api")
+app.include_router(resources.router, prefix="/api")
+app.include_router(learning_path.router, prefix="/api")
+app.include_router(progress.router, prefix="/api")
+app.include_router(ask.router, prefix="/api")
+app.include_router(recommendations.router, prefix="/api")
 
 # =========================
 # ROOT ENDPOINT

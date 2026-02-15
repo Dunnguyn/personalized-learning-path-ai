@@ -1,27 +1,37 @@
 import { apiClient } from '../utils/apiClient';
-import type { LoginRequest, SignUpRequest, AuthResponse } from '../types/auth';
+import type { 
+  LoginRequest, 
+  SignUpRequest, 
+  LoginResponse, 
+  SignupResponse,
+  UpdateUserLevelRequest 
+} from '../types/auth';
 
 export const authService = {
-  async login(credentials: LoginRequest): Promise<AuthResponse> {
+  async login(credentials: LoginRequest): Promise<LoginResponse> {
     return apiClient.post('/auth/login', credentials);
   },
 
-  async signup(data: SignUpRequest): Promise<AuthResponse> {
+  async signup(data: SignUpRequest): Promise<SignupResponse> {
     return apiClient.post('/auth/signup', data);
+  },
+
+  async updateUserLevel(data: { user_id: string; level: string; learning_goal?: string }): Promise<any> {
+    // Update user level in database
+    return apiClient.put(`/users/${data.user_id}`, {
+      level: data.level,
+      learning_goal: data.learning_goal
+    });
+  },
+
+  async getCurrentUser(): Promise<any> {
+    return apiClient.get('/users/me');
   },
 
   async logout(): Promise<void> {
     localStorage.removeItem('token');
     localStorage.removeItem('email');
-  },
-
-  async refreshToken(): Promise<string> {
-    const response = await apiClient.post('/auth/refresh');
-    if (response.token) {
-      localStorage.setItem('token', response.token);
-      return response.token;
-    }
-    throw new Error('Failed to refresh token');
+    localStorage.removeItem('user');
   },
 
   getStoredToken(): string | null {
@@ -30,6 +40,15 @@ export const authService = {
 
   getStoredEmail(): string | null {
     return localStorage.getItem('email');
+  },
+
+  getStoredUser(): any | null {
+    const user = localStorage.getItem('user');
+    return user ? JSON.parse(user) : null;
+  },
+
+  setStoredUser(user: any): void {
+    localStorage.setItem('user', JSON.stringify(user));
   },
 
   isAuthenticated(): boolean {

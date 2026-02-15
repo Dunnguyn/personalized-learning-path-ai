@@ -1,16 +1,29 @@
 // Authentication Types
 export interface User {
-  id: string;
+  user_id: string;
   email: string;
-  fullName: string;
-  avatar?: string;
-  role?: string;
-  createdAt?: string;
+  name: string;
+  level?: string;
+  created_at?: string;
 }
 
-export interface AuthResponse {
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user_id: string;
+  email: string;
+  name: string;
+}
+
+export interface SignupResponse {
   token: string;
-  user: User;
+  user: {
+    user_id: string;
+    email: string;
+    name: string;
+    level: string;
+    created_at: string;
+  };
 }
 
 export interface LoginRequest {
@@ -22,6 +35,12 @@ export interface SignUpRequest {
   email: string;
   password: string;
   fullName: string;
+}
+
+export interface UpdateUserLevelRequest {
+  user_id: string;
+  level: string;
+  learning_goal?: string;
 }
 
 export interface AuthState {

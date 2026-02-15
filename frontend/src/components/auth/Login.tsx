@@ -20,17 +20,29 @@ export default function Login() {
 
     try {
       const data = await authService.login({ email, password });
-      localStorage.setItem('token', data.token);
       
+      // Store token
+      localStorage.setItem('token', data.access_token);
+      
+      // Store user info
+      const user = {
+        user_id: data.user_id,
+        email: data.email,
+        name: data.name
+      };
+      authService.setStoredUser(user);
+      
+      // Remember email if checked
       if (rememberMe) {
         localStorage.setItem('email', email);
       } else {
         localStorage.removeItem('email');
       }
 
+      // Navigate to dashboard
       navigate('/dashboard');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Có lỗi xảy ra');
+      setError(err instanceof Error ? err.message : 'Email hoặc mật khẩu không đúng');
     } finally {
       setLoading(false);
     }

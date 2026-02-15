@@ -5,6 +5,8 @@ Endpoints:
 - POST /progress/update: Update progress on a concept (mastery + confidence)
 - GET /progress/summary: Get user's progress summary across all concepts
 - GET /progress/concept/{concept_id}: Get concept progress analytics
+- GET /progress/overview: Get overall progress overview (%, progress bar, weekly comparison)
+- GET /progress/confidence: Get user confidence overview with trend
 
 Features:
 - EMA-based progress tracking (exponential moving average)
@@ -22,7 +24,7 @@ All endpoints include:
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 from backend.app.services.progress_service import (
@@ -210,36 +212,156 @@ def get_progress_summary(
         )
 
 
-@router.get("/concept/{concept_id}", status_code=status.HTTP_200_OK)
-def get_concept_progress(
-    concept_id: int,
+
+# =========================
+# OVERALL PROGRESS OVERVIEW
+# =========================
+@router.get("/overview", status_code=status.HTTP_200_OK)
+def get_progress_overview(
+    user_id: str = None,
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Get concept progress analytics (aggregated across all users).
-    
-    Args:
-        concept_id: Concept ID
-        current_user: Current authenticated user (for logging)
-        
+    Get overall progress overview for the user.
     Returns:
-        Dict with concept progress stats
+        - overall_progress_percent: float
+        - progress_bar: float (same as percent)
+        - weekly_comparison: float (percent change vs last week)
+        - summary: dict (detailed progress summary)
     """
-    logger.info(f"Concept progress requested: concept={concept_id}")
-    
+    if user_id is None:
+        user_id = str(current_user.get("_id", ""))
+    if str(current_user.get("_id")) != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot view another user's progress overview"
+        )
+    logger.info(f"Progress overview requested: user={user_id}")
     try:
-        from backend.app.services.progress_service import get_concept_progress
-        progress = get_concept_progress(concept_id=concept_id)
-        
+        from backend.app.services.progress_service import get_user_progress_summary
+        from backend.app.services.progress_service import get_db
+        summary = get_user_progress_summary(user_id=user_id)
+        # Overall progress: % completed concepts / total concepts
+        total = summary.get("total_concepts_started", 0)
+        completed = summary.get("total_concepts_completed", 0)
+        overall_progress_percent = round((completed / total) * 100, 1) if total > 0 else 0.0
+        progress_bar = overall_progress_percent
+        # Weekly comparison: compare completed concepts this week vs last week
+        db = get_db()
+        now = datetime.utcnow()
+        week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+        # Find progress completed in last week
+        recent_completed = db.progress.count_documents({
+            "user_id": user_id,
+            "mastery": {"$gte": 0.8},
+            "last_updated": {"$gte": week_ago}
+        })
+        # Find progress completed in week before last week
+        two_weeks_ago = week_ago - timedelta(days=7)
+        prev_week_completed = db.progress.count_documents({
+            "user_id": user_id,
+            "mastery": {"$gte": 0.8},
+            "last_updated": {"$gte": two_weeks_ago, "$lt": week_ago}
+        })
+        # Calculate percent change
+        weekly_comparison = 0.0
+        if prev_week_completed > 0:
+            weekly_comparison = round(((recent_completed - prev_week_completed) / prev_week_completed) * 100, 1)
+        elif recent_completed > 0:
+            weekly_comparison = 100.0
+        # Response
         return {
             "success": True,
-            "concept_id": concept_id,
-            "progress": progress
+            "user_id": user_id,
+            "overall_progress_percent": overall_progress_percent,
+            "progress_bar": progress_bar,
+            "weekly_comparison_percent": weekly_comparison,
+            "summary": summary
         }
-    
     except Exception as e:
-        logger.exception(f"Error getting concept progress: {e}")
+        logger.exception(f"Error getting progress overview: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not fetch concept progress"
+            detail="Could not fetch progress overview"
+        )
+
+
+# =========================
+# USER CONFIDENCE OVERVIEW
+# =========================
+@router.get("/confidence", status_code=status.HTTP_200_OK)
+def get_progress_confidence(
+    user_id: str = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get user's confidence overview.
+    Returns:
+        - confidence: float (average confidence)
+        - level: str (current user level)
+        - trend: str (improving, declining, stable)
+        - explanation: str (how confidence is evaluated)
+    """
+    if user_id is None:
+        user_id = str(current_user.get("_id", ""))
+    if str(current_user.get("_id")) != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot view another user's confidence overview"
+        )
+    logger.info(f"Confidence overview requested: user={user_id}")
+    try:
+        from backend.app.services.progress_service import get_user_progress_summary, get_db
+        summary = get_user_progress_summary(user_id=user_id)
+        confidence = summary.get("average_confidence", 0.0)
+        # Get user level
+        db = get_db()
+        user = db.users.find_one({"_id": user_id})
+        level = user.get("level", "beginner") if user else "beginner"
+        # Trend: compare average confidence this week vs last week
+        now = datetime.utcnow()
+        week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+        recent_confidences = db.progress.find({
+            "user_id": user_id,
+            "last_updated": {"$gte": week_ago}
+        })
+        recent_avg = 0.0
+        recent_count = 0
+        for p in recent_confidences:
+            recent_avg += p.get("confidence", 0.0)
+            recent_count += 1
+        recent_avg = recent_avg / recent_count if recent_count > 0 else confidence
+        # Previous week
+        two_weeks_ago = week_ago - timedelta(days=7)
+        prev_confidences = db.progress.find({
+            "user_id": user_id,
+            "last_updated": {"$gte": two_weeks_ago, "$lt": week_ago}
+        })
+        prev_avg = 0.0
+        prev_count = 0
+        for p in prev_confidences:
+            prev_avg += p.get("confidence", 0.0)
+            prev_count += 1
+        prev_avg = prev_avg / prev_count if prev_count > 0 else confidence
+        # Determine trend
+        if recent_avg > prev_avg + 0.01:
+            trend = "↑ improving"
+        elif recent_avg < prev_avg - 0.01:
+            trend = "↓ declining"
+        else:
+            trend = "→ stable"
+        explanation = "Hệ thống đánh giá mức độ tự tin của bạn dựa trên tiến độ, độ chính xác và thời gian hoàn thành."
+        return {
+            "success": True,
+            "user_id": user_id,
+            "confidence": round(confidence, 2),
+            "level": level,
+            "trend": trend,
+            "explanation": explanation
+        }
+    except Exception as e:
+        logger.exception(f"Error getting confidence overview: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not fetch confidence overview"
         )

@@ -24,6 +24,7 @@ from fastapi.security import OAuth2PasswordBearer
 
 import os
 import logging
+import time
 from bson import ObjectId
 
 from backend.app.database.mongo import get_db
@@ -107,11 +108,12 @@ def create_access_token(
     if expires_delta is None:
         expires_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     
-    expire = datetime.utcnow() + expires_delta
-    to_encode.update({"exp": expire.isoformat()})
+    # Calculate expiry as Unix timestamp (seconds since epoch)
+    expire_timestamp = int(time.time()) + int(expires_delta.total_seconds())
+    to_encode.update({"exp": expire_timestamp})
     
     token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    logger.debug(f"Created JWT token for user: {data.get('sub')}")
+    logger.debug(f"Created JWT token for user: {data.get('sub')}, expires at: {expire_timestamp}")
     
     return token
 
@@ -136,11 +138,12 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         >>> def get_profile(current_user: dict = Depends(get_current_user)):
         ...     return current_user
     """
-    logger.debug("Validating JWT token...")
+    logger.debug(f"Validating JWT token: {token[:20]}...")
     
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id_str = payload.get("sub")
+        logger.debug(f"JWT decoded successfully, user_id: {user_id_str}")
         
         if not user_id_str:
             logger.warning("Token missing 'sub' claim")
@@ -153,14 +156,14 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         try:
             user_id = ObjectId(user_id_str)
         except Exception as e:
-            logger.warning(f"Invalid ObjectId format in token: {user_id_str}")
+            logger.warning(f"Invalid ObjectId format in token: {user_id_str}, error: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authentication credentials"
             )
     
     except JWTError as e:
-        logger.debug(f"JWT decode error: {e}")
+        logger.warning(f"JWT decode error: {e}, token={token[:30]}...")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials"
