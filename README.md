@@ -1,6 +1,23 @@
-# Personalized Learning Path AI System
 
-He thong ca nhan hoa lo trinh hoc tap su dung AI (Google Gemini) + RAG de tao trai nghiem hoc tap tuy chinh cho tung nguoi dung.
+# Personalized Learning Path AI
+
+Hệ thống giúp mỗi người học có lộ trình riêng, tối ưu bằng AI (Gemini) và RAG:
+
+- Người dùng đăng ký, đăng nhập.
+- Chọn mục tiêu, trình độ, hệ thống tự tạo lộ trình học phù hợp.
+- AI phân tích, gợi ý tài nguyên (PDF, YouTube, web) và câu hỏi.
+- Theo dõi tiến độ, cập nhật kết quả.
+- Hỏi đáp thông minh, cá nhân hóa từng bước.
+
+> Ứng dụng dành cho học sinh, sinh viên, người đi làm muốn học hiệu quả, đúng mục tiêu.
+
+Sơ đồ tổng quan:
+
+```
+Người dùng <-> Frontend (React) <-> Backend (FastAPI, Gemini AI, MongoDB)
+```
+
+Mỗi người học = lộ trình riêng + tài nguyên phù hợp + AI hỗ trợ liên tục.
 
 ## Tinh nang chinh
 - Dang ky/Dang nhap JWT
