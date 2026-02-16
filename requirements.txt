@@ -13,13 +13,12 @@ python-dotenv==1.0.1
 # =========================
 # DATABASE
 # =========================
-pymongo==4.8.1
+pymongo==4.8.0
 
 # =========================
 # REQUEST/RESPONSE VALIDATION
 # =========================
-pydantic==2.9.2
-pydantic[email]==2.9.2
+pydantic[email]>=2.10.0
 email-validator==2.2.0
 
 # =========================
@@ -38,13 +37,14 @@ google-genai==0.5.0
 # =========================
 # VECTOR & NUMERICAL COMPUTING
 # =========================
-numpy==1.26.4
+--only-binary=numpy,pymupdf
+numpy==2.3.2
 
 # =========================
 # PDF PROCESSING
 # =========================
 pypdf==5.1.0
-PyMuPDF==1.24.9
+PyMuPDF==1.24.11
 
 # =========================
 # YOUTUBE & MEDIA PROCESSING

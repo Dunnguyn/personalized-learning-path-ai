@@ -27,7 +27,11 @@ export const apiClient = {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      throw new Error(error.message || `Request failed: ${response.statusText}`);
+      const message =
+        error.detail ||
+        error.message ||
+        `Request failed: ${response.statusText}`;
+      throw new Error(message);
     }
 
     return response.json();
