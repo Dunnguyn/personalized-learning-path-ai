@@ -129,6 +129,7 @@ class RAGPipeline:
     ) -> List[Dict]:
         """
         Retrieve learning materials using semantic search.
+        Falls back to default resources if search returns nothing.
         
         Parameters
         ----------
@@ -159,12 +160,76 @@ class RAGPipeline:
             )
             
             logger.info(f"Retrieved {len(resources)} resources (requested {k})")
+            
+            # Fallback to default resources if nothing found
+            if not resources and goal:
+                logger.warning(f"No semantic search results for '{goal}' - using default resources")
+                resources = self._get_default_resources(goal, level)
+            
             return resources
         
         except Exception as e:
             logger.exception(f"Retrieval error: {e}")
             self.stats["retrieval_failures"] += 1
+            # Try fallback default resources
+            if goal:
+                return self._get_default_resources(goal, level)
             return []
+
+    def _get_default_resources(self, goal: Optional[str], level: Optional[str]) -> List[Dict]:
+        """
+        Return default resources when semantic search fails.
+        Provides helpful general information about common topics.
+        """
+        default_kb = {
+            "python": [
+                {
+                    "title": "Python Basics",
+                    "snippet": "Python is a high-level, interpreted programming language known for its simplicity and readability. It uses indentation for code blocks and supports multiple programming paradigms including procedural, object-oriented, and functional programming.",
+                    "score": 0.8,
+                    "source": "knowledge_base"
+                },
+                {
+                    "title": "Python Data Types",
+                    "snippet": "Python supports various data types: int (integers), float (decimal numbers), str (text), bool (True/False), list (ordered collection), dict (key-value pairs), tuple (immutable sequence), and set (unique items). Each type has different characteristics and use cases.",
+                    "score": 0.75,
+                    "source": "knowledge_base"
+                }
+            ],
+            "data science": [
+                {
+                    "title": "Data Science Fundamentals",
+                    "snippet": "Data Science combines statistics, programming, and domain knowledge to extract insights from data. Key steps include: data collection, cleaning, exploration (EDA), visualization, modeling, and evaluation.",
+                    "score": 0.8,
+                    "source": "knowledge_base"
+                }
+            ],
+            "web development": [
+                {
+                    "title": "Web Development Basics",
+                    "snippet": "Web development involves building and maintaining websites. It includes frontend (user interface using HTML, CSS, JavaScript), backend (server logic), and databases. Modern web uses frameworks like React, Django, FastAPI.",
+                    "score": 0.8,
+                    "source": "knowledge_base"
+                }
+            ]
+        }
+        
+        goal_key = (goal or "").lower()
+        
+        # Try to match goal with default resources
+        for key, resources in default_kb.items():
+            if key in goal_key:
+                return resources
+        
+        # Generic fallback
+        return [
+            {
+                "title": "Learning Tips",
+                "snippet": "When learning a new topic: 1) Start with fundamentals and core concepts 2) Practice with hands-on examples 3) Build small projects 4) Review and reinforce 5) Connect to real-world applications. The more you practice, the better you understand.",
+                "score": 0.7,
+                "source": "knowledge_base"
+            }
+        ]
 
     # =========================
     # 2. BUILD CONTEXT
@@ -356,12 +421,9 @@ class RAGPipeline:
         Generate answer using LLM with safe fallback.
         """
         if not (USE_LLM and client):
-            logger.info("LLM unavailable — returning retrieval-only mode")
+            logger.info("LLM unavailable — using knowledge base fallback")
             self.stats["fallback_uses"] += 1
-            return (
-                "I'm currently in retrieval-only mode. Here's what I found in the materials:\n\n"
-                + prompt.split("LEARNING MATERIALS:")[-1].strip()
-            )
+            return self._generate_fallback_answer(prompt)
 
         # Call LLM
         answer = self._call_llm_with_retry(prompt)
@@ -371,12 +433,54 @@ class RAGPipeline:
             return answer
 
         # Fallback if LLM fails
-        logger.warning("LLM generation failed — using fallback")
+        logger.warning("LLM generation failed — using knowledge base fallback")
         self.stats["fallback_uses"] += 1
+        return self._generate_fallback_answer(prompt)
+
+    def _generate_fallback_answer(self, prompt: str) -> str:
+        """
+        Generate answer using simple knowledge base when LLM unavailable.
+        """
+        # Extract context from prompt
+        context_start = prompt.find("LEARNING MATERIALS:")
+        if context_start > 0:
+            context = prompt[context_start + 19:].strip()
+            if context:
+                return f"Based on the learning materials:\n\n{context}"
+        
+        # If no context, use predefined Q&A
+        question_start = prompt.find("Question:")
+        if question_start > 0:
+            q_section = prompt[question_start:].split("\n")[0]
+            question = q_section.replace("Question:", "").strip().lower()
+            
+            # Simple knowledge base
+            kb = {
+                "python": "Python is a high-level, interpreted programming language known for its simplicity and readability. It's widely used for web development, data analysis, machine learning, and automation.",
+                "list": "In Python, a list is a mutable, ordered collection of items. You can create lists using square brackets: my_list = [1, 2, 3]. Lists support indexing, slicing, and various methods like append(), remove(), and sort().",
+                "dict": "A dictionary in Python is an unordered collection of key-value pairs. You create dictionaries using curly braces: my_dict = {'key': 'value'}. Access values using their keys: my_dict['key'].",
+                "function": "A function is a reusable block of code that performs a specific task. In Python, you define functions using the 'def' keyword: def my_function(): pass. Functions can take parameters and return values.",
+                "loop": "Loops allow you to repeat a block of code multiple times. Python has 'for' loops for iterating over sequences and 'while' loops for conditional repetition.",
+                "class": "A class is a blueprint for creating objects. It defines properties (attributes) and behaviors (methods). Classes are fundamental to object-oriented programming (OOP) in Python.",
+            }
+            
+            # Try to match question to knowledge base
+            for key, answer in kb.items():
+                if key in question:
+                    return answer
+            
+            # Generic fallback
+            return (
+                "I apologize, but I don't have specific learning materials for this question at the moment. "
+                "However, I recommend:\n"
+                "1. Check the Learning Path section for concepts related to your question\n"
+                "2. Browse available Resources for tutorials and documentation\n"
+                "3. Visit official documentation for detailed explanations"
+            )
+        
         return (
-            "I'm having trouble generating a response. "
-            "Here's what I found in the learning materials:\n\n"
-            + prompt.split("LEARNING MATERIALS:")[-1].strip()
+            "I'm having difficulty retrieving specific information for your question. "
+            "Please try rephrasing your question or refer to the learning materials section."
         )
 
     # =========================

@@ -237,4 +237,11 @@ docker-compose.override.yml
 *.bak
 *.orig
 
-
+# =========================
+# DEVELOPMENT & UTILITY FILES
+# =========================
+# System check and verification scripts
+backend_check.py
+backend_verify.py
+BACKEND_REVIEW.md
+BACKEND_STATUS.md

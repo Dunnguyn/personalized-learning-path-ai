@@ -267,7 +267,7 @@ class AITutorService:
     
     def ask_ai(
         self,
-        user_id: int,
+        user_id: str,
         question: str,
         goal: str,
         level: str,
@@ -287,8 +287,8 @@ class AITutorService:
         
         Parameters
         ----------
-        user_id : int
-            User ID
+        user_id : str
+            User ID (MongoDB ObjectId as string)
         question : str
             Learner's question
         goal : str
@@ -358,25 +358,21 @@ class AITutorService:
             response = {
                 "success": True,
                 "answer": {
-                    "text": answer_text,
+                    "answer_text": answer_text,
                     "confidence": round(confidence, 3),
                     "sources": sources
                 },
                 "learning_path": learning_path,
-                "adaptive": adaptive_info,
                 "concept_detected": {
                     "concept_id": concept_info.get("concept_id") if concept_info else None,
                     "concept_name": concept_info.get("concept_name") if concept_info else None,
-                    "method": concept_info.get("method") if concept_info else None
+                    "score": concept_info.get("score") if concept_info else None
                 },
-                "progress": {
-                    "mastery": round(current_mastery, 3) if progress_updated else None,
-                    "confidence": round(confidence, 3),
-                    "attempts": current_attempts
-                } if progress_updated else None
+                "adaptive_info": adaptive_info,
+                "progress_updated": progress_updated
             }
             
-            logger.info(f"Ask completed: user={user_id}, mode={learning_mode}")
+            logger.info(f"Ask completed: user={user_id}")
             return response
         
         except Exception as e:
@@ -398,14 +394,15 @@ class AITutorService:
             logger.error(f"ask_ai failed after {MAX_RETRIES} retries")
             return {
                 "success": False,
-                "error": "Could not process your question. Please try again later.",
                 "answer": {
-                    "text": "I'm having trouble processing your question right now. Please try again.",
+                    "answer_text": "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi của bạn. Vui lòng thử lại.",
                     "confidence": 0.0,
                     "sources": []
                 },
                 "learning_path": [],
-                "adaptive": None
+                "concept_detected": None,
+                "adaptive_info": None,
+                "progress_updated": False
             }
     
     def _get_rag_answer(

@@ -137,6 +137,27 @@ class ResourceImportRequest(BaseModel):
 
 
 # =========================
+# YOUTUBE IMPORT
+# =========================
+class YouTubeImportRequest(BaseModel):
+    url: str = Field(..., min_length=10, max_length=500, description="YouTube video URL")
+    title: str = Field(..., min_length=3, max_length=500, description="Resource title")
+    topic: str = Field(..., min_length=2, max_length=200, description="Learning topic")
+    level: LevelEnum = Field(default=LevelEnum.beginner, description="Difficulty level")
+    concept_id: Optional[int] = Field(None, ge=1, description="Associated concept ID")
+    
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "url": "https://www.youtube.com/watch?v=rfscVS0vtbw",
+            "title": "Learn Python - Full Course for Beginners",
+            "topic": "python",
+            "level": "beginner",
+            "concept_id": 1
+        }
+    })
+
+
+# =========================
 # PROGRESS
 # =========================
 class ProgressUpdate(BaseModel):

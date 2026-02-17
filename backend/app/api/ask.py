@@ -38,6 +38,97 @@ logging.basicConfig(level=logging.INFO)
 router = APIRouter(prefix="/ask", tags=["Ask/AI"])
 ai_tutor = AITutorService()
 
+# =========================
+# HELPER FUNCTIONS
+# =========================
+def _save_ask_history(
+    user_id: str,
+    question: str,
+    answer_text: str,
+    goal: str,
+    level: str,
+    concept_id: int = None,
+    concept_name: str = None,
+    confidence: float = 0.0
+) -> None:
+    """
+    Save question and answer to user's ask history.
+    
+    Args:
+        user_id: MongoDB ObjectId as string
+        question: User's question
+        answer_text: AI's answer
+        goal: Learning goal
+        level: User's level
+        concept_id: Detected concept ID
+        concept_name: Detected concept name
+        confidence: Answer confidence score
+    """
+    try:
+        db = get_db()
+        db.ask_history.insert_one({
+            "user_id": user_id,
+            "question": question,
+            "answer": answer_text,
+            "goal": goal,
+            "level": level,
+            "concept_id": concept_id,
+            "concept_name": concept_name,
+            "confidence": confidence,
+            "timestamp": datetime.utcnow()
+        })
+        logger.debug(f"Saved ask history: user={user_id}, question='{question[:50]}...'")
+    except Exception as e:
+        logger.warning(f"Failed to save ask history: {e}")
+
+
+def _get_ask_history(
+    user_id: str,
+    limit: int = 50,
+    skip: int = 0,
+    goal: str = None
+) -> list:
+    """
+    Get user's question history.
+    
+    Args:
+        user_id: MongoDB ObjectId as string
+        limit: Maximum number of records to return
+        skip: Number of records to skip (for pagination)
+        goal: Optional filter by learning goal
+    
+    Returns:
+        List of history records
+    """
+    try:
+        db = get_db()
+        
+        # Build query
+        query = {"user_id": user_id}
+        if goal:
+            query["goal"] = goal
+        
+        # Get total count
+        total = db.ask_history.count_documents(query)
+        
+        # Get records sorted by newest first
+        records = list(
+            db.ask_history.find(query)
+            .sort("timestamp", -1)
+            .skip(skip)
+            .limit(limit)
+        )
+        
+        # Convert ObjectId to string
+        for record in records:
+            record["_id"] = str(record["_id"])
+            record["timestamp"] = record["timestamp"].isoformat()
+        
+        return records, total
+    except Exception as e:
+        logger.exception(f"Error fetching ask history: {e}")
+        return [], 0
+
 
 # =========================
 # MAIN ASK ENDPOINT
@@ -139,12 +230,24 @@ def ask_ai(
             question=request.question,
             goal=request.goal,
             level=request.level.value,
-            completed_concepts=request.completed or []
+            completed=request.completed or []
         )
         
         logger.info(
             f"Ask completed successfully: user={request.user_id}, "
             f"concept={response.get('concept_detected', {}).get('concept_name')}"
+        )
+        
+        # Save to ask history
+        _save_ask_history(
+            user_id=request.user_id,
+            question=request.question,
+            answer_text=response.get("answer", {}).get("answer_text", ""),
+            goal=request.goal,
+            level=request.level.value,
+            concept_id=response.get("concept_detected", {}).get("concept_id"),
+            concept_name=response.get("concept_detected", {}).get("concept_name"),
+            confidence=response.get("answer", {}).get("confidence", 0.0)
         )
         
         return AskResponse(
@@ -335,4 +438,138 @@ def recommend_next_concepts(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to recommend concepts"
+        )
+
+
+# =========================
+# 6. ASK HISTORY
+# =========================
+@router.get("/history", status_code=status.HTTP_200_OK)
+def get_ask_history(
+    limit: int = Query(50, ge=1, le=100),
+    skip: int = Query(0, ge=0),
+    goal: str = Query(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get user's question asking history.
+    
+    Parameters
+    ----------
+    limit : int
+        Max records to return (1-100, default 50)
+    skip : int
+        Pagination offset (default 0)
+    goal : str
+        Optional filter by learning goal
+    current_user : dict
+        Current authenticated user
+    
+    Returns
+    -------
+    {
+        "success": bool,
+        "history": [
+            {
+                "_id": string (MongoDB ObjectId),
+                "question": string,
+                "answer": string,
+                "goal": string,
+                "level": string,
+                "concept_name": string (optional),
+                "confidence": float,
+                "timestamp": string (ISO format)
+            },
+            ...
+        ],
+        "total": int,
+        "limit": int,
+        "skip": int
+    }
+    """
+    try:
+        user_id = str(current_user.get("_id", ""))
+        
+        logger.info(f"Getting ask history: user={user_id}, limit={limit}, skip={skip}")
+        
+        history, total = _get_ask_history(
+            user_id=user_id,
+            limit=limit,
+            skip=skip,
+            goal=goal
+        )
+        
+        logger.info(f"Retrieved {len(history)} history records for user {user_id}")
+        
+        return {
+            "success": True,
+            "history": history,
+            "total": total,
+            "limit": limit,
+            "skip": skip
+        }
+    
+    except Exception as e:
+        logger.exception(f"Error getting ask history: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve ask history"
+        )
+
+
+@router.delete("/history/{history_id}", status_code=status.HTTP_200_OK)
+def delete_ask_history_item(
+    history_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete a specific question from ask history.
+    
+    Parameters
+    ----------
+    history_id : str
+        MongoDB ObjectId of history item
+    current_user : dict
+        Current authenticated user
+    
+    Returns
+    -------
+    {
+        "success": bool,
+        "message": string
+    }
+    """
+    try:
+        from bson.objectid import ObjectId
+        
+        user_id = str(current_user.get("_id", ""))
+        
+        logger.info(f"Deleting ask history item: user={user_id}, item_id={history_id}")
+        
+        db = get_db()
+        result = db.ask_history.delete_one({
+            "_id": ObjectId(history_id),
+            "user_id": user_id
+        })
+        
+        if result.deleted_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="History item not found"
+            )
+        
+        logger.info(f"Deleted ask history item: {history_id}")
+        
+        return {
+            "success": True,
+            "message": "History item deleted successfully"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error deleting ask history: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete history item"
         )

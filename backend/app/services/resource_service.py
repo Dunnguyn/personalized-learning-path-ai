@@ -66,20 +66,86 @@ logger.info(f"Resource service initialized: UPLOAD_DIR={UPLOAD_DIR}, MAX_FILE_SI
 
 
 # =========================
+# GET RESOURCES (LIST WITH PAGINATION)
+# =========================
+def get_resources_service(
+    page: int = 1,
+    size: int = 10,
+    topic: Optional[str] = None,
+    level: Optional[str] = None,
+    source: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Get paginated list of resources with optional filters.
+    
+    Args:
+        page: Page number (1-indexed)
+        size: Items per page
+        topic: Optional topic filter
+        level: Optional level filter
+        source: Optional source filter
+        
+    Returns:
+        Dict with resources list, total count, page info
+    """
+    try:
+        db = get_db()
+        
+        # Build filter
+        mongo_filter = {}
+        if topic:
+            mongo_filter["topic"] = {"$regex": topic, "$options": "i"}
+        if level:
+            mongo_filter["level"] = level
+        if source:
+            mongo_filter["source"] = source
+        
+        # Get total count
+        total = db.resources.count_documents(mongo_filter)
+        
+        # Calculate pagination
+        skip = (page - 1) * size
+        
+        # Query resources
+        cursor = db.resources.find(mongo_filter).sort("created_at", -1).skip(skip).limit(size)
+        resources = [serialize_mongo(doc) for doc in cursor]
+        
+        logger.info(f"Retrieved {len(resources)} resources (page {page}, size {size}, total {total})")
+        
+        return {
+            "resources": resources,
+            "total": total,
+            "page": page,
+            "size": size,
+            "pages": (total + size - 1) // size  # Ceiling division
+        }
+    
+    except Exception as e:
+        logger.exception(f"Error getting resources: {e}")
+        raise RuntimeError(f"Failed to get resources: {str(e)}")
+
+
+# =========================
 # HELPERS: SERIALIZATION & VALIDATION
 # =========================
 def serialize_mongo(doc: dict) -> dict:
     """
-    Convert MongoDB ObjectId to string for JSON serialization.
+    Convert MongoDB ObjectId and datetime objects to JSON-serializable format.
     
     Args:
         doc: MongoDB document dict
         
     Returns:
-        Serialized document with _id as string
+        Serialized document with _id as string and datetimes as ISO strings
     """
     if "_id" in doc and isinstance(doc["_id"], ObjectId):
         doc["_id"] = str(doc["_id"])
+    
+    # Convert datetime objects to ISO format strings
+    for key, value in doc.items():
+        if isinstance(value, datetime):
+            doc[key] = value.isoformat()
+    
     return doc
 
 
@@ -464,140 +530,84 @@ def import_resources_service(
 # SEMANTIC SEARCH
 # =========================
 def search_resources_service(
-    query: str,
-    limit: int = 10,
+    q: str,
+    page: int = 1,
+    size: int = 10,
     filters: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Search resources using semantic similarity (embeddings).
+    Search resources using text-based search (fallback when embeddings unavailable).
     
     Pipeline:
-    1. Validate query
-    2. Call embedding service semantic search
-    3. Apply optional filters (by topic, level, source)
-    4. Serialize results
+    1. Validate query and pagination
+    2. Build MongoDB text search query
+    3. Apply filters (topic, level, source)
+    4. Paginate results
     5. Return with metadata
     
     Args:
-        query: Search query string (will be embedded)
-        limit: Max results to return (default: 10, max: MAX_SEARCH_RESULTS)
-        filters: Optional dict with keys:
-            - topic: str (exact match)
-            - level: str (exact match)
-            - source: str (exact match)
-            - min_score: float (minimum similarity score 0-1)
+        q: Search query string
+        page: Page number (1-indexed)
+        size: Results per page
+        filters: Optional dict with keys: topic, level, source
             
     Returns:
         Dict with:
-        - success: bool
-        - query: str (original query)
         - results: List[Dict] (serialized MongoDB docs)
-        - count: int (number of results)
-        - filters_applied: Dict
-        - message: str
-        
-    Raises:
-        ValueError: If query too short or filters invalid
+        - total: int (total matching documents)
+        - page: int
+        - size: int
         
     Example:
-        >>> results = search_resources_service(
-        ...     "Python functions",
-        ...     limit=5,
-        ...     filters={"level": "beginner", "topic": "python"}
-        ... )
-        >>> print(f"Found {results['count']} resources")
+        >>> results = search_resources_service("Python", page=1, size=10)
     """
-    logger.info(f"Searching resources: query='{query}', limit={limit}")
+    logger.info(f"Searching resources: query='{q}', page={page}, size={size}")
     
     try:
+        db = get_db()
+        
         # 1. Validate query
-        if not query or not query.strip():
+        if not q or not q.strip():
             raise ValueError("Search query cannot be empty")
         
-        query = query.strip()
+        query_clean = q.strip().lower()
         
-        if len(query) < 3:
-            logger.warning(f"Very short search query: '{query}'")
+        # 2. Build MongoDB query (text match in title, content, topic)
+        mongo_filter = {
+            "$or": [
+                {"title": {"$regex": query_clean, "$options": "i"}},
+                {"content": {"$regex": query_clean, "$options": "i"}},
+                {"topic": {"$regex": query_clean, "$options": "i"}},
+            ]
+        }
         
-        if len(query) > 1000:
-            raise ValueError("Search query too long (max 1000 characters)")
-        
-        # 2. Validate limit
-        if limit < 1 or limit > MAX_SEARCH_RESULTS:
-            limit = min(limit, MAX_SEARCH_RESULTS)
-            logger.debug(f"Adjusted limit to {limit}")
-        
-        # 3. Validate filters
+        # 3. Apply optional filters
         filters = filters or {}
-        valid_filter_keys = {"topic", "level", "source", "min_score", "concept_id"}
-        invalid_keys = set(filters.keys()) - valid_filter_keys
-        if invalid_keys:
-            logger.warning(f"Invalid filter keys ignored: {invalid_keys}")
-            filters = {k: v for k, v in filters.items() if k in valid_filter_keys}
+        if filters.get("topic"):
+            mongo_filter["topic"] = filters["topic"].lower()
+        if filters.get("level"):
+            mongo_filter["level"] = filters["level"].lower()
+        if filters.get("source"):
+            mongo_filter["source"] = filters["source"].lower()
         
-        # 4. Search via embedding service (returns top-k by similarity)
-        results = semantic_search(query, limit=limit)
+        # 4. Count total
+        total = db.resources.count_documents(mongo_filter)
+        logger.debug(f"Total matching documents: {total}")
         
-        logger.debug(f"Semantic search returned {len(results)} raw results")
+        # 5. Paginate
+        skip = (page - 1) * size
+        cursor = db.resources.find(mongo_filter).skip(skip).limit(size)
         
-        # 5. Apply additional filters (post-search)
-        filtered_results = results
+        results = list(cursor)
+        serialized = [serialize_mongo(r) for r in results]
         
-        if "topic" in filters and filters["topic"]:
-            topic_filter = filters["topic"].lower()
-            filtered_results = [
-                r for r in filtered_results
-                if r.get("topic", "").lower() == topic_filter
-            ]
-            logger.debug(f"Topic filter: {len(filtered_results)} results after filtering")
-        
-        if "level" in filters and filters["level"]:
-            level_filter = filters["level"].lower()
-            filtered_results = [
-                r for r in filtered_results
-                if r.get("level", "").lower() == level_filter
-            ]
-            logger.debug(f"Level filter: {len(filtered_results)} results after filtering")
-        
-        if "source" in filters and filters["source"]:
-            source_filter = filters["source"].lower()
-            filtered_results = [
-                r for r in filtered_results
-                if r.get("source", "").lower() == source_filter
-            ]
-            logger.debug(f"Source filter: {len(filtered_results)} results after filtering")
-        
-        if "min_score" in filters:
-            try:
-                min_score = float(filters["min_score"])
-                filtered_results = [
-                    r for r in filtered_results
-                    if r.get("similarity_score", 0) >= min_score
-                ]
-                logger.debug(f"Min score filter ({min_score}): {len(filtered_results)} results")
-            except ValueError:
-                logger.warning(f"Invalid min_score filter: {filters['min_score']}")
-        
-        if "concept_id" in filters and filters["concept_id"]:
-            concept_id = filters["concept_id"]
-            filtered_results = [
-                r for r in filtered_results
-                if r.get("concept_id") == concept_id
-            ]
-            logger.debug(f"Concept filter: {len(filtered_results)} results")
-        
-        # 6. Serialize
-        serialized = [serialize_mongo(r) for r in filtered_results]
-        
-        logger.info(f"Search complete: found {len(serialized)} results (filters_applied={bool(filters)})")
+        logger.info(f"Search complete: found {len(serialized)}/{total} results on page {page}")
         
         return {
-            "success": True,
-            "query": query,
             "results": serialized,
-            "count": len(serialized),
-            "filters_applied": filters,
-            "message": f"Found {len(serialized)} resources matching '{query}'"
+            "total": total,
+            "page": page,
+            "size": size
         }
     
     except ValueError as e:
@@ -627,7 +637,7 @@ def import_pdf_service(
     3. Save to disk (temporary)
     4. Call pdf_importer service
     5. Clean up temp file
-    6. Serialize results
+    6. Return response matching ResourceAddResponse schema
     
     Args:
         file: FastAPI UploadFile from form
@@ -638,12 +648,10 @@ def import_pdf_service(
         
     Returns:
         Dict with:
-        - success: bool
-        - filename: str
-        - pages: int (extracted pages)
-        - chunks_created: int
-        - resources: List[Dict] (inserted docs)
-        - message: str
+        - resource_id: int
+        - title: str
+        - source: str
+        - created_at: datetime
         
     Raises:
         ValueError: If file validation fails
@@ -656,7 +664,7 @@ def import_pdf_service(
         ...     level="beginner",
         ...     concept_id=1
         ... )
-        >>> print(f"Imported {result['pages']} pages")
+        >>> print(f"Created resource_id: {result['resource_id']}")
     """
     logger.info(f"Importing PDF: filename={file.filename}, topic={topic}, level={level}, user_id={user_id}")
     
@@ -678,42 +686,40 @@ def import_pdf_service(
         file_size = file_path.stat().st_size
         logger.info(f"PDF saved to disk: {file_path} ({file_size} bytes)")
         
-        # 4. Import via pdf_importer service
+        # 4. Import via pdf_importer service (only 3 params: file_path, topic, level)
         result = import_pdf(
             file_path=str(file_path),
             topic=topic,
-            level=level,
-            concept_id=concept_id,
-            user_id=user_id
+            level=level
         )
         
-        logger.debug(f"PDF import result: {result}")
+        logger.debug(f"PDF import result type: {type(result)}")
         
-        # 5. Serialize if docs returned
-        resources = []
-        if isinstance(result, list):
-            resources = [serialize_mongo(r) for r in result]
-        elif isinstance(result, dict):
-            if "error" in result:
-                logger.warning(f"PDF import returned error: {result['error']}")
+        # 5. Handle result and return response matching ResourceAddResponse schema
+        if isinstance(result, dict):
+            # Check for error
+            if "error" in result or result.get("success") == False:
+                error_msg = result.get("error", "Unknown error")
+                logger.error(f"PDF import failed: {error_msg}")
+                raise RuntimeError(f"PDF import failed: {error_msg}")
+            
+            # Check if import was successful and chunks were inserted
+            if result.get("success") and result.get("inserted_chunks", 0) > 0:
+                inserted = result.get("inserted_chunks", 0)
+                logger.info(f"PDF import successful: {inserted} chunks inserted")
+                
+                # Return response matching ResourceAddResponse schema
                 return {
-                    "success": False,
-                    "filename": safe_filename,
-                    "error": result["error"],
-                    "message": f"Failed to import PDF: {result['error']}"
+                    "resource_id": safe_filename,
+                    "title": safe_filename.replace('.pdf', '').replace('_', ' ').title(),
+                    "source": "pdf",
+                    "created_at": datetime.utcnow()
                 }
+            else:
+                raise RuntimeError("No content extracted from PDF")
         
-        logger.info(f"PDF import successful: {len(resources)} resources created")
-        
-        return {
-            "success": True,
-            "filename": safe_filename,
-            "file_size_bytes": file_size,
-            "pages": result.get("pages", 0) if isinstance(result, dict) else len(resources),
-            "chunks_created": len(resources),
-            "resources": resources,
-            "message": f"Imported PDF: {len(resources)} resources created"
-        }
+        # Fallback for unexpected result format
+        raise RuntimeError(f"Unexpected result format from import_pdf: {type(result)}")
     
     except ValueError as e:
         logger.warning(f"PDF validation error: {e}")
@@ -744,7 +750,7 @@ def import_youtube_service(
     1. Validate YouTube URL
     2. Call youtube_importer service (fetches transcript, chunks, embeds)
     3. Serialize results
-    4. Return with metadata
+    4. Return with metadata (matching ResourceAddResponse schema)
     
     Args:
         youtube_url: Full YouTube URL (https://www.youtube.com/watch?v=...)
@@ -755,12 +761,10 @@ def import_youtube_service(
         
     Returns:
         Dict with:
-        - success: bool
-        - video_id: str
-        - duration: int (seconds, if available)
-        - chunks_created: int
-        - resources: List[Dict]
-        - message: str
+        - resource_id: int
+        - title: str
+        - source: str
+        - created_at: datetime
         
     Raises:
         ValueError: If URL invalid or video not accessible
@@ -772,7 +776,7 @@ def import_youtube_service(
         ...     topic="python",
         ...     level="beginner"
         ... )
-        >>> print(f"Created {result['chunks_created']} chunks")
+        >>> print(f"Created resource_id: {result['resource_id']}")
     """
     logger.info(f"Importing YouTube: url={youtube_url}, topic={topic}, level={level}, user_id={user_id}")
     
@@ -797,43 +801,34 @@ def import_youtube_service(
             topic=topic,
             level=level,
             concept_id=concept_id,
-            user_id=user_id
+            user_id=user_id,
+            pedagogy_type="video"
         )
         
-        logger.debug(f"YouTube import result type: {type(result)}")
+        logger.debug(f"YouTube import result: success={result.get('success')}, "
+                    f"chunks={result.get('chunks_created', 0)}")
         
-        # 3. Handle result (could be list, dict, or error)
-        resources = []
-        video_id = None
+        # 3. Handle result and return response matching ResourceAddResponse schema
+        if not result.get('success'):
+            error_msg = result.get('message', 'Unknown error')
+            logger.error(f"YouTube import failed: {error_msg}")
+            raise RuntimeError(f"YouTube import failed: {error_msg}")
         
-        if isinstance(result, list):
-            resources = [serialize_mongo(r) for r in result]
-            logger.debug(f"Result is list: {len(resources)} resources")
+        # Get first resource or create a summary resource
+        resources = result.get('resources', [])
+        if resources and len(resources) > 0:
+            first_resource = serialize_mongo(resources[0])
+            resource_id = first_resource.get('resource_id') or first_resource.get('_id')
+        else:
+            # Fallback if no chunks created
+            resource_id = result.get('video_id', 'unknown')
         
-        elif isinstance(result, dict):
-            if "error" in result:
-                logger.warning(f"YouTube import returned error: {result['error']}")
-                return {
-                    "success": False,
-                    "youtube_url": youtube_url,
-                    "error": result["error"],
-                    "message": f"Failed to import YouTube: {result['error']}"
-                }
-            
-            if "resources" in result:
-                resources = [serialize_mongo(r) for r in result.get("resources", [])]
-            
-            video_id = result.get("video_id")
-        
-        logger.info(f"YouTube import successful: {len(resources)} resources created")
-        
+        # Return response matching ResourceAddResponse schema
         return {
-            "success": True,
-            "youtube_url": youtube_url,
-            "video_id": video_id,
-            "chunks_created": len(resources),
-            "resources": resources,
-            "message": f"Imported YouTube: {len(resources)} resources created"
+            "resource_id": resource_id,
+            "title": result.get('title', 'YouTube Video'),
+            "source": "youtube",
+            "created_at": datetime.utcnow()
         }
     
     except ValueError as e:

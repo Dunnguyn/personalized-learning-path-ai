@@ -8,7 +8,7 @@ from fastapi import (
     HTTPException,
     status
 )
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 import logging
 
@@ -16,6 +16,7 @@ from backend.app.api.schemas import (
     ResourceCreate,
     ResourceResponse,
     ResourceImportRequest,
+    YouTubeImportRequest,
     LevelEnum,
     SourceEnum
 )
@@ -24,7 +25,8 @@ from backend.app.services.resource_service import (
     import_resources_service,
     search_resources_service,
     import_pdf_service,
-    import_youtube_service
+    import_youtube_service,
+    get_resources_service
 )
 from backend.app.api.auth import get_current_user
 from pydantic import BaseModel, Field
@@ -49,7 +51,7 @@ router = APIRouter(
 # RESPONSE SCHEMAS
 # =========================
 class ResourceAddResponse(BaseModel):
-    resource_id: int
+    resource_id: str  # MongoDB ObjectId as string
     title: str
     source: str
     created_at: datetime
@@ -62,7 +64,7 @@ class ResourceImportResponse(BaseModel):
 
 
 class SearchResult(BaseModel):
-    resource_id: int
+    resource_id: str  # MongoDB ObjectId as string
     title: str
     topic: str
     level: str
@@ -78,6 +80,26 @@ class SearchResponse(BaseModel):
     size: int
 
 
+class ResourceListItem(BaseModel):
+    """Single resource in list view"""
+    resource_id: Optional[int] = None
+    title: str
+    topic: str
+    level: str
+    source: str
+    created_at: Optional[datetime] = None
+    url: Optional[str] = None
+
+
+class ResourceListResponse(BaseModel):
+    """Response for GET /api/resources/"""
+    resources: List[Dict]
+    total: int
+    page: int
+    size: int
+    pages: int
+
+
 # =========================
 # HELPER: CONVERT ENUM TO STRING
 # =========================
@@ -86,6 +108,55 @@ def enum_to_string(value) -> str:
     if hasattr(value, "value"):
         return value.value
     return str(value)
+
+
+# =========================
+# GET ALL RESOURCES (LIST WITH PAGINATION)
+# =========================
+@router.get(
+    "/",
+    response_model=ResourceListResponse,
+    summary="List all learning resources"
+)
+def get_resources(
+    page: int = Query(1, ge=1, description="Page number"),
+    size: int = Query(12, ge=1, le=100, description="Items per page"),
+    topic: Optional[str] = Query(None, description="Filter by topic"),
+    level: Optional[str] = Query(None, description="Filter by level"),
+    source: Optional[str] = Query(None, description="Filter by source")
+):
+    """
+    Get paginated list of all learning resources.
+    
+    No authentication required (public listing).
+    
+    Query parameters:
+    - `page`: page number (default 1)
+    - `size`: items per page (1-100, default 12)
+    - `topic`: optional topic filter
+    - `level`: optional level filter (beginner/intermediate/advanced)
+    - `source`: optional source filter (pdf/youtube/web)
+    
+    Returns:
+    - List of resources with metadata
+    - Total count and pagination info
+    """
+    try:
+        result = get_resources_service(
+            page=page,
+            size=size,
+            topic=topic,
+            level=level,
+            source=source
+        )
+        return result
+    
+    except Exception as e:
+        logger.exception(f"Error in get_resources endpoint: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve resources: {str(e)}"
+        )
 
 
 # =========================
@@ -295,7 +366,7 @@ def import_pdf_resource(
             concept_id=concept_id
         )
         logger.info(
-            f"PDF imported by user {current_user['user_id']}: "
+            f"PDF imported by user {current_user.get('_id', 'unknown')}: "
             f"topic={topic}, size={len(file_content)} bytes, "
             f"resource_id={result.get('resource_id')}"
         )
@@ -327,10 +398,7 @@ def import_pdf_resource(
     summary="Import learning resource from YouTube"
 )
 def import_youtube_resource(
-    youtube_url: str = Query(..., min_length=10, max_length=500, description="YouTube video URL"),
-    topic: str = Query(..., min_length=1, max_length=100, description="Learning topic"),
-    level: LevelEnum = Query(LevelEnum.beginner, description="Difficulty level"),
-    concept_id: Optional[int] = Query(None, description="Associated concept ID"),
+    request: YouTubeImportRequest,
     current_user=Depends(get_current_user)
 ):
     """
@@ -338,35 +406,53 @@ def import_youtube_resource(
     
     Requires: authenticated user
     
-    Query parameters:
-    - `youtube_url`: full YouTube video URL
+    Request body:
+    - `url`: full YouTube video URL
+    - `title`: resource title
     - `topic`: learning topic
-    - `level`: beginner | intermediate | advanced
+    - `level`: beginner | intermediate | advanced (default: beginner)
     - `concept_id`: optional concept ID
+    
+    Example:
+    ```json
+    {
+        "url": "https://www.youtube.com/watch?v=rfscVS0vtbw",
+        "title": "Learn Python - Full Course for Beginners",
+        "topic": "python",
+        "level": "beginner",
+        "concept_id": 1
+    }
+    ```
     """
     # Validate YouTube URL format
-    if not ("youtube.com" in youtube_url or "youtu.be" in youtube_url):
+    if not ("youtube.com" in request.url or "youtu.be" in request.url):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid YouTube URL"
+            detail="Invalid YouTube URL. Must be a youtube.com or youtu.be link"
         )
     
     try:
         result = import_youtube_service(
-            youtube_url=youtube_url,
-            topic=topic,
-            level=enum_to_string(level),
-            concept_id=concept_id
+            youtube_url=request.url,
+            topic=request.topic,
+            level=enum_to_string(request.level),
+            concept_id=request.concept_id
         )
+        
         logger.info(
-            f"YouTube imported by user {current_user['user_id']}: "
-            f"url={youtube_url[:50]}..., topic={topic}, "
+            f"YouTube imported by user {current_user.get('_id', 'unknown')}: "
+            f"url={request.url[:50]}..., topic={request.topic}, "
             f"resource_id={result.get('resource_id')}"
         )
+        
         return result
+        
     except ValueError as e:
         logger.warning(f"YouTube import validation error: {e}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except TimeoutError as e:
         logger.warning(f"YouTube import timeout: {e}")
         raise HTTPException(
