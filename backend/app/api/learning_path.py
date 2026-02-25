@@ -30,7 +30,9 @@ from backend.app.api.auth import get_current_user
 from backend.app.api.schemas import (
     LevelEnum,
     LearningPathResponse,
-    LearningPathItemResponse
+    LearningPathItemResponse,
+    LessonProgressUpdate,
+    LessonProgressResponse
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,28 @@ logging.basicConfig(level=logging.INFO)
 # ROUTER
 # =========================
 router = APIRouter(prefix="/learning-path", tags=["Learning Path"])
+
+
+def _build_lesson_progress(curriculum: Optional[List[dict]]) -> dict:
+    progress = {}
+    for chapter in curriculum or []:
+        for lesson in chapter.get("lessons", []):
+            lesson_id = lesson.get("lesson_id")
+            if lesson_id and lesson_id not in progress:
+                progress[lesson_id] = "not_started"
+    return progress
+
+
+def _apply_lesson_progress(curriculum: Optional[List[dict]], lesson_progress: dict) -> Optional[List[dict]]:
+    if not curriculum:
+        return curriculum
+
+    for chapter in curriculum:
+        for lesson in chapter.get("lessons", []):
+            lesson_id = lesson.get("lesson_id")
+            if lesson_id:
+                lesson["status"] = lesson_progress.get(lesson_id, "not_started")
+    return curriculum
 
 
 # =========================
@@ -149,6 +173,30 @@ def generate_learning_path_api(
             goal=payload.goal,
             level=payload.level.value if hasattr(payload.level, "value") else payload.level
         )
+
+        curriculum = _apply_lesson_progress(
+            result.get("curriculum"),
+            _build_lesson_progress(result.get("curriculum"))
+        )
+
+        # 4️⃣ SAVE PATH HISTORY (best-effort)
+        try:
+            from backend.app.database.mongo import get_db
+            db = get_db()
+            lesson_progress = _build_lesson_progress(curriculum)
+            db.learning_paths.insert_one({
+                "path_id": result.get("path_id"),
+                "user_id": payload.user_id,
+                "goal": payload.goal,
+                "level": payload.level.value if hasattr(payload.level, "value") else payload.level,
+                "generated_at": datetime.utcnow(),
+                "recommended_path": result.get("recommended_path", []),
+                "curriculum": curriculum or [],
+                "lesson_progress": lesson_progress,
+                "message": result.get("message", "Learning path generated successfully")
+            })
+        except Exception as save_error:
+            logger.warning(f"Failed to save learning path history: {save_error}")
         
         logger.info(
             f"Learning path generated: user={payload.user_id}, "
@@ -162,6 +210,7 @@ def generate_learning_path_api(
             level=payload.level,
             generated_at=datetime.utcnow(),
             recommended_path=result.get("recommended_path", []),
+            curriculum=curriculum,
             message=result.get("message", "Learning path generated successfully")
         )
     
@@ -236,4 +285,104 @@ def get_learning_path_history(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not fetch learning path history"
+        )
+
+
+@router.post("/lesson-progress", response_model=LessonProgressResponse, status_code=status.HTTP_200_OK)
+def update_lesson_progress(
+    payload: LessonProgressUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update lesson progress status for a learning path."""
+    user_id = str(current_user.get("_id", ""))
+
+    try:
+        from backend.app.database.mongo import get_db
+        db = get_db()
+
+        path = db.learning_paths.find_one({
+            "path_id": payload.path_id,
+            "user_id": user_id
+        })
+
+        if not path:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Learning path not found"
+            )
+
+        updated_at = datetime.utcnow()
+        db.learning_paths.update_one(
+            {"_id": path.get("_id")},
+            {
+                "$set": {
+                    f"lesson_progress.{payload.lesson_id}": payload.status,
+                    "updated_at": updated_at
+                }
+            }
+        )
+
+        return LessonProgressResponse(
+            path_id=payload.path_id,
+            lesson_id=payload.lesson_id,
+            status=payload.status,
+            updated_at=updated_at
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error updating lesson progress: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not update lesson progress"
+        )
+
+
+@router.get("/{path_id}", status_code=status.HTTP_200_OK)
+def get_learning_path_detail(
+    path_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get a single learning path by path_id for the current user.
+    """
+    user_id = str(current_user.get("_id", ""))
+    logger.info(f"Learning path detail requested: user={user_id}, path_id={path_id}")
+
+    try:
+        from backend.app.database.mongo import get_db
+        db = get_db()
+
+        path = db.learning_paths.find_one(
+            {"path_id": path_id, "user_id": user_id}
+        )
+
+        if not path:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Learning path not found"
+            )
+
+        lesson_progress = path.get("lesson_progress", {})
+        path["curriculum"] = _apply_lesson_progress(
+            path.get("curriculum"),
+            lesson_progress
+        )
+
+        if "_id" in path:
+            path["_id"] = str(path["_id"])
+
+        return {
+            "success": True,
+            "path": path
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error fetching learning path detail: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not fetch learning path detail"
         )

@@ -17,6 +17,16 @@ export interface LearningPath {
   level: 'beginner' | 'intermediate' | 'advanced';
   generated_at: string;
   recommended_path: ConceptNode[];
+  curriculum?: Array<{
+    title: string;
+    lessons: Array<{
+      lesson_id: string;
+      title: string;
+      summary: string;
+      resources: string[];
+      status?: 'not_started' | 'in_progress' | 'complete';
+    }>;
+  }>;
   message: string;
 }
 
@@ -47,6 +57,24 @@ export const learningPathService = {
     const endpoint = userId ? `/learning-path/history?user_id=${userId}` : '/learning-path/history';
     const response = await apiClient.get(endpoint);
     return response.paths || [];
+  },
+
+  /**
+   * Get learning path detail by path id
+   */
+  async getLearningPathById(pathId: string): Promise<any> {
+    return apiClient.get(`/learning-path/${pathId}`);
+  },
+
+  /**
+   * Update lesson progress status
+   */
+  async updateLessonProgress(data: {
+    path_id: string;
+    lesson_id: string;
+    status: 'not_started' | 'in_progress' | 'complete';
+  }): Promise<any> {
+    return apiClient.post('/learning-path/lesson-progress', data);
   },
 
   /**

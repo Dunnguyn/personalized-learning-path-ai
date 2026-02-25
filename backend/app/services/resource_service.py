@@ -687,26 +687,33 @@ def import_pdf_service(
         logger.info(f"PDF saved to disk: {file_path} ({file_size} bytes)")
         
         # 4. Import via pdf_importer service (only 3 params: file_path, topic, level)
+        logger.debug(f"Calling import_pdf with file_path={file_path}, topic={topic}, level={level}")
         result = import_pdf(
             file_path=str(file_path),
             topic=topic,
             level=level
         )
         
-        logger.debug(f"PDF import result type: {type(result)}")
+        logger.debug(f"PDF import result type: {type(result)}, result={result}")
         
         # 5. Handle result and return response matching ResourceAddResponse schema
         if isinstance(result, dict):
+            logger.debug(f"Result is dict with keys: {list(result.keys())}")
+            
             # Check for error
             if "error" in result or result.get("success") == False:
                 error_msg = result.get("error", "Unknown error")
-                logger.error(f"PDF import failed: {error_msg}")
+                error_detail = result.get("detail", "")
+                logger.error(f"PDF import failed: {error_msg}. Detail: {error_detail}")
                 raise RuntimeError(f"PDF import failed: {error_msg}")
             
             # Check if import was successful and chunks were inserted
-            if result.get("success") and result.get("inserted_chunks", 0) > 0:
-                inserted = result.get("inserted_chunks", 0)
-                logger.info(f"PDF import successful: {inserted} chunks inserted")
+            inserted = result.get("inserted_chunks", 0)
+            total = result.get("total_chunks", 0)
+            logger.info(f"PDF import result: success={result.get('success')}, inserted={inserted}/{total} chunks")
+            
+            if result.get("success") and inserted > 0:
+                logger.info(f"PDF import successful: {inserted} chunks inserted out of {total}")
                 
                 # Return response matching ResourceAddResponse schema
                 return {
@@ -716,21 +723,28 @@ def import_pdf_service(
                     "created_at": datetime.utcnow()
                 }
             else:
-                raise RuntimeError("No content extracted from PDF")
+                logger.warning(f"PDF import: success={result.get('success')}, inserted={inserted}/{total}")
+                if inserted == 0:
+                    raise RuntimeError(f"No chunks were extracted and stored from PDF (0/{total})")
+                else:
+                    raise RuntimeError("No content extracted from PDF")
         
         # Fallback for unexpected result format
         raise RuntimeError(f"Unexpected result format from import_pdf: {type(result)}")
     
     except ValueError as e:
         logger.warning(f"PDF validation error: {e}")
+        # Clean up file on validation error
+        if file_path and file_path.exists():
+            cleanup_temp_file(file_path)
         raise
     except Exception as e:
         logger.exception(f"Error importing PDF: {e}")
-        raise RuntimeError(f"Failed to import PDF: {str(e)}")
-    finally:
-        # 6. Cleanup temp file
-        if file_path:
+        # Clean up file on import error
+        if file_path and file_path.exists():
             cleanup_temp_file(file_path)
+        raise RuntimeError(f"Failed to import PDF: {str(e)}")
+    # NOTE: Do NOT clean up file_path on success - we need to keep it for serving PDFs later
 
 
 # =========================
@@ -738,6 +752,7 @@ def import_pdf_service(
 # =========================
 def import_youtube_service(
     youtube_url: str,
+    title: str,
     topic: str,
     level: str,
     concept_id: Optional[int] = None,
@@ -754,6 +769,7 @@ def import_youtube_service(
     
     Args:
         youtube_url: Full YouTube URL (https://www.youtube.com/watch?v=...)
+        title: Resource title (user-provided)
         topic: Topic category
         level: Bloom level
         concept_id: Optional concept association
@@ -798,6 +814,7 @@ def import_youtube_service(
         # 2. Import via youtube_importer service
         result = import_youtube(
             youtube_url=youtube_url,
+            title=title,
             topic=topic,
             level=level,
             concept_id=concept_id,

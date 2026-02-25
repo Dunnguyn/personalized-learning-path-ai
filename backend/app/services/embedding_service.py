@@ -21,6 +21,23 @@ USE_EXTERNAL_EMBEDDING = os.getenv("USE_EXTERNAL_EMBEDDING", "false").lower() ==
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "")  # e.g. "gemini" or "openai" (not implemented)
 EMBEDDING_CACHE_SIZE = int(os.getenv("EMBEDDING_CACHE_SIZE", "1024"))
 
+# Optional ChromaDB persistence
+CHROMA_AVAILABLE = False
+CHROMA_PATH = os.getenv("CHROMA_PATH", "backend/.chroma")
+CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "learning_resources")
+_chroma_collection = None
+
+try:
+    import importlib
+
+    chromadb = importlib.import_module("chromadb")
+    _chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+    _chroma_collection = _chroma_client.get_or_create_collection(name=CHROMA_COLLECTION)
+    CHROMA_AVAILABLE = True
+    logger.info("ChromaDB enabled: %s", CHROMA_COLLECTION)
+except Exception as e:
+    logger.warning("ChromaDB not available: %s", e)
+
 # ==================================================
 # VECTOR UTILS
 # ==================================================
@@ -105,20 +122,29 @@ def store_resource(
     concept_id: Optional[int] = None,
     url: Optional[str] = None,
     pedagogy_type: Optional[str] = None,
-    bloom_level: Optional[str] = None
+    bloom_level: Optional[str] = None,
+    thumbnail: Optional[str] = None,
+    pdf_file_path: Optional[str] = None
 ) -> Dict:
     """
     Store learning resource with embedding and minimal metadata.
     Returns the stored document with `resource_id` as string.
+    
+    Parameters:
+    -----------
+    thumbnail : str, optional
+        Base64-encoded thumbnail image for PDFs (data:image/png;base64,...)
+    pdf_file_path : str, optional
+        File path to the original PDF file for serving via download endpoint
     """
     db = get_db()
     if content is None:
         content = title or ""
-
+    
     try:
         vector = embed_text(content)
+        
         if len(vector) != EMBEDDING_DIM:
-            logger.warning("Generated embedding length != EMBEDDING_DIM; padding/cropping applied")
             # pad or crop
             vec = np.array(vector)
             if vec.size < EMBEDDING_DIM:
@@ -142,19 +168,210 @@ def store_resource(
         "url": url,
         "pedagogy_type": pedagogy_type,
         "bloom_level": bloom_level,
+        "thumbnail": thumbnail,
+        "pdf_file_path": pdf_file_path,
         "created_at": datetime.utcnow()
     }
 
     try:
         result = db.resources.insert_one(doc)
         resource_id = str(result.inserted_id)
+        
         doc["resource_id"] = resource_id
         doc["_id"] = resource_id
-        logger.info("Stored resource: %s (topic=%s, level=%s)", title, topic, level)
+
+        if CHROMA_AVAILABLE and _chroma_collection is not None:
+            try:
+                _chroma_collection.add(
+                    ids=[resource_id],
+                    embeddings=[vector],
+                    documents=[content],
+                    metadatas=[{
+                        "title": title,
+                        "topic": topic,
+                        "level": level,
+                        "source": source,
+                        "url": url or ""
+                    }]
+                )
+            except Exception as e:
+                logger.warning("ChromaDB add failed: %s", e)
+
         return doc
     except Exception as e:
         logger.exception("Failed to insert resource into DB: %s", e)
         raise
+
+
+def store_embedding_only(
+    content: str,
+    parent_resource_id: str,
+    chunk_index: int,
+    topic: str,
+    level: str = "beginner",
+    metadata: Optional[Dict] = None
+) -> str:
+    """
+    Store chunk embedding only (for search), without creating a visible resource.
+    Used for PDF chunks where we want 1 visible resource but many searchable chunks.
+    
+    Returns embedding_id as string.
+    """
+    db = get_db()
+    
+    try:
+        vector = embed_text(content)
+        
+        if len(vector) != EMBEDDING_DIM:
+            vec = np.array(vector)
+            if vec.size < EMBEDDING_DIM:
+                pad = np.zeros(EMBEDDING_DIM - vec.size)
+                vec = np.concatenate([vec, pad])
+            else:
+                vec = vec[:EMBEDDING_DIM]
+            vector = vec.tolist()
+    except Exception as e:
+        logger.exception("Error generating embedding: %s", e)
+        vector = [0.0] * EMBEDDING_DIM
+    
+    doc = {
+        "parent_resource_id": parent_resource_id,
+        "chunk_index": chunk_index,
+        "content": content,
+        "topic": topic,
+        "level": level,
+        "embedding": vector,
+        "metadata": metadata or {},
+        "created_at": datetime.utcnow()
+    }
+    
+    try:
+        result = db.embeddings.insert_one(doc)
+        embedding_id = str(result.inserted_id)
+        
+        # Also add to ChromaDB if available
+        if CHROMA_AVAILABLE and _chroma_collection is not None:
+            try:
+                _chroma_collection.add(
+                    ids=[embedding_id],
+                    embeddings=[vector],
+                    documents=[content],
+                    metadatas=[{
+                        "parent_resource_id": parent_resource_id,
+                        "chunk_index": str(chunk_index),
+                        "topic": topic,
+                        "level": level
+                    }]
+                )
+            except Exception as e:
+                logger.warning("ChromaDB add failed: %s", e)
+        
+        return embedding_id
+    except Exception as e:
+        logger.exception("Error storing embedding: %s", e)
+        raise
+
+
+def store_resources_batch(resources: List[Dict]) -> Dict[str, int]:
+    """
+    Store multiple resources in a single batch operation (much faster).
+    
+    Args:
+        resources: List of dicts with keys: title, content, topic, level, source, etc.
+        
+    Returns:
+        Dict with inserted_count and failed_count
+    """
+    if not resources:
+        return {"inserted_count": 0, "failed_count": 0}
+    
+    db = get_db()
+    docs_to_insert = []
+    chroma_data = {"ids": [], "embeddings": [], "documents": [], "metadatas": []}
+    
+    logger.info(f"Batch processing {len(resources)} resources for storage")
+    
+    # Prepare all documents
+    for idx, res in enumerate(resources):
+        try:
+            content = res.get("content") or res.get("title") or ""
+            
+            # Generate embedding
+            vector = embed_text(content)
+            if len(vector) != EMBEDDING_DIM:
+                vec = np.array(vector)
+                if vec.size < EMBEDDING_DIM:
+                    pad = np.zeros(EMBEDDING_DIM - vec.size)
+                    vec = np.concatenate([vec, pad])
+                else:
+                    vec = vec[:EMBEDDING_DIM]
+                vector = vec.tolist()
+            
+            doc = {
+                "title": res.get("title", ""),
+                "content": content,
+                "topic": res.get("topic", ""),
+                "level": res.get("level", "beginner"),
+                "source": res.get("source", "pdf"),
+                "embedding": vector,
+                "concept_id": res.get("concept_id"),
+                "url": res.get("url"),
+                "pedagogy_type": res.get("pedagogy_type"),
+                "bloom_level": res.get("bloom_level"),
+                "created_at": datetime.utcnow()
+            }
+            
+            docs_to_insert.append(doc)
+            
+            if idx % 20 == 0 and idx > 0:
+                logger.info(f"  Prepared {idx}/{len(resources)} documents...")
+                
+        except Exception as e:
+            logger.warning(f"Error preparing resource {idx}: {e}")
+            continue
+    
+    if not docs_to_insert:
+        return {"inserted_count": 0, "failed_count": len(resources)}
+    
+    # Batch insert into MongoDB
+    try:
+        logger.info(f"Inserting {len(docs_to_insert)} documents into MongoDB...")
+        result = db.resources.insert_many(docs_to_insert, ordered=False)
+        inserted_ids = result.inserted_ids
+        logger.info(f"✅ Batch insert successful: {len(inserted_ids)} documents")
+        
+        # Prepare ChromaDB data if available
+        if CHROMA_AVAILABLE and _chroma_collection is not None:
+            try:
+                for doc, doc_id in zip(docs_to_insert, inserted_ids):
+                    chroma_data["ids"].append(str(doc_id))
+                    chroma_data["embeddings"].append(doc["embedding"])
+                    chroma_data["documents"].append(doc["content"])
+                    chroma_data["metadatas"].append({
+                        "title": doc["title"],
+                        "topic": doc["topic"],
+                        "level": doc["level"],
+                        "source": doc["source"],
+                        "url": doc.get("url") or ""
+                    })
+                
+                logger.info(f"Adding {len(chroma_data['ids'])} documents to ChromaDB...")
+                _chroma_collection.add(**chroma_data)
+                logger.info(f"✅ ChromaDB batch add successful")
+            except Exception as e:
+                logger.warning(f"ChromaDB batch add failed: {e}")
+        
+        return {
+            "inserted_count": len(inserted_ids),
+            "failed_count": len(resources) - len(docs_to_insert)
+        }
+        
+    except Exception as e:
+        logger.exception(f"Batch insert failed: {e}")
+        return {
+            "inserted_count": 0,
+            "failed_count": len(resources)
+        }
 
 
 # ==================================================
@@ -171,7 +388,8 @@ def semantic_search(
     Semantic search using cosine similarity.
 
     - Embed query
-    - Fetch candidate documents (filtered by topic/level)
+    - Search in BOTH resources collection AND embeddings collection (chunks)
+    - For chunks, fetch parent_resource and deduplicate
     - Compute similarity and return top-k with score >= min_score
     """
     db = get_db()
@@ -186,6 +404,9 @@ def semantic_search(
         db.resources.create_index([("topic", 1)])
         db.resources.create_index([("level", 1)])
         db.resources.create_index([("created_at", -1)])
+        db.embeddings.create_index([("parent_resource_id", 1)])
+        db.embeddings.create_index([("topic", 1)])
+        db.embeddings.create_index([("level", 1)])
     except Exception:
         # indexes may already exist or user may lack permission
         pass
@@ -200,6 +421,10 @@ def semantic_search(
     # Limit candidate scan to k * factor to reduce cost
     candidate_limit = max(k * 10, 50)
 
+    # Track best score per resource_id for deduplication
+    resource_scores = {}  # resource_id -> {score, doc}
+
+    # 1. SEARCH IN RESOURCES COLLECTION
     try:
         cursor = db.resources.find(
             mongo_filter,
@@ -214,40 +439,98 @@ def semantic_search(
                 "bloom_level": 1,
                 "concept_id": 1,
                 "url": 1,
-                "created_at": 1
+                "created_at": 1,
+                "thumbnail": 1,
+                "pdf_file_path": 1
             }
         ).limit(candidate_limit)
-    except Exception as e:
-        logger.exception("DB query failed in semantic_search: %s", e)
-        return []
-
-    results = []
-    for doc in cursor:
-        emb = doc.get("embedding") or []
-        try:
-            emb_arr = np.array(emb, dtype=float)
-            if emb_arr.size != EMBEDDING_DIM:
-                logger.debug("Skipping doc with incompatible embedding size: %s", doc.get("_id"))
+        
+        for doc in cursor:
+            emb = doc.get("embedding") or []
+            try:
+                emb_arr = np.array(emb, dtype=float)
+                if emb_arr.size != EMBEDDING_DIM:
+                    continue
+                score = cosine_similarity(query_vec, emb_arr)
+                if score >= min_score:
+                    resource_id = str(doc.get("_id") or doc.get("resource_id"))
+                    if resource_id not in resource_scores or score > resource_scores[resource_id]["score"]:
+                        resource_scores[resource_id] = {
+                            "score": score,
+                            "doc": doc
+                        }
+            except Exception as e:
+                logger.debug("Error scoring resource doc %s: %s", doc.get("_id"), e)
                 continue
-            score = cosine_similarity(query_vec, emb_arr)
-            if score >= min_score:
-                results.append({
-                    "resource_id": str(doc.get("_id") or doc.get("resource_id")),
-                    "title": doc.get("title"),
-                    "snippet": (doc.get("content") or "")[:300],
-                    "topic": doc.get("topic"),
-                    "level": doc.get("level"),
-                    "source": doc.get("source"),
-                    "pedagogy_type": doc.get("pedagogy_type"),
-                    "bloom_level": doc.get("bloom_level"),
-                    "concept_id": doc.get("concept_id"),
-                    "url": doc.get("url"),
-                    "score": round(float(score), 4),
-                    "created_at": doc.get("created_at")
-                })
-        except Exception as e:
-            logger.debug("Error scoring doc %s: %s", doc.get("_id"), e)
-            continue
+    except Exception as e:
+        logger.exception("DB query failed in semantic_search (resources): %s", e)
+
+    # 2. SEARCH IN EMBEDDINGS COLLECTION (CHUNKS)
+    try:
+        embedding_cursor = db.embeddings.find(
+            mongo_filter,
+            {
+                "embedding": 1,
+                "parent_resource_id": 1,
+                "content": 1,
+                "chunk_index": 1
+            }
+        ).limit(candidate_limit * 2)  # More candidates since chunks are smaller
+        
+        for doc in embedding_cursor:
+            emb = doc.get("embedding") or []
+            try:
+                emb_arr = np.array(emb, dtype=float)
+                if emb_arr.size != EMBEDDING_DIM:
+                    continue
+                score = cosine_similarity(query_vec, emb_arr)
+                if score >= min_score:
+                    parent_id = doc.get("parent_resource_id")
+                    if not parent_id:
+                        continue
+                    
+                    # Fetch parent resource if not already in results or if this chunk has better score
+                    if parent_id not in resource_scores or score > resource_scores[parent_id]["score"]:
+                        # Fetch full resource document
+                        try:
+                            from bson import ObjectId
+                            parent_doc = db.resources.find_one({"_id": ObjectId(parent_id)})
+                            if parent_doc:
+                                resource_scores[parent_id] = {
+                                    "score": score,
+                                    "doc": parent_doc,
+                                    "matched_chunk": doc.get("chunk_index", 0)
+                                }
+                        except Exception as e:
+                            logger.debug(f"Error fetching parent resource {parent_id}: {e}")
+                            continue
+            except Exception as e:
+                logger.debug("Error scoring embedding doc %s: %s", doc.get("_id"), e)
+                continue
+    except Exception as e:
+        logger.exception("DB query failed in semantic_search (embeddings): %s", e)
+
+    # 3. BUILD RESULTS FROM DEDUPLICATED RESOURCES
+    results = []
+    for resource_id, data in resource_scores.items():
+        doc = data["doc"]
+        score = data["score"]
+        results.append({
+            "resource_id": str(doc.get("_id") or doc.get("resource_id")),
+            "title": doc.get("title"),
+            "snippet": (doc.get("content") or "")[:300],
+            "topic": doc.get("topic"),
+            "level": doc.get("level"),
+            "source": doc.get("source"),
+            "pedagogy_type": doc.get("pedagogy_type"),
+            "bloom_level": doc.get("bloom_level"),
+            "concept_id": doc.get("concept_id"),
+            "url": doc.get("url"),
+            "score": round(float(score), 4),
+            "created_at": doc.get("created_at"),
+            "thumbnail": doc.get("thumbnail"),
+            "pdf_file_path": doc.get("pdf_file_path")
+        })
 
     # sort and return top-k
     results.sort(key=lambda x: x["score"], reverse=True)

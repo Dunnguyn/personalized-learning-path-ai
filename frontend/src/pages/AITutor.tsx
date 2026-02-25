@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../utils/apiClient';
+import { SUBJECTS } from '../utils/subjects';
 
 interface Message {
   id: string;
@@ -66,6 +67,8 @@ export default function AITutor() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [goal, setGoal] = useState('');
+  const [subjectId, setSubjectId] = useState(SUBJECTS[0]?.id ?? '');
+  const [goalDetail, setGoalDetail] = useState('');
   const [level, setLevel] = useState<'beginner' | 'intermediate' | 'advanced'>('beginner');
   const [showGoalInput, setShowGoalInput] = useState(!goal);
   const [currentConcept, setCurrentConcept] = useState<ConceptInfo | null>(null);
@@ -154,14 +157,36 @@ export default function AITutor() {
     setShowHistory(false);
   };
 
+  const buildGoal = (selectedSubjectId: string, detail: string) => {
+    const subject = SUBJECTS.find((item) => item.id === selectedSubjectId);
+    const baseGoal = subject?.goal ?? '';
+    const trimmedDetail = detail.trim();
+
+    if (!baseGoal && !trimmedDetail) {
+      return '';
+    }
+
+    if (!baseGoal) {
+      return trimmedDetail;
+    }
+
+    if (!trimmedDetail) {
+      return baseGoal;
+    }
+
+    return `${baseGoal} - ${trimmedDetail}`;
+  };
+
   const handleStartChat = () => {
-    if (!goal.trim()) {
-      setError('Vui lòng nhập mục tiêu học tập');
+    const nextGoal = buildGoal(subjectId, goalDetail);
+    if (!nextGoal) {
+      setError('Vui lòng chọn môn học');
       return;
     }
+    setGoal(nextGoal);
     setShowGoalInput(false);
     setError(null);
-    addMessage('assistant', `Xin chào! Tôi sẽ giúp bạn học: "${goal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`, null);
+    addMessage('assistant', `Xin chào! Tôi sẽ giúp bạn học: "${nextGoal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`, null);
     loadHistory();
   };
 
@@ -248,11 +273,28 @@ export default function AITutor() {
               <label className="block text-[16px] font-medium text-[#8f1025] mb-3">
                 Mục tiêu học tập của bạn là gì?
               </label>
+              <select
+                value={subjectId}
+                onChange={(e) => setSubjectId(e.target.value)}
+                className="w-full px-4 py-3 border border-[#ce6a86] rounded-[10px] focus:outline-none focus:border-[#8f1025] text-[14px]"
+              >
+                {SUBJECTS.map((subject) => (
+                  <option key={subject.id} value={subject.id}>
+                    {subject.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-[16px] font-medium text-[#8f1025] mb-3">
+                Mục tiêu chi tiết (tùy chọn)
+              </label>
               <input
                 type="text"
-                value={goal}
-                onChange={(e) => setGoal(e.target.value)}
-                placeholder="Ví dụ: Học Python cơ bản, Hiểu về React hooks..."
+                value={goalDetail}
+                onChange={(e) => setGoalDetail(e.target.value)}
+                placeholder="VD: backend, OOP, cấu trúc dữ liệu..."
                 className="w-full px-4 py-3 border border-[#ce6a86] rounded-[10px] focus:outline-none focus:border-[#8f1025] text-[14px]"
                 onKeyPress={(e) => e.key === 'Enter' && handleStartChat()}
               />

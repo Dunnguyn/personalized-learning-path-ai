@@ -432,6 +432,7 @@ def check_duplicate_video(video_id: str, db=None) -> bool:
 def import_youtube(
     youtube_url: str,
     topic: str,
+    title: Optional[str] = None,
     level: str = "beginner",
     concept_id: Optional[int] = None,
     user_id: Optional[int] = None,
@@ -453,6 +454,7 @@ def import_youtube(
     
     Args:
         youtube_url: Full YouTube URL (https://www.youtube.com/watch?v=...)
+        title: Optional user-provided title
         topic: Topic category (e.g., "python", "machine learning")
         level: Bloom level (beginner/intermediate/advanced)
         concept_id: Optional concept to associate (auto-mapped if not provided)
@@ -502,6 +504,7 @@ def import_youtube(
         
         # 3️⃣ FETCH METADATA
         metadata = _fetch_video_metadata(video_id, youtube_url)
+        display_title = title.strip() if title and title.strip() else metadata["title"]
         
         # 4️⃣ AUTO-MAP CONCEPT IF NEEDED
         if concept_id is None:
@@ -516,7 +519,7 @@ def import_youtube(
             logger.warning(f"No usable transcript for {video_id} — saving metadata only")
             
             doc = db.resources.insert_one({
-                "title": metadata["title"],
+                "title": display_title,
                 "topic": topic.strip().lower(),
                 "concept_id": concept_id,
                 "level": level,
@@ -538,7 +541,7 @@ def import_youtube(
             return {
                 "success": True,
                 "video_id": video_id,
-                "title": metadata["title"],
+                "title": display_title,
                 "metadata": metadata,
                 "transcript_available": False,
                 "transcript_language": None,
@@ -572,7 +575,7 @@ def import_youtube(
                 
                 # Create document
                 doc = {
-                    "title": metadata["title"],
+                    "title": display_title,
                     "content": chunk,
                     "topic": topic.strip().lower(),
                     "concept_id": concept_id,
@@ -613,7 +616,7 @@ def import_youtube(
         return {
             "success": True,
             "video_id": video_id,
-            "title": metadata["title"],
+            "title": display_title,
             "metadata": metadata,
             "transcript_available": True,
             "transcript_language": transcript_lang,
@@ -684,6 +687,7 @@ def import_youtube_batch(
         try:
             result = import_youtube(
                 youtube_url=video.get("youtube_url"),
+                title=video.get("title"),
                 topic=video.get("topic", "general"),
                 level=video.get("level", "beginner"),
                 concept_id=video.get("concept_id"),

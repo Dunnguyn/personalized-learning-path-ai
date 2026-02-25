@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import PDFViewer from '../components/PDFViewer';
 import { resourceService } from '../services/resourceService';
 import type { Resource, SearchResponse } from '../services/resourceService';
 
 export default function Resources() {
   const [searchParams] = useSearchParams();
   const conceptIdParam = searchParams.get('concept');
+  const queryParam = searchParams.get('q');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [resources, setResources] = useState<Resource[]>([]);
@@ -29,9 +31,28 @@ export default function Resources() {
   const [uploadingPDF, setUploadingPDF] = useState(false);
   const [addingResource, setAddingResource] = useState(false);
 
+  // Video player state
+  const [playingVideo, setPlayingVideo] = useState<{
+    videoId: string;
+    title: string;
+  } | null>(null);
+
+  // PDF viewer state
+  const [viewingPDF, setViewingPDF] = useState<{
+    title: string;
+    resourceId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (queryParam) {
+      setSearchQuery(queryParam);
+      setCurrentPage(1);
+    }
+  }, [queryParam]);
+
   useEffect(() => {
     fetchResources();
-  }, [currentPage, filters]);
+  }, [currentPage, filters, searchQuery, conceptIdParam]);
 
   const fetchResources = async () => {
     try {
@@ -170,23 +191,64 @@ export default function Resources() {
 
   const totalPages = Math.ceil(totalResults / pageSize);
 
-  const getSourceIcon = (source: string) => {
-    switch (source) {
-      case 'youtube':
-        return '▶️';
-      case 'pdf':
-        return '📄';
-      case 'web':
-        return '🌐';
-      default:
-        return '📚';
+  // Helper function to extract YouTube video ID
+  const extractVideoId = (resource: Resource): string | null => {
+    // Try to get from video_id field first
+    if (resource.video_id) {
+      return resource.video_id;
+    }
+
+    // Try to extract from youtube_url or url
+    const url = resource.youtube_url || resource.url;
+    if (!url) return null;
+
+    const urlPatterns = [
+      /(?:youtube\.com\/watch\?v=)([^&]+)/,
+      /(?:youtu\.be\/)([^?]+)/,
+      /(?:youtube\.com\/embed\/)([^?]+)/,
+    ];
+
+    for (const pattern of urlPatterns) {
+      const match = url.match(pattern);
+      if (match && match[1]) {
+        return match[1];
+      }
+    }
+
+    return null;
+  };
+
+  // Helper function to get YouTube thumbnail URL
+  const getYouTubeThumbnail = (resource: Resource): string | null => {
+    // Try to get from metadata first
+    if (resource.video_metadata?.thumbnail_url) {
+      return resource.video_metadata.thumbnail_url;
+    }
+
+    // Fallback: use extractVideoId helper
+    const videoId = extractVideoId(resource);
+    if (videoId) {
+      return `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+    }
+
+    return null;
+  };
+
+  // Handle click on YouTube thumbnail to play video
+  const handlePlayVideo = (resource: Resource) => {
+    const videoId = extractVideoId(resource);
+    if (videoId) {
+      setPlayingVideo({
+        videoId,
+        title: resource.title,
+      });
     }
   };
 
   const getLevelColor = (level: string) => {
     switch (level) {
       case 'beginner':
-        return 'bg-green-100 text-green-800';
+        return 'bg-[#16a34a] text-white';
       case 'intermediate':
         return 'bg-yellow-100 text-yellow-800';
       case 'advanced':
@@ -449,60 +511,111 @@ export default function Resources() {
               {resources.map((resource) => (
                 <div
                   key={resource.resource_id}
-                  className="bg-white border border-[#ce6a86] rounded-[16px] p-[20px] hover:shadow-lg transition-all"
+                  className="bg-white border border-[#832e44] rounded-[5px] hover:shadow-lg transition-all overflow-hidden"
                 >
                   {/* Header */}
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex-1">
-                      <h3 className="text-[14px] font-semibold text-[#8f1025] line-clamp-2">
-                        {resource.title}
-                      </h3>
+                  <div className="p-[13px]">
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex-1">
+                        <h3 className="text-[18px] font-semibold text-[#5b1724] line-clamp-1">
+                          {resource.title}
+                        </h3>
+                      </div>
+                      <span
+                        className={`text-[10px] font-normal px-2.5 py-0.5 rounded-full ml-2 ${getLevelColor(
+                          resource.level
+                        )}`}
+                      >
+                        {resource.level === 'beginner'
+                          ? 'Beginner'
+                          : resource.level === 'intermediate'
+                          ? 'Intermediate'
+                          : 'Advanced'}
+                      </span>
                     </div>
-                    <span className="text-[20px] ml-2">{getSourceIcon(resource.source)}</span>
+
+                    {/* Source Label */}
+                    <p className="text-[12px] text-[#5b1724] mb-3">
+                      Nguồn: {resource.source === 'pdf' ? 'PDF' : resource.source === 'youtube' ? 'Youtube' : 'Link Web'}
+                    </p>
                   </div>
 
-                  {/* Topic & Level */}
-                  <div className="flex flex-wrap gap-2 mb-3">
-                    <span className="text-[11px] bg-gray-100 text-[#8f1025] px-2 py-1 rounded-full">
-                      {resource.topic}
-                    </span>
-                    <span
-                      className={`text-[11px] font-medium px-2 py-1 rounded-full ${getLevelColor(
-                        resource.level
-                      )}`}
-                    >
-                      {resource.level === 'beginner'
-                        ? 'Cơ bản'
-                        : resource.level === 'intermediate'
-                        ? 'Trung bình'
-                        : 'Nâng cao'}
-                    </span>
+                  {/* Preview Area */}
+                  <div className="bg-[#fafafa] h-[309px] flex items-center justify-center shadow-[0px_0px_4px_0px_rgba(0,0,0,0.25)] mx-[13px] mb-[13px]">
+                    {resource.source === 'youtube' ? (
+                      (() => {
+                        const thumbnailUrl = getYouTubeThumbnail(resource);
+                        return thumbnailUrl ? (
+                          <div 
+                            className="relative w-full h-full cursor-pointer group"
+                            onClick={() => handlePlayVideo(resource)}
+                          >
+                            <img
+                              src={thumbnailUrl}
+                              alt={resource.title}
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                // Fallback if thumbnail fails to load
+                                e.currentTarget.style.display = 'none';
+                                e.currentTarget.parentElement!.innerHTML = '<p class="text-[10px] text-black text-center px-4">Thumbnail clip Youtube</p>';
+                              }}
+                            />
+                            {/* Play button overlay */}
+                            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-0 group-hover:bg-opacity-30 transition-all">
+                              <div className="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center transform group-hover:scale-110 transition-transform opacity-80 group-hover:opacity-100">
+                                <svg className="w-8 h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M8 5v14l11-7z" />
+                                </svg>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-[10px] text-black text-center px-4">
+                            Thumbnail clip Youtube
+                          </p>
+                        );
+                      })()
+                    ) : resource.source === 'pdf' ? (
+                      <div 
+                        className="relative w-full h-full cursor-pointer group"
+                        onClick={() => {
+                          const resourceId = resource.resource_id || resource._id || resource.id || '';
+                          if (!resourceId) {
+                            setError('Khong tim thay ID tai nguyen PDF');
+                            return;
+                          }
+                          setViewingPDF({ title: resource.title, resourceId });
+                        }}
+                      >
+                        {resource.thumbnail ? (
+                          <img
+                            src={resource.thumbnail}
+                            alt={resource.title}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                              e.currentTarget.parentElement!.innerHTML = '<p class="text-[10px] text-gray-600 text-center px-4 flex items-center justify-center h-full">📄 PDF không có preview</p>';
+                            }}
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-gray-100 flex items-center justify-center text-center px-4">
+                            <p className="text-[10px] text-gray-600">📄 PDF</p>
+                          </div>
+                        )}
+                        {/* Hover overlay */}
+                        <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-all flex items-center justify-center">
+                          <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-white rounded-full p-3">
+                            <svg className="w-6 h-6 text-[#8f1025]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="w-full h-full" />
+                    )}
                   </div>
-
-                  {/* Snippet */}
-                  {resource.snippet && (
-                    <p className="text-[12px] text-gray-600 line-clamp-2 mb-3">{resource.snippet}</p>
-                  )}
-
-                  {/* Score */}
-                  {resource.score && (
-                    <div className="text-[12px] text-gray-500 mb-3">
-                      📊 Điểm liên quan: {(resource.score * 100).toFixed(0)}%
-                    </div>
-                  )}
-
-                  {/* Source Link */}
-                  {resource.url && (
-                    <a
-                      href={resource.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="inline-block text-[12px] text-[#8f1025] font-medium hover:underline mt-2"
-                    >
-                      🔗 Xem tài nguyên
-                    </a>
-                  )}
                 </div>
               ))}
             </div>
@@ -550,6 +663,55 @@ export default function Resources() {
           </div>
         )}
       </div>
+
+      {/* Video Player Modal */}
+      {playingVideo && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"
+          onClick={() => setPlayingVideo(null)}
+        >
+          <div 
+            className="bg-white rounded-[20px] overflow-hidden max-w-4xl w-full shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="bg-[#8f1025] px-6 py-4 flex items-center justify-between">
+              <h3 className="text-white font-semibold text-[16px] flex-1 pr-4 line-clamp-1">
+                {playingVideo.title}
+              </h3>
+              <button
+                onClick={() => setPlayingVideo(null)}
+                className="text-white hover:bg-[#7a0e20] rounded-full p-2 transition-colors flex-shrink-0"
+                aria-label="Đóng"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Video Player */}
+            <div className="relative w-full" style={{ paddingBottom: '56.25%' /* 16:9 aspect ratio */ }}>
+              <iframe
+                className="absolute inset-0 w-full h-full"
+                src={`https://www.youtube.com/embed/${playingVideo.videoId}?autoplay=1`}
+                title={playingVideo.title}
+                frameBorder="0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PDF Viewer Modal */}
+      <PDFViewer 
+        isOpen={!!viewingPDF}
+        title={viewingPDF?.title || ''}
+        resourceId={viewingPDF?.resourceId || ''}
+        onClose={() => setViewingPDF(null)}
+      />
     </DashboardLayout>
   );
 }

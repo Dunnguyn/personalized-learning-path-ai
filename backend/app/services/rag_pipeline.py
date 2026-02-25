@@ -382,21 +382,21 @@ class RAGPipeline:
 
         try:
             logger.debug(f"LLM call attempt {retry_count + 1}/{MAX_RETRIES + 1}: model={PRIMARY_MODEL}")
-            
-            # Try preferred method
-            try:
+
+            response = None
+
+            # Preferred: Gemini SDK (genai.Client)
+            if hasattr(client, "models") and hasattr(client.models, "generate_content"):
                 response = client.models.generate_content(
                     model=PRIMARY_MODEL,
                     contents=prompt
                 )
-            except Exception as e:
-                logger.debug(f"generate_content failed: {e} — trying fallback")
-                
-                # Try alternative methods
-                try:
-                    response = client.generate(model=PRIMARY_MODEL, prompt=prompt)
-                except Exception:
-                    response = client.responses.create(model=PRIMARY_MODEL, input=prompt)
+            elif hasattr(client, "generate"):
+                response = client.generate(model=PRIMARY_MODEL, prompt=prompt)
+            elif hasattr(client, "responses") and hasattr(client.responses, "create"):
+                response = client.responses.create(model=PRIMARY_MODEL, input=prompt)
+            else:
+                raise AttributeError("No supported Gemini client method found")
 
             # Extract text
             text = self._extract_text_from_response(response)

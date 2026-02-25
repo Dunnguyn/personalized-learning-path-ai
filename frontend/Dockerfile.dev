@@ -1,0 +1,22 @@
+# Dockerfile for Frontend Development
+# This is for development with hot reload
+# For production, use: npm run build && serve dist/
+
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy application code
+COPY . .
+
+# Expose Vite dev server port
+EXPOSE 5173
+
+# Start dev server
+CMD ["npm", "run", "dev", "--host", "0.0.0.0"]

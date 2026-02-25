@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Literal
 from datetime import datetime
 from enum import Enum
 
@@ -192,6 +192,19 @@ class LearningPathItemResponse(BaseModel):
     resources: list = Field(default_factory=list)
 
 
+class LessonResponse(BaseModel):
+    lesson_id: str
+    title: str
+    summary: str
+    resources: list = Field(default_factory=list)
+    status: Optional[str] = None
+
+
+class ChapterResponse(BaseModel):
+    title: str
+    lessons: List[LessonResponse]
+
+
 class LearningPathResponse(BaseModel):
     path_id: str = Field(..., description="UUID")
     user_id: str = Field(..., description="MongoDB ObjectId")
@@ -199,7 +212,21 @@ class LearningPathResponse(BaseModel):
     level: LevelEnum
     generated_at: datetime
     recommended_path: List[LearningPathItemResponse]
+    curriculum: Optional[List[ChapterResponse]] = None
     message: str = ""
+
+
+class LessonProgressUpdate(BaseModel):
+    path_id: str = Field(..., description="Learning path UUID")
+    lesson_id: str = Field(..., description="Lesson identifier")
+    status: Literal["not_started", "in_progress", "complete"]
+
+
+class LessonProgressResponse(BaseModel):
+    path_id: str
+    lesson_id: str
+    status: str
+    updated_at: datetime
 
 
 # =========================

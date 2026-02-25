@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { learningPathService } from '../services/learningPathService';
+import { SUBJECTS } from '../utils/subjects';
 import type { ConceptNode, LearningPath } from '../services/learningPathService';
 
 interface ConceptWithProgress extends ConceptNode {
@@ -19,9 +20,33 @@ export default function LearningPath() {
   const [error, setError] = useState<string | null>(null);
   const [selectedConcept, setSelectedConcept] = useState<ConceptWithProgress | null>(null);
   const [showCreatePath, setShowCreatePath] = useState(false);
-  const [pathForm, setPathForm] = useState({ goal: '', level: 'beginner' as const });
+  const [pathForm, setPathForm] = useState({
+    subjectId: SUBJECTS[0]?.id ?? '',
+    goalDetail: '',
+    level: 'beginner' as const,
+  });
   const [generatingPath, setGeneratingPath] = useState(false);
   const [currentPath, setCurrentPath] = useState<LearningPath | null>(null);
+
+  const buildGoal = (subjectId: string, goalDetail: string) => {
+    const subject = SUBJECTS.find((item) => item.id === subjectId);
+    const baseGoal = subject?.goal ?? '';
+    const detail = goalDetail.trim();
+
+    if (!baseGoal && !detail) {
+      return '';
+    }
+
+    if (!baseGoal) {
+      return detail;
+    }
+
+    if (!detail) {
+      return baseGoal;
+    }
+
+    return `${baseGoal} - ${detail}`;
+  };
 
   useEffect(() => {
     if (!user) {
@@ -75,8 +100,9 @@ export default function LearningPath() {
 
   const handleGeneratePath = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !pathForm.goal.trim()) {
-      setError('Please enter a learning goal');
+    const goal = buildGoal(pathForm.subjectId, pathForm.goalDetail);
+    if (!user || !goal) {
+      setError('Vui lòng chọn môn học');
       return;
     }
 
@@ -86,7 +112,7 @@ export default function LearningPath() {
     try {
       const result = await learningPathService.generateLearningPath({
         user_id: user.user_id,
-        goal: pathForm.goal,
+        goal: goal,
         level: pathForm.level,
       });
 
@@ -100,7 +126,12 @@ export default function LearningPath() {
       
       setConcepts(updatedConcepts);
       setShowCreatePath(false);
-      setPathForm({ goal: '', level: 'beginner' });
+      setPathForm({
+        subjectId: SUBJECTS[0]?.id ?? '',
+        goalDetail: '',
+        level: 'beginner',
+      });
+      navigate(`/learning-path/${result.path_id}`, { state: { path: result } });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error generating learning path';
       setError(message);
@@ -251,15 +282,32 @@ export default function LearningPath() {
             <form onSubmit={handleGeneratePath} className="space-y-5">
               <div>
                 <label className="block text-[14px] font-medium text-[#8f1025] mb-2">
-                  Chủ đề / Mục tiêu
+                  Môn học
+                </label>
+                <select
+                  value={pathForm.subjectId}
+                  onChange={(e) => setPathForm({ ...pathForm, subjectId: e.target.value })}
+                  className="w-full px-4 py-2 border border-[#e4b6d0] rounded-[10px] text-[14px] focus:outline-none focus:ring-2 focus:ring-[#8f1025]"
+                  required
+                >
+                  {SUBJECTS.map((subject) => (
+                    <option key={subject.id} value={subject.id}>
+                      {subject.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[14px] font-medium text-[#8f1025] mb-2">
+                  Mục tiêu chi tiết (tùy chọn)
                 </label>
                 <input
                   type="text"
-                  value={pathForm.goal}
-                  onChange={(e) => setPathForm({ ...pathForm, goal: e.target.value })}
-                  placeholder="VD: Master Python Backend Development"
+                  value={pathForm.goalDetail}
+                  onChange={(e) => setPathForm({ ...pathForm, goalDetail: e.target.value })}
+                  placeholder="VD: backend, OOP, cấu trúc dữ liệu..."
                   className="w-full px-4 py-2 border border-[#e4b6d0] rounded-[10px] text-[14px] focus:outline-none focus:ring-2 focus:ring-[#8f1025]"
-                  required
                 />
               </div>
 

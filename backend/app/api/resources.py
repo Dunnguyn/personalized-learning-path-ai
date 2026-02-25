@@ -6,11 +6,13 @@ from fastapi import (
     Query,
     Depends,
     HTTPException,
-    status
+    status,
 )
+from fastapi.responses import FileResponse
 from typing import Optional, List, Dict
 from datetime import datetime
 import logging
+from pathlib import Path
 
 from backend.app.api.schemas import (
     ResourceCreate,
@@ -36,7 +38,7 @@ logger = logging.getLogger(__name__)
 # =========================
 # CONFIG
 # =========================
-MAX_PDF_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_PDF_SIZE = 30 * 1024 * 1024  # 30MB
 MAX_YOUTUBE_TIMEOUT = 30  # seconds
 SEARCH_DEFAULT_PAGE_SIZE = 10
 SEARCH_MAX_PAGE_SIZE = 100
@@ -314,7 +316,7 @@ def search_resources(
     summary="Import learning materials from PDF"
 )
 def import_pdf_resource(
-    file: UploadFile = File(..., description="PDF file (max 10MB)"),
+    file: UploadFile = File(..., description="PDF file (max 30MB)"),
     topic: str = Form(..., min_length=1, max_length=100, description="Learning topic"),
     level: LevelEnum = Form(LevelEnum.beginner, description="Difficulty level"),
     concept_id: Optional[int] = Form(None, description="Associated concept ID"),
@@ -434,6 +436,7 @@ def import_youtube_resource(
     try:
         result = import_youtube_service(
             youtube_url=request.url,
+            title=request.title,
             topic=request.topic,
             level=enum_to_string(request.level),
             concept_id=request.concept_id
@@ -464,4 +467,118 @@ def import_youtube_resource(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Could not import YouTube video: {str(e)[:100]}"
+        )
+
+
+# =========================
+# SERVE PDF FILE
+# =========================
+@router.get(
+    "/pdf/{resource_id}",
+    summary="Download PDF file"
+)
+def download_pdf(resource_id: str):
+    """
+    Serve a PDF file for viewing/downloading.
+    
+    Parameters:
+    - resource_id: MongoDB resource ID
+    
+    Returns:
+    - PDF file as attachment
+    """
+    try:
+        from backend.app.database.mongo import db
+        from bson import ObjectId
+        
+        logger.info(f"PDF request for resource_id: {resource_id}")
+        
+        # Get resource document to find PDF file path
+        try:
+            doc_id = ObjectId(resource_id)
+            logger.info(f"Parsed ObjectId: {doc_id}")
+        except Exception as e:
+            logger.error(f"Invalid ObjectId format: {resource_id}, error: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid resource ID"
+            )
+        
+        resource = db.resources.find_one({"_id": doc_id})
+        if not resource:
+            logger.error(f"Resource not found in database: {resource_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Resource not found: {resource_id}"
+            )
+        
+        logger.info(f"Found resource: {resource.get('title', 'No title')}")
+        
+        logger.info(f"Found resource: {resource.get('title', 'No title')}")
+        
+        pdf_file_path = resource.get("pdf_file_path")
+        logger.info(f"PDF file path from resource: {pdf_file_path}")
+        
+        if not pdf_file_path:
+            # Fallback: try to resolve PDF path from another chunk
+            base_title = (resource.get("title") or "").split(" | Chunk ", 1)[0].strip()
+            logger.info(f"Attempting fallback with base_title: {base_title}")
+            
+            if base_title:
+                alt = db.resources.find_one({
+                    "source": "pdf",
+                    "title": {"$regex": f"^{base_title}\\s*\\|\\s*Chunk", "$options": "i"},
+                    "pdf_file_path": {"$exists": True, "$ne": None}
+                })
+                if alt:
+                    pdf_file_path = alt.get("pdf_file_path")
+                    logger.info(f"Found fallback PDF path: {pdf_file_path}")
+                else:
+                    logger.warning(f"No fallback found for base_title: {base_title}")
+                    
+            if not pdf_file_path:
+                logger.error(f"No PDF file path found for resource {resource_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="PDF file path not found for this resource"
+                )
+        
+        # Verify file exists
+        pdf_path = Path(pdf_file_path)
+        if not pdf_path.exists():
+            logger.error(f"PDF file not found at: {pdf_path}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="PDF file has been deleted or moved"
+            )
+        
+        # Security check: ensure path is within uploads directory
+        uploads_dir = Path("backend/uploads").resolve()
+        try:
+            pdf_path.resolve().relative_to(uploads_dir)
+        except ValueError:
+            logger.warning(f"Path traversal attempt: {pdf_path}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+        
+        logger.info(f"Serving PDF: {pdf_path}, size: {pdf_path.stat().st_size} bytes")
+        return FileResponse(
+            path=pdf_path,
+            media_type="application/pdf",
+            filename=pdf_path.name,
+            headers={
+                "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
+                "Content-Disposition": f"inline; filename=\"{pdf_path.name}\"",  # Display inline in browser
+            }
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error serving PDF: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error serving PDF: {str(e)[:100]}"
         )

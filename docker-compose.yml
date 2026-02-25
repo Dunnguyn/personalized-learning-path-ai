@@ -1,0 +1,143 @@
+version: '3.8'
+
+services:
+  # =========================================================================
+  # MongoDB - NoSQL Database
+  # =========================================================================
+  mongodb:
+    image: mongo:7.0-alpine
+    container_name: learning_path_mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:-mongodb}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-mongodb_password}
+      MONGO_INITDB_DATABASE: learning_path_ai
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - learning_path_network
+    restart: unless-stopped
+
+  # =========================================================================
+  # Redis - Optional Caching Layer
+  # =========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: learning_path_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - learning_path_network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+  # =========================================================================
+  # FastAPI Backend
+  # =========================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: learning_path_backend
+    environment:
+      MONGODB_URI: mongodb://${MONGO_USERNAME:-mongodb}:${MONGO_PASSWORD:-mongodb_password}@mongodb:27017/learning_path_ai
+      DB_NAME: learning_path_ai
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DEBUG: ${DEBUG:-false}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ./backend/uploads:/app/backend/uploads
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - learning_path_network
+    restart: unless-stopped
+    command: python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # =========================================================================
+  # Frontend Development Server (Optional, for Docker)
+  # =========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: learning_path_frontend
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_API_BASE_PATH: ${VITE_API_BASE_PATH:-/api}
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - learning_path_network
+    restart: unless-stopped
+    command: npm run dev -- --host 0.0.0.0
+
+  # =========================================================================
+  # Mongo Express - Optional MongoDB UI (for development only)
+  # =========================================================================
+  mongo-express:
+    image: mongo-express:latest
+    container_name: learning_path_mongo_express
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_USERNAME:-mongodb}:${MONGO_PASSWORD:-mongodb_password}@mongodb:27017/
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_USERNAME:-mongodb}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_PASSWORD:-mongodb_password}
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_EXPRESS_USERNAME:-admin}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_EXPRESS_PASSWORD:-admin}
+    ports:
+      - "8081:8081"
+    depends_on:
+      - mongodb
+    networks:
+      - learning_path_network
+    restart: unless-stopped
+    profiles: ["dev"]  # Only run with --profile dev flag
+
+volumes:
+  mongodb_data:
+    driver: local
+  mongodb_config:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  learning_path_network:
+    driver: bridge
