@@ -196,7 +196,7 @@ export default function LearningPathDetail() {
                     className="bg-white border border-[#ce6a86] rounded-[18px] p-6"
                   >
                     <div className="text-[14px] font-semibold text-[#8f1025] mb-4">
-                      Chương {chapterIndex + 1}: {chapter.title}
+                      {chapterIndex + 1}. {chapter.title}
                     </div>
                     <div className="space-y-3">
                       {chapter.lessons.map((lesson, lessonIndex) => (

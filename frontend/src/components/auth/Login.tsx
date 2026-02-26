@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authService } from '../../services/authService';
-
-const imgElegantSubLogoDesignsForBeautyBrands1 = "https://www.figma.com/api/mcp/asset/07fc363a-2c60-4907-b8d9-9d9bbe95c03e";
-const imgTiXung11 = "https://www.figma.com/api/mcp/asset/929a7953-0bc8-4ffb-8469-c95c81832d07";
+import bunnyLogo from '../../assets/Elegant Sub-Logo Designs for Beauty Brands.jpg';
+import illustrationLearning from '../../assets/tải xuống (1).jpg';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -62,7 +61,7 @@ export default function Login() {
             <img 
               alt="Logo" 
               className="w-full h-full object-cover" 
-              src={imgElegantSubLogoDesignsForBeautyBrands1} 
+              src={bunnyLogo} 
             />
           </div>
 
@@ -155,7 +154,7 @@ export default function Login() {
           <img 
             alt="Learning illustration" 
             className="w-full h-full object-cover" 
-            src={imgTiXung11} 
+            src={illustrationLearning} 
           />
         </div>
       </div>

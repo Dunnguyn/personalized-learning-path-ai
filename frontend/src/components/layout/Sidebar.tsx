@@ -1,11 +1,10 @@
 import { Link, useLocation } from 'react-router-dom';
-
-const imgElegantSubLogoDesignsForBeautyBrands1 = "https://www.figma.com/api/mcp/asset/7c1f6878-c01b-4eb7-98db-5a2b41422c7e";
-const imgActivity1 = "https://www.figma.com/api/mcp/asset/e273ea49-3417-45df-830e-9801e4afa5c4";
-const imgLearningJourney1 = "https://www.figma.com/api/mcp/asset/4042ae65-e400-4452-a714-42432d093524";
-const imgResources1 = "https://www.figma.com/api/mcp/asset/effd77a4-9863-4ad9-9e1a-eaaea6b23d4c";
-const imgAiTutor1 = "https://www.figma.com/api/mcp/asset/9a9808c5-edd2-4697-ad76-d67fb5a00c25";
-const imgSetting1 = "https://www.figma.com/api/mcp/asset/5e6efe65-245b-4ab9-9f0a-f0a0dcc6ee0b";
+import bunnyLogo from '../../assets/Elegant Sub-Logo Designs for Beauty Brands.jpg';
+import iconDashboard from '../../assets/activity.png';
+import iconLearningPath from '../../assets/learning-journey.png';
+import iconResources from '../../assets/resources.png';
+import iconAiTutor from '../../assets/ai-tutor.png';
+import iconSettings from '../../assets/setting.png';
 
 interface NavItem {
   name: string;
@@ -14,10 +13,10 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { name: 'Dashboard', path: '/dashboard', icon: imgActivity1 },
-  { name: 'Learning Path', path: '/learning-path', icon: imgLearningJourney1 },
-  { name: 'Resources', path: '/resources', icon: imgResources1 },
-  { name: 'AI Tutor', path: '/ai-tutor', icon: imgAiTutor1 },
+  { name: 'Dashboard', path: '/dashboard', icon: iconDashboard },
+  { name: 'Learning Path', path: '/learning-path', icon: iconLearningPath },
+  { name: 'Resources', path: '/resources', icon: iconResources },
+  { name: 'AI Tutor', path: '/ai-tutor', icon: iconAiTutor },
 ];
 
 export default function Sidebar() {
@@ -30,7 +29,7 @@ export default function Sidebar() {
         <img
           alt="Bunny Logo"
           className="w-[50px] h-[50px] rounded-full object-cover shadow-sm"
-          src={imgElegantSubLogoDesignsForBeautyBrands1}
+          src={bunnyLogo}
         />
         <p className="font-semibold text-[25px] text-secondary">Bunny</p>
       </div>
@@ -84,7 +83,7 @@ export default function Sidebar() {
             className={`w-[20px] h-[20px] object-cover transition-opacity duration-200 ${
               location.pathname === '/settings' ? '' : 'opacity-50'
             }`}
-            src={imgSetting1}
+            src={iconSettings}
           />
           <span>Setting</span>
         </Link>

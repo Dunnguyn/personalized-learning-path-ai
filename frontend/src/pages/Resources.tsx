@@ -263,7 +263,7 @@ export default function Resources() {
       <div className="max-w-[1190px]">
         {/* Page Title */}
         <h1 className="text-[25px] font-semibold text-[#8f1025] mb-[30px] mt-[25px]">
-          📚 Tài nguyên học tập
+          Tài nguyên học tập
         </h1>
 
         {/* Error Alert */}
@@ -288,7 +288,7 @@ export default function Resources() {
               type="submit"
               className="bg-[#8f1025] text-white text-[14px] font-medium px-6 py-2 rounded-[12px] hover:bg-[#7a0e20] transition-colors"
             >
-              🔍 Tìm
+              Tìm
             </button>
           </form>
 

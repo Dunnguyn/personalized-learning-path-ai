@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { dashboardService } from '../../services/dashboardService';
-
-const imgAccount1 = "https://www.figma.com/api/mcp/asset/9da4165c-733e-47bf-a04b-df8d29c8ae03";
-const imgImage4 = "https://www.figma.com/api/mcp/asset/fa55dc5b-3339-4c7f-964f-27171f19fd11";
+import iconUser from '../../assets/account.png';
+import iconSearch from '../../assets/search.png';
 
 export default function Header() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -43,7 +42,7 @@ export default function Header() {
             <img
               alt="Search"
               className="w-[18px] h-[18px] object-cover"
-              src={imgImage4}
+              src={iconSearch}
             />
           </button>
         </div>
@@ -58,7 +57,7 @@ export default function Header() {
         <img
           alt="User Avatar"
           className="w-[50px] h-[50px] rounded-full object-cover border-2 border-transparent hover:border-[#ce6a86] transition-all cursor-pointer"
-          src={imgAccount1}
+          src={iconUser}
         />
       </div>
     </div>

@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { authService } from '../../services/authService';
-
-const imgElegantSubLogoDesignsForBeautyBrands1 = "https://www.figma.com/api/mcp/asset/43e212e0-6b90-489d-84ed-da84b79b15f9";
-const imgDownArrow = "https://www.figma.com/api/mcp/asset/7fd33db0-bb3d-4e02-9fd2-9795673c13e0";
-const imgTiXung11 = "https://www.figma.com/api/mcp/asset/48695258-c92c-44ad-a2f3-53cd0740ad30";
+import bunnyLogo from '../../assets/Elegant Sub-Logo Designs for Beauty Brands.jpg';
+import iconDropdown from '../../assets/down-arrow.png';
+import illustrationLearning from '../../assets/tải xuống (1).jpg';
 
 interface SignupFormData {
   fullName: string;
@@ -142,7 +141,7 @@ export default function SignupStep2() {
             <img 
               alt="Logo" 
               className="w-full h-full object-cover" 
-              src={imgElegantSubLogoDesignsForBeautyBrands1} 
+              src={bunnyLogo} 
             />
           </div>
 
@@ -181,7 +180,7 @@ export default function SignupStep2() {
               <img 
                 alt="" 
                 className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none" 
-                src={imgDownArrow} 
+                src={iconDropdown} 
               />
             </div>
 
@@ -202,7 +201,7 @@ export default function SignupStep2() {
               <img 
                 alt="" 
                 className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none" 
-                src={imgDownArrow} 
+                src={iconDropdown} 
               />
             </div>
 
@@ -250,7 +249,7 @@ export default function SignupStep2() {
           <img 
             alt="Learning illustration" 
             className="w-full h-full object-cover" 
-            src={imgTiXung11} 
+            src={illustrationLearning} 
           />
         </div>
       </div>

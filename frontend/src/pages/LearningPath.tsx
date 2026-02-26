@@ -26,7 +26,8 @@ export default function LearningPath() {
     level: 'beginner' as const,
   });
   const [generatingPath, setGeneratingPath] = useState(false);
-  const [currentPath, setCurrentPath] = useState<LearningPath | null>(null);
+  const [learningPaths, setLearningPaths] = useState<LearningPath[]>([]);
+  const [hoveredPathId, setHoveredPathId] = useState<string | null>(null);
 
   const buildGoal = (subjectId: string, goalDetail: string) => {
     const subject = SUBJECTS.find((item) => item.id === subjectId);
@@ -84,10 +85,22 @@ export default function LearningPath() {
 
       setConcepts(conceptsWithProgress);
       
-      // Try to get recent learning path
+      // Get all learning paths with full details
       const history = await learningPathService.getLearningPathHistory(user.user_id);
       if (history && history.length > 0) {
-        setCurrentPath(history[0] as any);
+        const pathsWithDetails = await Promise.all(
+          history.map(async (path) => {
+            try {
+              const detail = await learningPathService.getLearningPathById(path.path_id);
+              const pathData = detail?.path ?? detail;
+              return pathData as LearningPath;
+            } catch (detailError) {
+              console.error('Error fetching learning path detail:', detailError);
+              return path as LearningPath;
+            }
+          })
+        );
+        setLearningPaths(pathsWithDetails);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error fetching learning path';
@@ -116,7 +129,8 @@ export default function LearningPath() {
         level: pathForm.level,
       });
 
-      setCurrentPath(result);
+      // Add new path to the list (keep old paths)
+      setLearningPaths([result, ...learningPaths]);
       
       // Update concepts with new path info
       const updatedConcepts = concepts.map((c) => {
@@ -131,7 +145,6 @@ export default function LearningPath() {
         goalDetail: '',
         level: 'beginner',
       });
-      navigate(`/learning-path/${result.path_id}`, { state: { path: result } });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error generating learning path';
       setError(message);
@@ -219,6 +232,50 @@ export default function LearningPath() {
     }
   };
 
+  const getChapterStatus = (lessons: Array<{ status?: string }>) => {
+    if (!lessons.length) return 'Chưa bắt đầu';
+    if (lessons.every((lesson) => lesson.status === 'complete')) return 'Hoàn thành';
+    if (lessons.some((lesson) => lesson.status === 'in_progress')) return 'Đang học';
+    return 'Chưa bắt đầu';
+  };
+
+  const hoveredPath = learningPaths.find(path => path.path_id === hoveredPathId);
+
+  // Calculate statistics from all learning paths
+  const calculateStatistics = () => {
+    let totalLessons = 0;
+    let completedLessons = 0;
+    let inProgressLessons = 0;
+    
+    learningPaths.forEach(path => {
+      if (path.curriculum) {
+        path.curriculum.forEach(chapter => {
+          if (chapter.lessons) {
+            chapter.lessons.forEach(lesson => {
+              totalLessons++;
+              if (lesson.status === 'complete') {
+                completedLessons++;
+              } else if (lesson.status === 'in_progress') {
+                inProgressLessons++;
+              }
+            });
+          }
+        });
+      }
+    });
+
+    const progress = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0;
+
+    return {
+      total: totalLessons,
+      completed: completedLessons,
+      inProgress: inProgressLessons,
+      progress
+    };
+  };
+
+  const stats = calculateStatistics();
+
   return (
     <DashboardLayout>
       <div className="max-w-[1190px]">
@@ -251,28 +308,13 @@ export default function LearningPath() {
           </button>
         </div>
 
-        {loading ? (
+        {loading && (
           <div className="flex items-center justify-center min-h-[400px]">
             <div className="text-center">
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#8f1025] mx-auto mb-4"></div>
               <p className="text-[#8f1025]">Đang tải lộ trình học tập...</p>
             </div>
           </div>
-        ) : (
-          <>
-            {currentPath && (
-              <div className="bg-blue-50 border border-blue-200 rounded-[12px] p-4 mb-[40px] text-[13px]">
-                <p className="font-medium text-blue-900">📌 Lộ trình hiện tại:</p>
-                <p className="text-blue-800 mt-1">{currentPath.goal}</p>
-                <p className="text-blue-700 text-[12px] mt-1">
-                  Cấp độ: <span className="font-medium">{currentPath.level}</span> • Cập nhật:{' '}
-                  <span className="font-medium">
-                    {new Date(currentPath.generated_at).toLocaleDateString('vi-VN')}
-                  </span>
-                </p>
-              </div>
-            )}
-          </>
         )}
 
       {/* Create Path Form */}
@@ -361,7 +403,7 @@ export default function LearningPath() {
         {!loading && (
           <>
         <div className="grid grid-cols-3 gap-[30px]">
-          {/* Left: Concept Graph */}
+          {/* Left: Learning Paths Graph */}
           <div className="col-span-2">
             <div className="bg-white border border-[#ce6a86] rounded-[20px] p-[30px]">
               <h2 className="text-[18px] font-semibold text-[#8f1025] mb-6 flex items-center gap-2">
@@ -369,181 +411,79 @@ export default function LearningPath() {
                 Graph Lộ trình học tập
               </h2>
 
-              {/* Concept Flow */}
-              <div className="space-y-[40px]">
-                {concepts.map((concept, index) => (
-                  <div key={concept.concept_id}>
-                    {/* Concept Card */}
+              {/* Learning Paths List */}
+              {learningPaths.length === 0 ? (
+                <div className="bg-white border border-[#ce6a86] rounded-[12px] p-[20px] text-center text-[13px] text-[#832e44]">
+                  Chưa có lộ trình. Hãy tạo lộ trình mới để hiển thị tại đây.
+                </div>
+              ) : (
+                <div className="space-y-[16px]">
+                  {learningPaths.map((path) => (
                     <div
-                      onClick={() => setSelectedConcept(concept)}
-                      className={`border-2 rounded-[16px] p-[20px] cursor-pointer transition-all duration-200 ${getStatusColor(
-                        concept.status
-                      )} ${
-                        selectedConcept?.concept_id === concept.concept_id
-                          ? 'ring-2 ring-offset-2 ring-[#8f1025]'
-                          : 'hover:shadow-lg'
-                      }`}
+                      key={path.path_id}
+                      onClick={() => navigate(`/learning-path/${path.path_id}`, { state: { path } })}
+                      onMouseEnter={() => setHoveredPathId(path.path_id)}
+                      onMouseLeave={() => setHoveredPathId(null)}
+                      className="rounded-[10px] p-[18px] cursor-pointer transition-all duration-200 bg-[#de8fac] text-white hover:shadow-md relative"
                     >
-                      <div className="flex items-center justify-between mb-3">
-                        <h3 className="text-[16px] font-semibold">{concept.concept_name}</h3>
-                        <span
-                          className={`text-[12px] font-medium ${getDifficultyColor(concept.difficulty)}`}
-                        >
-                          {getDifficultyText(concept.difficulty)}
+                      <p className="text-[12px] font-medium mb-2">
+                        {path.goal || 'Tên môn học - Mục tiêu'}
+                      </p>
+                      <p className="text-[10px] opacity-90">
+                        Cấp độ: <span className="font-medium">{path.level}</span> • Cập nhật:{' '}
+                        <span className="font-medium">
+                          {new Date(path.generated_at).toLocaleDateString('vi-VN')}
                         </span>
-                      </div>
-
-                      {/* Progress bar */}
-                      <div className="mb-3">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-[6px] bg-gray-300 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-[#8f1025] transition-all duration-300"
-                              style={{ width: `${(concept.mastery || 0) * 100}%` }}
-                            />
-                          </div>
-                          <span className="text-[12px] font-medium">
-                            {Math.round((concept.mastery || 0) * 100)}%
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Status */}
-                      <p className="text-[13px] font-medium mb-2">{getStatusText(concept.status)}</p>
-
-                      {/* Mode Badge */}
-                      {concept.mode && (
-                        <span className="inline-block bg-white bg-opacity-50 text-[12px] px-3 py-1 rounded-full font-medium mt-2">
-                          {concept.mode}
-                        </span>
-                      )}
+                      </p>
                     </div>
-
-                    {/* Arrow (if not last) */}
-                    {index < concepts.length - 1 && (
-                      <div className="flex justify-center py-4">
-                        <svg
-                          className="w-6 h-6 text-[#ce6a86]"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                        </svg>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
+          {/* Right: Hover Details */}
           <div>
             <div className="bg-white border border-[#ce6a86] rounded-[20px] p-[30px] sticky top-[100px]">
-              {selectedConcept ? (
-                <>
-                  <h3 className="text-[16px] font-semibold text-[#8f1025] mb-6">Chi tiết concept</h3>
+              <h3 className="text-[12px] font-semibold text-[#5b1724] mb-4">
+                Thông tin chi tiết môn học
+              </h3>
 
-                  {/* Concept Name */}
-                  <div className="mb-5">
-                    <p className="text-[12px] text-gray-600 font-medium mb-1">Tên</p>
-                    <p className="text-[14px] font-semibold text-[#8f1025]">{selectedConcept.concept_name}</p>
+              {hoveredPath?.curriculum && hoveredPath.curriculum.length > 0 ? (
+                <div className="space-y-4">
+                  <div className="mb-4 pb-3 border-b border-[#ce6a86]">
+                    <p className="text-[11px] font-semibold text-[#8f1025]">{hoveredPath.goal}</p>
                   </div>
-
-                  {/* Status */}
-                  <div className="mb-5">
-                    <p className="text-[12px] text-gray-600 font-medium mb-1">Trạng thái</p>
-                    <span
-                      className={`inline-block px-3 py-1 rounded-full text-[12px] font-medium ${getStatusColor(
-                        selectedConcept.status
-                      )}`}
-                    >
-                      {getStatusText(selectedConcept.status)}
-                    </span>
-                  </div>
-
-                  {/* Difficulty */}
-                  <div className="mb-5">
-                    <p className="text-[12px] text-gray-600 font-medium mb-1">Độ khó</p>
-                    <p className={`text-[14px] font-semibold ${getDifficultyColor(selectedConcept.difficulty)}`}>
-                      {getDifficultyText(selectedConcept.difficulty)}
-                    </p>
-                  </div>
-
-                  {/* Mastery */}
-                  <div className="mb-5">
-                    <p className="text-[12px] text-gray-600 font-medium mb-2">Mức độ thành thạo</p>
-                    <div className="w-full h-[8px] bg-gray-200 rounded-full overflow-hidden">
+                  {hoveredPath.curriculum.map((chapter, index) => {
+                    const lessons = chapter.lessons || [];
+                    const status = getChapterStatus(lessons);
+                    return (
                       <div
-                        className="h-full bg-[#8f1025] transition-all duration-300"
-                        style={{ width: `${(selectedConcept.mastery || 0) * 100}%` }}
-                      />
-                    </div>
-                    <p className="text-[14px] font-semibold text-[#8f1025] mt-2">
-                      {Math.round((selectedConcept.mastery || 0) * 100)}%
-                    </p>
-                  </div>
-
-                  {/* Priority Score */}
-                  {selectedConcept.priority_score !== undefined && (
-                    <div className="mb-5">
-                      <p className="text-[12px] text-gray-600 font-medium mb-1">Mức độ ưu tiên</p>
-                      <p className="text-[14px] font-semibold text-[#8f1025]">
-                        {(selectedConcept.priority_score * 100).toFixed(0)}%
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Prerequisites */}
-                  {selectedConcept.prerequisites && selectedConcept.prerequisites.length > 0 && (
-                    <div className="mb-5">
-                      <p className="text-[12px] text-gray-600 font-medium mb-2">Điều kiện tiên quyết</p>
-                      <ul className="space-y-1">
-                        {selectedConcept.prerequisites.map((prereq) => {
-                          const prereqConcept = concepts.find((c) => c.concept_id === prereq);
-                          return (
-                            <li key={prereq} className="text-[12px] text-[#8f1025]">
-                              • {prereqConcept?.concept_name || `Concept ${prereq}`}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  )}
-
-                  {/* Bloom Level */}
-                  {selectedConcept.bloom_level && (
-                    <div className="mb-5">
-                      <p className="text-[12px] text-gray-600 font-medium mb-1">Bloom Level</p>
-                      <p className="text-[13px] text-[#8f1025]">{selectedConcept.bloom_level}</p>
-                    </div>
-                  )}
-
-                  {/* Action Buttons */}
-                  <div className="space-y-3 mt-8 pt-6 border-t border-[#e4b6d0]">
-                    <button
-                      onClick={() => handleStartConcept(selectedConcept.concept_id)}
-                      className="w-full bg-[#8f1025] text-white text-[14px] font-medium py-2 rounded-[10px] hover:bg-[#7a0e20] transition-colors"
-                    >
-                      {selectedConcept.status === 'not_started' ? 'Bắt đầu học' : 'Tiếp tục học'}
-                    </button>
-                    <button
-                      onClick={() => handleViewResources(selectedConcept.concept_id)}
-                      className="w-full bg-white border border-[#8f1025] text-[#8f1025] text-[14px] font-medium py-2 rounded-[10px] hover:bg-gray-50 transition-colors"
-                    >
-                      📚 Xem tài liệu
-                    </button>
-                    <button
-                      onClick={() => handleAskAI(selectedConcept.concept_id)}
-                      className="w-full bg-white border border-[#8f1025] text-[#8f1025] text-[14px] font-medium py-2 rounded-[10px] hover:bg-gray-50 transition-colors"
-                    >
-                      🤖 Hỏi AI
-                    </button>
-                  </div>
-                </>
+                        key={`${chapter.title}-${index}`}
+                        className="border border-[#ce6a86] rounded-[12px] p-4"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[12px] font-semibold text-[#8f1025]">
+                              {chapter.title || `Chương ${index + 1}`}
+                            </p>
+                            <p className="text-[10px] text-[#8f1025]/70 mt-1">{lessons.length} bài học</p>
+                          </div>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full border border-[#8f1025] text-[#8f1025]">
+                            {status}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               ) : (
                 <div className="text-center py-12">
-                  <p className="text-[14px] text-gray-500">Chọn một concept để xem chi tiết</p>
+                  <p className="text-[14px] text-gray-500">
+                    {learningPaths.length > 0 
+                      ? 'Di chuột vào lộ trình để xem chi tiết'
+                      : 'Chưa có thông tin chương học.'}
+                  </p>
                 </div>
               )}
             </div>
@@ -553,31 +493,25 @@ export default function LearningPath() {
         {/* Statistics Section */}
         <div className="grid grid-cols-4 gap-[20px] mt-[40px]">
           <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
-            <p className="text-[12px] text-gray-600 font-medium mb-2">Tổng Concept</p>
-            <p className="text-[28px] font-bold text-[#8f1025]">{concepts.length}</p>
+            <p className="text-[12px] text-gray-600 font-medium mb-2">Tổng bài học</p>
+            <p className="text-[28px] font-bold text-[#8f1025]">{stats.total}</p>
           </div>
           <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
             <p className="text-[12px] text-gray-600 font-medium mb-2">Đã hoàn thành</p>
             <p className="text-[28px] font-bold text-green-600">
-              {concepts.filter((c) => c.status === 'complete').length}
+              {stats.completed}
             </p>
           </div>
           <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
             <p className="text-[12px] text-gray-600 font-medium mb-2">Đang học</p>
             <p className="text-[28px] font-bold text-blue-600">
-              {concepts.filter((c) => c.status === 'in_progress').length}
+              {stats.inProgress}
             </p>
           </div>
           <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
             <p className="text-[12px] text-gray-600 font-medium mb-2">Tiến độ</p>
             <p className="text-[28px] font-bold text-[#8f1025]">
-              {concepts.length > 0
-                ? Math.round(
-                    (concepts.reduce((sum, c) => sum + (c.mastery || 0), 0) / concepts.length) *
-                      100
-                  )
-                : 0}
-              %
+              {stats.progress}%
             </p>
           </div>
         </div>

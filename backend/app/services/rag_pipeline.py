@@ -24,6 +24,15 @@ GENERATION_TIMEOUT = int(os.getenv("RAG_GENERATION_TIMEOUT", "30"))
 MAX_RETRIES = int(os.getenv("RAG_MAX_RETRIES", "2"))
 MIN_RESOURCES = int(os.getenv("RAG_MIN_RESOURCES", "1"))
 MAX_RESOURCES = int(os.getenv("RAG_MAX_RESOURCES", "10"))
+RETRIEVAL_K = int(os.getenv("RAG_RETRIEVAL_K", "8"))
+RETRIEVAL_MIN_SCORE = float(os.getenv("RAG_RETRIEVAL_MIN_SCORE", "0.35"))
+QUOTA_COOLDOWN_SECONDS = int(os.getenv("RAG_QUOTA_COOLDOWN_SECONDS", "120"))
+LLM_COOLDOWN_UNTIL = 0.0
+
+# Ngưỡng để quyết định có thể trả lời trực tiếp từ context hay cần dùng AI
+# Tăng threshold cao hơn để chỉ trả lời trực tiếp khi RẤT chắc chắn
+DIRECT_ANSWER_THRESHOLD = float(os.getenv("RAG_DIRECT_ANSWER_THRESHOLD", "0.80"))  # Tăng từ 0.70 → 0.80
+MIN_HIGH_QUALITY_RESOURCES = int(os.getenv("RAG_MIN_HIGH_QUALITY_RESOURCES", "2"))  # Tăng từ 1 → 2
 
 # Try to initialize Gemini client
 try:
@@ -89,6 +98,80 @@ def _validate_input(question: str, goal: str) -> bool:
     return True
 
 
+def _get_quota_cooldown_seconds(error: Exception) -> Optional[int]:
+    """Return cooldown seconds if error indicates quota exhaustion."""
+    text = str(error)
+    if "RESOURCE_EXHAUSTED" in text or "Quota exceeded" in text or "429" in text:
+        match = re.search(r"retry in ([0-9]+(?:\.[0-9]+)?)s", text, re.IGNORECASE)
+        if not match:
+            match = re.search(r"retryDelay': '([0-9]+)s'", text)
+        if match:
+            return int(float(match.group(1)))
+        return QUOTA_COOLDOWN_SECONDS
+    return None
+
+
+def _keyword_overlap_score(question: str, text: str) -> int:
+    """Simple lexical overlap score to keep fallback answers on-topic."""
+    if not question or not text:
+        return 0
+
+    tokens_q = set(re.findall(r"[a-zA-Z0-9_]+", question.lower()))
+    tokens_t = set(re.findall(r"[a-zA-Z0-9_]+", text.lower()))
+
+    stop = {
+        "la", "gi", "what", "is", "the", "a", "an", "and", "or", "of",
+        "to", "in", "on", "for", "with", "lao", "hoc", "lap", "trinh",
+        "cua", "ve", "about", "how", "why", "khi", "nao", "nhu", "theo"
+    }
+    tokens_q = {t for t in tokens_q if t not in stop}
+    tokens_t = {t for t in tokens_t if t not in stop}
+
+    if not tokens_q or not tokens_t:
+        return 0
+
+    return len(tokens_q & tokens_t)
+
+
+def _is_definition_question(question: str) -> bool:
+    if not question:
+        return False
+    q = question.lower()
+    triggers = [
+        "what is", "what's", "la gi", "là gì", "dinh nghia", "định nghĩa"
+    ]
+    return any(t in q for t in triggers)
+
+
+def _extract_main_terms(question: str) -> List[str]:
+    if not question:
+        return []
+    tokens = re.findall(r"[a-zA-Z0-9_]+", question.lower())
+    stop = {
+        "la", "gi", "what", "is", "the", "a", "an", "and", "or", "of",
+        "to", "in", "on", "for", "with", "hoc", "lap", "trinh", "cua",
+        "ve", "about", "how", "why", "khi", "nao", "nhu", "theo"
+    }
+    return [t for t in tokens if t not in stop]
+
+
+def _find_definition_sentence(terms: List[str], text: str) -> str:
+    """Return a sentence that defines the main term, if found."""
+    if not terms or not text:
+        return ""
+
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(text.split()))
+    for sentence in sentences:
+        s_lower = sentence.lower()
+        has_term = any(term in s_lower for term in terms)
+        if not has_term:
+            continue
+        if " is " in s_lower or " la " in s_lower or " là " in s_lower or " means " in s_lower:
+            return sentence.strip()
+
+    return ""
+
+
 # ==================================================
 # RAG PIPELINE CLASS
 # ==================================================
@@ -114,6 +197,8 @@ class RAGPipeline:
             "retrieval_failures": 0,
             "llm_failures": 0,
             "fallback_uses": 0,
+            "direct_answers": 0,
+            "ai_answers": 0,
             "total_latency_ms": 0
         }
 
@@ -151,20 +236,25 @@ class RAGPipeline:
         try:
             logger.debug(f"Retrieving: query={query[:50]}..., goal={goal}, level={level}, k={k}")
             
+            # Note: Don't pass goal as topic filter because goal might be in Vietnamese
+            # while database topics are in English. Let semantic search handle it via similarity.
             resources = semantic_search(
                 query=query,
                 k=k,
-                topic=goal,
+                topic=None,  # Disabled topic filter to allow semantic matching
                 level=level,
-                min_score=0.5  # Lower threshold for more results
+                min_score=RETRIEVAL_MIN_SCORE
             )
             
-            logger.info(f"Retrieved {len(resources)} resources (requested {k})")
+            logger.info(f"Retrieved {len(resources)} resources from database (requested {k})")
             
-            # Fallback to default resources if nothing found
-            if not resources and goal:
-                logger.warning(f"No semantic search results for '{goal}' - using default resources")
-                resources = self._get_default_resources(goal, level)
+            # Đánh dấu nguồn gốc tài liệu
+            for r in resources:
+                r["is_real_resource"] = True  # Từ database thực
+            
+            # KHÔNG fallback ở đây - để AI xử lý nếu không có tài liệu thực
+            if not resources:
+                logger.warning(f"⚠️  No resources found in database for '{goal}' - AI will be used")
             
             return resources
         
@@ -284,23 +374,58 @@ class RAGPipeline:
     def build_prompt(self, question: str, context: str) -> str:
         """
         Build RAG prompt with system instructions and context.
+        Optimized for focused and coherent answers that directly address the question.
+        AI will output markdown formatted text for better UI presentation.
         """
-        prompt = (
-            "You are an AI tutor helping learners understand concepts.\n\n"
-            "INSTRUCTIONS:\n"
-            "1. Use ONLY the learning materials below to answer.\n"
-            "2. Do NOT use outside knowledge or make up information.\n"
-            "3. If you cannot find the answer in the materials, say:\n"
-            "   'I cannot find the answer in the provided learning materials.'\n"
-            "4. Be clear, concise, and appropriate for a beginner learner.\n"
-            "\n"
-            "LEARNING MATERIALS:\n"
-            "====================\n"
-            f"{context}\n"
-            "====================\n\n"
-            f"QUESTION:\n{question}\n\n"
-            "ANSWER:"
-        )
+        # Kiểm tra xem có phải context từ fallback không
+        is_fallback = "[Lưu ý: Đây là thông tin từ knowledge base mặc định" in context
+        
+        if is_fallback or not context or context == "Không có thông tin cụ thể trong hệ thống.":
+            # Prompt cho trường hợp không có tài liệu thực
+            prompt = (
+                "Bạn là AI Tutor - trợ lý học tập thông minh.\n\n"
+                "ĐỊNH DẠNG CÂU TRẢ LỜI:\n"
+                "- Sử dụng Markdown để format câu trả lời\n"
+                "- Sử dụng ## để tạo tiêu đề\n"
+                "- Sử dụng **text** để làm đậm\n"
+                "- Sử dụng - để tạo danh sách bullet\n"
+                "- Tách các phần bằng dòng trống\n\n"
+                "NHIỆM VỤ CHÍNH:\n"
+                "Trả lời TRỰC TIẾP và TẬP TRUNG vào câu hỏi của người học.\n"
+                "- Tập trung vào cái được hỏi, không lạc đi\n"
+                "- Trả lời rõ ràng, chi tiết, dễ hiểu\n"
+                "- Phù hợp với người mới bắt đầu học\n"
+                "- Cung cấp ví dụ cụ thể khi cần\n"
+                "- Tránh thông tin không liên quan\n\n"
+                f"CÂU HỎI:\n{question}\n\n"
+                "CÂU TRẢ LỜI (dùng Markdown):"
+            )
+        else:
+            # Prompt tiêu chuẩn khi có tài liệu thực - cải thiện rõ ràng hơn
+            prompt = (
+                "Bạn là AI Tutor - trợ lý học tập thông minh.\n\n"
+                "ĐỊNH DẠNG CÂU TRẢ LỜI:\n"
+                "- Sử dụng Markdown để format câu trả lời\n"
+                "- Sử dụng ## để tạo tiêu đề\n"
+                "- Sử dụng **text** để làm đậm\n"
+                "- Sử dụng - để tạo danh sách bullet\n"
+                "- Tách các phần bằng dòng trống\n\n"
+                "NHIỆM VỤ CHÍNH:\n"
+                "Trả lời TRỰC TIẾP vào câu hỏi của người học dựa trên tài liệu cung cấp.\n"
+                "Quy tắc:\n"
+                "1. TẬP TRUNG vào câu hỏi - trả lời CHỈ những gì được hỏi\n"
+                "2. Sử dụng tài liệu làm bằng chứng chính\n"
+                "3. Bổ sung kiến thức nếu tài liệu không đủ chi tiết\n"
+                "4. Giải thích rõ ràng, dễ hiểu, phù hợp với người mới bắt đầu\n"
+                "5. Cung cấp ví dụ cụ thể khi cần\n"
+                "6. TRÁNH lạc đi vào chi tiết không liên quan\n\n"
+                "TÀI LIỆU HỌC TẬP:\n"
+                "====================\n"
+                f"{context}\n"
+                "====================\n\n"
+                f"CÂU HỎI CỦA NGƯỜI HỌC:\n{question}\n\n"
+                "CÂU TRẢ LỜI (dùng Markdown):"
+            )
         
         # Validate prompt size
         if len(prompt) > MAX_PROMPT_CHARS:
@@ -310,7 +435,7 @@ class RAGPipeline:
             if excess > 0:
                 context = _truncate_to_sentence(context, len(context) - excess - 500)
                 prompt = self.build_prompt(question, context)
-        
+    
         return prompt
 
     # =========================
@@ -409,21 +534,40 @@ class RAGPipeline:
 
         except Exception as e:
             logger.warning(f"LLM call error (attempt {retry_count + 1}): {e}")
+            cooldown = _get_quota_cooldown_seconds(e)
+            if cooldown is not None:
+                global LLM_COOLDOWN_UNTIL
+                LLM_COOLDOWN_UNTIL = time.time() + max(QUOTA_COOLDOWN_SECONDS, cooldown)
+                logger.warning(
+                    "LLM quota exhausted; cooldown active for %ss",
+                    max(QUOTA_COOLDOWN_SECONDS, cooldown)
+                )
+                self.stats["llm_failures"] += 1
+                return None
             if retry_count < MAX_RETRIES:
                 time.sleep(1)  # Brief backoff before retry
                 return self._call_llm_with_retry(prompt, retry_count + 1)
-            
+
             self.stats["llm_failures"] += 1
             return None
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, resources: List[Dict] = None) -> str:
         """
-        Generate answer using LLM with safe fallback.
+        Generate answer using LLM with safe fallback to knowledge base.
+        
+        Parameters:
+            prompt: The prompt to send to LLM
+            resources: Optional list of resources to use for fallback
         """
         if not (USE_LLM and client):
             logger.info("LLM unavailable — using knowledge base fallback")
             self.stats["fallback_uses"] += 1
-            return self._generate_fallback_answer(prompt)
+            return self._generate_fallback_answer(prompt, resources)
+
+        if time.time() < LLM_COOLDOWN_UNTIL:
+            logger.info("LLM cooldown active — using knowledge base fallback")
+            self.stats["fallback_uses"] += 1
+            return self._generate_fallback_answer(prompt, resources)
 
         # Call LLM
         answer = self._call_llm_with_retry(prompt)
@@ -435,56 +579,417 @@ class RAGPipeline:
         # Fallback if LLM fails
         logger.warning("LLM generation failed — using knowledge base fallback")
         self.stats["fallback_uses"] += 1
-        return self._generate_fallback_answer(prompt)
+        return self._generate_fallback_answer(prompt, resources)
 
-    def _generate_fallback_answer(self, prompt: str) -> str:
+    def _generate_fallback_answer(self, prompt: str, resources: List[Dict] = None) -> str:
         """
-        Generate answer using simple knowledge base when LLM unavailable.
+        Generate focused answer using knowledge base when LLM unavailable or failed.
+        Creates targeted answer that addresses the specific question, not just listing documents.
+        Khi Gemini API quota hết, vẫn trả về câu trả lời từ knowledge base.
         """
-        # Extract context from prompt
+        # Extract question from prompt to focus the answer
+        question_text = ""
+        q_start = prompt.find("CÂU HỎI CỦA NGƯỜI HỌC:")
+        if q_start < 0:
+            q_start = prompt.find("CÂU HỎI:")
+        if q_start > 0:
+            q_end = prompt.find("\n\nCÂU TRẢ LỜI", q_start)
+            if q_end < 0:
+                q_end = prompt.find("\n\nANSWER", q_start)
+            if q_end > 0:
+                raw_question = prompt[q_start:q_end].strip()
+                question_text = raw_question.replace("CÂU HỎI CỦA NGƯỜI HỌC:", "").replace("CÂU HỎI:", "").strip()
+        
+        # Priority 1: If have resources, use them to build focused answer
+        if resources:
+            logger.info(f"Using fallback: generating targeted answer from {len(resources)} resources")
+
+            definition_intent = _is_definition_question(question_text)
+            main_terms = _extract_main_terms(question_text)
+            
+            # Extract best snippets and rank by lexical overlap with the question
+            resource_snippets = []
+            for r in resources[:8]:  # Use up to 8 resources
+                snippet = r.get("snippet", "").strip()
+                title = r.get("title", "Unknown").strip()
+                score = r.get("score", 0)
+                
+                if snippet:
+                    # Clean up snippet
+                    snippet = " ".join(snippet.split())
+                    overlap = _keyword_overlap_score(question_text, snippet)
+                    def_sentence = ""
+                    def_hit = 0
+                    if definition_intent and main_terms:
+                        def_sentence = _find_definition_sentence(main_terms, snippet)
+                        def_hit = 1 if def_sentence else 0
+                    resource_snippets.append({
+                        "title": title,
+                        "content": snippet,
+                        "score": score,
+                        "overlap": overlap,
+                        "def_hit": def_hit,
+                        "def_sentence": def_sentence
+                    })
+            
+            if resource_snippets:
+                if definition_intent and max(r.get("def_hit", 0) for r in resource_snippets) == 0:
+                    fallback_resources = self._get_default_resources(question_text, None)
+                    if fallback_resources:
+                        resource_snippets = []
+                        for r in fallback_resources:
+                            snippet = (r.get("snippet") or "").strip()
+                            title = r.get("title", "Unknown").strip()
+                            score = r.get("score", 0)
+                            if snippet:
+                                snippet = " ".join(snippet.split())
+                                overlap = _keyword_overlap_score(question_text, snippet)
+                                def_sentence = ""
+                                def_hit = 0
+                                if definition_intent and main_terms:
+                                    def_sentence = _find_definition_sentence(main_terms, snippet)
+                                    def_hit = 1 if def_sentence else 0
+                                resource_snippets.append({
+                                    "title": title,
+                                    "content": snippet,
+                                    "score": score,
+                                    "overlap": overlap,
+                                    "def_hit": def_hit,
+                                    "def_sentence": def_sentence
+                                })
+
+                # Prefer snippets that share keywords with the question
+                resource_snippets.sort(
+                    key=lambda x: (x.get("def_hit", 0), x.get("overlap", 0), x.get("score", 0)),
+                    reverse=True
+                )
+
+                if resource_snippets[0].get("overlap", 0) == 0:
+                    return "Xin lỗi, tài liệu hiện có chưa chứa thông tin khớp với câu hỏi này."
+
+                answer_parts = []
+                
+                # Build focused answer
+                if question_text:
+                    answer_parts.append("## Trả lời\n\n")
+                
+                # Main content from best snippet
+                best_content = resource_snippets[0]['content']
+                if definition_intent and resource_snippets[0].get("def_sentence"):
+                    best_content = resource_snippets[0]["def_sentence"]
+                if len(best_content) > 900:
+                    best_content = best_content[:900] + "..."
+                
+                answer_parts.append(f"{best_content}\n")
+                
+                # Add supporting info with sources
+                if len(resource_snippets) > 1:
+                    answer_parts.append("\n### Thông tin bổ sung\n\n")
+                    for item in resource_snippets[1:5]:  # Up to 4 more sources
+                        excerpt = item['content'][:250]
+                        if len(item['content']) > 250:
+                            excerpt += "..."
+                        # Clean up title
+                        source_title = item['title'].split(' - ')[0].strip()
+                        answer_parts.append(f"- **{source_title}**: {excerpt}\n")
+                
+                answer = "".join(answer_parts)
+                
+                # Truncate if too long
+                if len(answer) > 2500:
+                    answer = answer[:2500] + "\n\n*(Nội dung được cắt ngắn)*"
+                
+                return answer
+        
+        # Fallback 2: Extract context from prompt
+        context_start = prompt.find("TÀI LIỆU HỌC TẬP:")
+        if context_start > 0:
+            context_end = prompt.find("====================\n\n", context_start)
+            if context_end > 0:
+                context = prompt[context_start + 23:context_end].strip()
+                if context and len(context) > 50:
+                    answer = f"## Dựa trên tài liệu\n\n{context}"
+                    if len(answer) > 2500:
+                        answer = answer[:2500] + "\n\n*(Nội dung được cắt ngắn)*"
+                    return answer
+        
+        # Fallback 3: English context
         context_start = prompt.find("LEARNING MATERIALS:")
         if context_start > 0:
-            context = prompt[context_start + 19:].strip()
-            if context:
-                return f"Based on the learning materials:\n\n{context}"
+            context_end = prompt.find("====================", context_start)
+            if context_end > 0:
+                context = prompt[context_start + 19:context_end].strip()
+                if context and len(context) > 50:
+                    return f"## Based on Learning Materials\n\n{context}"
         
-        # If no context, use predefined Q&A
-        question_start = prompt.find("Question:")
+        # Fallback 4: Knowledge base from question
+        question_start = prompt.find("CÂU HỎI CỦA NGƯỜI HỌC:")
+        if question_start < 0:
+            question_start = prompt.find("QUESTION:")
+        
         if question_start > 0:
-            q_section = prompt[question_start:].split("\n")[0]
-            question = q_section.replace("Question:", "").strip().lower()
+            q_section = prompt[question_start:].split("\n")[0:2]
+            question = " ".join(q_section).replace("CÂU HỎI CỦA NGƯỜI HỌC:", "").replace("QUESTION:", "").strip().lower()
             
-            # Simple knowledge base
+            # Rich knowledge base - Vietnamese, Python-focused
             kb = {
-                "python": "Python is a high-level, interpreted programming language known for its simplicity and readability. It's widely used for web development, data analysis, machine learning, and automation.",
-                "list": "In Python, a list is a mutable, ordered collection of items. You can create lists using square brackets: my_list = [1, 2, 3]. Lists support indexing, slicing, and various methods like append(), remove(), and sort().",
-                "dict": "A dictionary in Python is an unordered collection of key-value pairs. You create dictionaries using curly braces: my_dict = {'key': 'value'}. Access values using their keys: my_dict['key'].",
-                "function": "A function is a reusable block of code that performs a specific task. In Python, you define functions using the 'def' keyword: def my_function(): pass. Functions can take parameters and return values.",
-                "loop": "Loops allow you to repeat a block of code multiple times. Python has 'for' loops for iterating over sequences and 'while' loops for conditional repetition.",
-                "class": "A class is a blueprint for creating objects. It defines properties (attributes) and behaviors (methods). Classes are fundamental to object-oriented programming (OOP) in Python.",
+                "python là gì": """Python là một ngôn ngữ lập trình bậc cao, được tạo ra năm 1991 bởi Guido van Rossum. 
+
+Đặc điểm nổi bật của Python:
+- **Dễ học, dễ đọc**: Cú pháp rõ ràng, giống ngôn ngữ tự nhiên
+- **Đa năng**: Web development, data science, AI, automation, scripting
+- **Mạnh mẽ**: Thư viện phong phú (Django, NumPy, Pandas, TensorFlow...)
+- **Cộng động lớn**: Hỗ trợ tốt, tài liệu phong phú
+- **Miễn phí, mã nguồn mở**: Có thể sử dụng cho mục đích thương mại
+
+Ứng dụng thực tế:
+- Web: Django, Flask
+- Data Science: Pandas, NumPy, SciPy
+- Machine Learning: TensorFlow, PyTorch, Scikit-learn
+- Automation: Script các tác vụ lặp lại
+- Game development: Pygame
+
+Tại sao học Python?
+1. Cú pháp dễ hiểu → tập trung vào logic, không vào syntax
+2. Cộng động lớn → dễ tìm hỗ trợ
+3. Cơ hội việc làm cao
+4. Nền tảng tốt để học lập trình""",
+                
+                "python": """Python là một ngôn ngữ lập trình bậc cao, được biết đến vì tính đơn giản, linh hoạt và mạnh mẽ. 
+
+Được sử dụng rộng rãi cho:
+- Phát triển web (Django, Flask)
+- Phân tích dữ liệu (Pandas, NumPy)
+- Machine learning (TensorFlow, PyTorch)
+- Tự động hóa (scripts, task automation)
+- Scientific computing
+- Hệ thống tư vấn
+
+Python nổi tiếng vì cú pháp đơn giản và làm việc lần đầu rất dễ.""",
+                
+                "list": "Trong Python, list (danh sách) là một tập hợp có thứ tự, có thể thay đổi được. Bạn có thể tạo list bằng dấu ngoặc vuông: my_list = [1, 2, 3]. List hỗ trợ indexing, slicing, và các phương thức như append(), remove(), sort().",
+                
+                "dict": "Dictionary (từ điển) trong Python là một tập hợp các cặp key-value. Bạn tạo dictionary bằng dấu ngoặc nhọn: my_dict = {'key': 'value'}. Truy cập giá trị bằng key: my_dict['key'].",
+                
+                "function": "Function (hàm) là một khối mã có thể tái sử dụng để thực hiện một nhiệm vụ cụ thể. Trong Python, bạn định nghĩa function bằng từ khóa 'def': def my_function(): pass. Function có thể nhận tham số và trả về giá trị.",
+                
+                "loop": "Loop (vòng lặp) cho phép bạn lặp lại một khối mã nhiều lần. Python có 'for' loop để lặp qua các chuỗi và 'while' loop để lặp có điều kiện.",
+                
+                "class": "Class (lớp) là một bản thiết kế để tạo các object (đối tượng). Nó định nghĩa các thuộc tính (properties) và hành vi (methods). Class là nền tảng của lập trình hướng đối tượng (OOP) trong Python.",
             }
             
-            # Try to match question to knowledge base
+            # Try exact match first
+            if question in kb:
+                return kb[question]
+            
+            # Try partial match
             for key, answer in kb.items():
                 if key in question:
                     return answer
             
             # Generic fallback
             return (
-                "I apologize, but I don't have specific learning materials for this question at the moment. "
-                "However, I recommend:\n"
-                "1. Check the Learning Path section for concepts related to your question\n"
-                "2. Browse available Resources for tutorials and documentation\n"
-                "3. Visit official documentation for detailed explanations"
+                "Tôi rất tiếc vì AI service hiện không khả dụng (API quota exceeded). "
+                "Tuy nhiên, đây là những thông tin cơ bản bạn có thể tham khảo:\n\n"
+                "1. Kiểm tra phần 'Lộ trình Học tập' để tìm các khái niệm liên quan\n"
+                "2. Duyệt qua 'Tài nguyên' để tìm hướng dẫn chi tiết\n"
+                "3. Truy cập tài liệu chính thức Python: https://docs.python.org\n\n"
+                "⏰ API sẽ reset vào ngày hôm sau. Vui lòng thử lại sau."
             )
         
         return (
-            "I'm having difficulty retrieving specific information for your question. "
-            "Please try rephrasing your question or refer to the learning materials section."
+            "Tôi gặp khó khăn trong việc trích xuất thông tin. "
+            "Vui lòng thử lại hoặc tham khảo phần tài liệu học tập."
         )
 
     # =========================
-    # 5. RUN FULL PIPELINE
+    # 5. DIRECT ANSWER FROM CONTEXT
+    # =========================
+    def _can_answer_from_context(self, resources: List[Dict]) -> bool:
+        """
+        Kiểm tra xem có thể trả lời trực tiếp từ context hay không.
+        
+        Điều kiện (phải thỏa TẤT CẢ):
+        1. Phải có tài liệu THỰC từ database (không phải fallback)
+        2. Có ít nhất MIN_HIGH_QUALITY_RESOURCES (2) tài liệu với score >= DIRECT_ANSWER_THRESHOLD (0.80)
+        
+        Threshold cao (0.80) đảm bảo câu trả lời sẽ TẬP TRUNG vào câu hỏi, không lạc đi.
+        
+        Returns:
+            bool: True nếu có thể trả lời trực tiếp từ context
+        """
+        if not resources:
+            return False
+        
+        # ⚠️  CHỈ xét tài liệu THỰC từ database, KHÔNG phải fallback
+        real_resources = [r for r in resources if r.get("is_real_resource", False)]
+        
+        if not real_resources:
+            logger.info("❌ No real resources from database - must use AI")
+            return False
+        
+        # Đếm số tài liệu chất lượng cao (CHỈ trong real resources)
+        # ⭐ Threshold cao (0.80) = confidence cao = trả lời chính xác + tập trung
+        high_quality = [r for r in real_resources if r.get("score", 0) >= DIRECT_ANSWER_THRESHOLD]
+        
+        # Phải có ít nhất 2 tài liệu chất lượng cao để trả lời chính xác
+        can_answer = len(high_quality) >= MIN_HIGH_QUALITY_RESOURCES
+        
+        if can_answer:
+            avg_score = sum(r.get("score", 0) for r in high_quality) / len(high_quality)
+            logger.info(
+                f"✅ Can answer from context: {len(high_quality)} high-quality resources "
+                f"(avg score: {avg_score:.2f}, threshold: {DIRECT_ANSWER_THRESHOLD})"
+            )
+        else:
+            logger.info(
+                f"❌ Cannot answer from context: only {len(high_quality)} high-quality resources "
+                f"(need >= {MIN_HIGH_QUALITY_RESOURCES} with score >= {DIRECT_ANSWER_THRESHOLD}). "
+                f"Will use AI for accurate answer."
+            )
+        
+        return can_answer
+    
+    def _generate_direct_answer(self, question: str, resources: List[Dict]) -> str:
+        """
+        Generate focused answer directly from resources that best address the question.
+        Creates a coherent synthesis, not just document listing.
+        
+        Returns:
+            str: Markdown-formatted answer synthesized from best resources
+        """
+        if not resources:
+            return "Xin lỗi, tôi không tìm thấy thông tin liên quan trong tài liệu học tập."
+        
+        # Sort by question overlap, then relevance score
+        definition_intent = _is_definition_question(question)
+        main_terms = _extract_main_terms(question)
+
+        def _rank_key(resource: Dict) -> tuple:
+            snippet = (resource.get("snippet") or "").strip()
+            overlap = _keyword_overlap_score(question, snippet)
+            def_hit = 0
+            if definition_intent and main_terms:
+                def_hit = 1 if _find_definition_sentence(main_terms, snippet) else 0
+            return (def_hit, overlap, resource.get("score", 0))
+
+        sorted_resources = sorted(resources, key=_rank_key, reverse=True)
+        top_resources = sorted_resources[:5]
+
+        if not top_resources or _keyword_overlap_score(question, top_resources[0].get("snippet", "")) == 0:
+            return "Xin lỗi, tài liệu hiện có chưa chứa thông tin khớp với câu hỏi này."
+        
+        answer_parts = []
+        
+        # Main answer content from best resource
+        best = top_resources[0]
+        best_snippet = best.get("snippet", "").strip()
+        if best_snippet:
+            # Clean and format main content
+            best_snippet = " ".join(best_snippet.split())  # Remove excessive whitespace
+            if definition_intent and main_terms:
+                def_sentence = _find_definition_sentence(main_terms, best_snippet)
+                if not def_sentence:
+                    return "Xin lỗi, tài liệu hiện có chưa chứa thông tin khớp với câu hỏi này."
+                best_snippet = def_sentence
+            if len(best_snippet) > 1000:
+                best_snippet = best_snippet[:1000] + "..."
+            answer_parts.append(f"## Trả lời\n\n{best_snippet}\n")
+        
+        # Add supporting information from other resources
+        if len(top_resources) > 1:
+            answer_parts.append("\n### Thông tin thêm\n\n")
+            for resource in top_resources[1:]:
+                snippet = resource.get("snippet", "").strip()
+                title = resource.get("title", "Unknown").strip()
+                if snippet:
+                    # Extract first 200 chars as supplementary excerpt
+                    excerpt = " ".join(snippet.split())  # Clean whitespace
+                    if len(excerpt) > 250:
+                        excerpt = excerpt[:250] + "..."
+                    source_title = title.split(' - ')[0].strip()
+                    answer_parts.append(f"- **{source_title}**: {excerpt}\n")
+        
+        # Add sources
+        answer_parts.append("\n### 📚 Nguồn tham khảo\n\n")
+        for idx, resource in enumerate(top_resources, 1):
+            title = resource.get("title", "Unknown")
+            score = resource.get("score", 0)
+            answer_parts.append(f"{idx}. {title} (độ liên quan: {score:.0%})\n")
+        
+        return "".join(answer_parts)    
+    def _format_answer_beautifully(self, raw_text: str, resources: List[Dict]) -> str:
+        """
+        Format raw answer text into beautifully structured Markdown.
+        Improves readability and visual presentation.
+        """
+        if not raw_text:
+            return "Xin lỗi, không thể tạo câu trả lời."
+        
+        # Clean up text
+        text = raw_text.strip()
+        
+        # Split into sentences for better formatting
+        lines = text.split('\n')
+        
+        # Build formatted answer with better structure
+        formatted_parts = []
+        
+        # Add introduction
+        formatted_parts.append("## 📚 Câu Trả Lời\n")
+        
+        # Process content with better formatting
+        current_section = []
+        for line in lines:
+            line = line.strip()
+            if line and len(line) > 10:
+                current_section.append(line)
+        
+        # Combine sections
+        if current_section:
+            formatted_parts.append("\n".join(current_section))
+        
+        # Add sources section
+        if resources:
+            formatted_parts.append("\n\n## 📖 Nguồn Tham Khảo\n")
+            sorted_resources = sorted(resources, key=lambda x: x.get("score", 0), reverse=True)[:3]
+            
+            for idx, resource in enumerate(sorted_resources, 1):
+                title = resource.get("title", "Unknown")
+                score = resource.get("score", 0)
+                formatted_parts.append(f"- **{title}** - Độ liên quan: {score:.0%}")
+        
+        return "\n".join(formatted_parts)
+    
+    def _build_fallback_context(self, question: str, goal: Optional[str]) -> str:
+        """
+        Xây dựng context từ fallback knowledge base khi không có tài liệu thực.
+        Context này sẽ được dùng bởi AI để tạo câu trả lời tốt hơn.
+        
+        Returns:
+            str: Context cho AI
+        """
+        fallback_resources = self._get_default_resources(goal, None)
+        
+        if fallback_resources:
+            # Đánh dấu là fallback
+            for r in fallback_resources:
+                r["is_real_resource"] = False
+            
+            # Build context từ fallback resources - rõ ràng là bổ sung
+            context_parts = []
+            context_parts.append("[Lưu ý: Hệ thống không tìm thấy tài liệu cụ thể trong cơ sở dữ liệu cho câu hỏi này]\n[Dưới đây là kiến thức bổ sung từ knowledge base có sẵn]\n\n")
+            
+            for idx, r in enumerate(fallback_resources, 1):
+                snippet = r.get("snippet", "")
+                title = r.get("title", "Unknown")
+                context_parts.append(f"[Nguồn {idx}: {title}]\n{snippet}\n\n")
+            
+            return "".join(context_parts)
+        
+        return "Không có thông tin cụ thể trong hệ thống."
+    # =========================
+    # 6. RUN FULL PIPELINE
     # =========================
     def run(
         self,
@@ -516,24 +1021,53 @@ class RAGPipeline:
                 query=question,
                 goal=goal,
                 level=level,
-                k=5
+                k=RETRIEVAL_K
             )
 
-            # 2. Build context
-            context = self.build_context(resources)
+            # 2. Kiểm tra xem có thể trả lời trực tiếp từ context không
+            answer_text = None
+            answer_method = "unknown"
+            
+            if self._can_answer_from_context(resources):
+                # ✅ Trả lời trực tiếp từ context
+                logger.info("📚 Answering directly from learning materials (no AI needed)")
+                answer_text = self._generate_direct_answer(question, resources)
+                answer_method = "direct_from_context"
+                self.stats["direct_answers"] += 1
+            else:
+                # ❌ Không đủ chất lượng hoặc không có tài liệu, PHẢI dùng AI để trả lời chính xác
+                can_use_llm = USE_LLM and client and time.time() >= LLM_COOLDOWN_UNTIL
+                if can_use_llm:
+                    logger.info(
+                        f"🤖 Using AI for accurate answer: "
+                        f"resources insufficient (need >= {MIN_HIGH_QUALITY_RESOURCES} "
+                        f"with score >= {DIRECT_ANSWER_THRESHOLD})"
+                    )
+                else:
+                    logger.info("LLM unavailable or cooldown active — using retrieval fallback")
+                
+                # 3. Build context (có thể rỗng nếu không có tài liệu)
+                if resources:
+                    context = self.build_context(resources)
+                else:
+                    # Không có tài liệu, dùng fallback context
+                    context = self._build_fallback_context(question, goal)
 
-            # 3. Build prompt
-            prompt = self.build_prompt(question, context)
+                # 4. Build prompt with formatting guidance
+                prompt = self.build_prompt(question, context)
 
-            # 4. Generate answer
-            answer_text = self.generate(prompt)
+                # 5. Generate answer with AI (pass resources for fallback)
+                answer_text = self.generate(prompt, resources)
+                answer_method = "ai_generated"
+                self.stats["ai_answers"] += 1
 
-            # 5. Return structured response
+            # 6. Return structured response
             elapsed_ms = (time.time() - start_time) * 1000
             self.stats["total_latency_ms"] += elapsed_ms
             
             logger.info(
                 f"RAG pipeline complete: "
+                f"method={answer_method}, "
                 f"resources={len(resources)}, "
                 f"answer_len={len(answer_text)}, "
                 f"latency={elapsed_ms:.1f}ms"
@@ -543,6 +1077,7 @@ class RAGPipeline:
                 "success": True,
                 "question": question,
                 "answer": answer_text,
+                "answer_method": answer_method,  # Thêm thông tin về phương pháp trả lời
                 "sources": [
                     {
                         "resource_id": r.get("resource_id"),
@@ -582,6 +1117,8 @@ class RAGPipeline:
             "total_runs": total,
             "successful_answers": self.stats["successful_answers"],
             "success_rate_percent": round(success_rate, 1),
+            "direct_answers": self.stats["direct_answers"],
+            "ai_answers": self.stats["ai_answers"],
             "llm_failures": self.stats["llm_failures"],
             "retrieval_failures": self.stats["retrieval_failures"],
             "fallback_uses": self.stats["fallback_uses"],

@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
@@ -57,6 +59,48 @@ interface HistoryItem {
   timestamp: string;
 }
 
+type StoredMessage = Omit<Message, 'timestamp'> & { timestamp: string };
+
+const buildStorageKey = (userId: string, subjectKey: string, goalKey: string) => {
+  const safeSubject = encodeURIComponent(subjectKey || 'unknown');
+  const safeGoal = encodeURIComponent(goalKey.trim() || 'default');
+  return `aitutor_history_${userId}_${safeSubject}_${safeGoal}`;
+};
+
+const loadStoredMessages = (userId: string, subjectKey: string, goalKey: string) => {
+  try {
+    const raw = localStorage.getItem(buildStorageKey(userId, subjectKey, goalKey));
+    if (!raw) return [] as Message[];
+    const data = JSON.parse(raw) as StoredMessage[];
+    return data.map((message) => ({
+      ...message,
+      timestamp: new Date(message.timestamp),
+    }));
+  } catch {
+    return [] as Message[];
+  }
+};
+
+const saveStoredMessages = (userId: string, subjectKey: string, goalKey: string, messages: Message[]) => {
+  try {
+    const data: StoredMessage[] = messages.map((message) => ({
+      ...message,
+      timestamp: message.timestamp.toISOString(),
+    }));
+    localStorage.setItem(buildStorageKey(userId, subjectKey, goalKey), JSON.stringify(data));
+  } catch {
+    // Ignore storage errors (quota, private mode, etc.)
+  }
+};
+
+const clearStoredMessages = (userId: string, subjectKey: string, goalKey: string) => {
+  try {
+    localStorage.removeItem(buildStorageKey(userId, subjectKey, goalKey));
+  } catch {
+    // Ignore storage errors (quota, private mode, etc.)
+  }
+};
+
 export default function AITutor() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -77,6 +121,80 @@ export default function AITutor() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const autoStartedRef = useRef(false);
+
+  const renderMessageContent = (text: string) => (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        h1: ({ children }) => <h1 className="text-[18px] font-bold mb-3 mt-4 text-[#1a1a1a]">{children}</h1>,
+        h2: ({ children }) => <h2 className="text-[16px] font-bold mb-2 mt-3 text-[#2a2a2a]">{children}</h2>,
+        h3: ({ children }) => <h3 className="text-[15px] font-semibold mb-2 mt-2 text-[#333]">{children}</h3>,
+        p: ({ children }) => <p className="text-[14px] leading-[1.6] mb-3 last:mb-0 text-[#444]">{children}</p>,
+        ul: ({ children }) => <ul className="list-disc pl-6 mb-3 space-y-1.5 text-[#444]">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal pl-6 mb-3 space-y-1.5 text-[#444]">{children}</ol>,
+        li: ({ children }) => <li className="text-[14px] leading-relaxed ml-1">{children}</li>,
+        strong: ({ children }) => <strong className="font-bold text-[#1a1a1a]">{children}</strong>,
+        em: ({ children }) => <em className="italic text-[#555]">{children}</em>,
+        a: ({ children, href }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[#0066cc] underline hover:text-[#0052a3] transition-colors"
+          >
+            {children}
+          </a>
+        ),
+        code: ({ inline, children }) =>
+          inline ? (
+            <code className="px-1.5 py-0.5 bg-[#f3f4f6] border border-[#e5e7eb] rounded text-[13px] font-mono text-[#d63384]">
+              {children}
+            </code>
+          ) : (
+            <code className="block bg-[#1e293b] text-[#e2e8f0] p-4 rounded-lg text-[13px] font-mono overflow-x-auto mb-3 border-l-4 border-[#ce6a86]">
+              {children}
+            </code>
+          ),
+        pre: ({ children }) => (
+          <pre className="bg-[#1e293b] text-[#e2e8f0] p-4 rounded-lg text-[13px] font-mono overflow-x-auto mb-3 border border-[#334155] shadow-sm">
+            {children}
+          </pre>
+        ),
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-4 border-[#ce6a86] pl-4 py-2 italic text-[14px] text-[#666] mb-3 bg-[#fef3f4] my-3 rounded-r">
+            {children}
+          </blockquote>
+        ),
+        table: ({ children }) => (
+          <table className="w-full border-collapse border border-[#ddd] my-3 text-[13px]">
+            {children}
+          </table>
+        ),
+        thead: ({ children }) => (
+          <thead className="bg-[#f3f4f6]">{children}</thead>
+        ),
+        tbody: ({ children }) => (
+          <tbody>{children}</tbody>
+        ),
+        tr: ({ children }) => (
+          <tr className="border-b border-[#ddd]">{children}</tr>
+        ),
+        th: ({ children }) => (
+          <th className="border border-[#ddd] px-3 py-2 text-left font-semibold">{children}</th>
+        ),
+        td: ({ children }) => (
+          <td className="border border-[#ddd] px-3 py-2">{children}</td>
+        ),
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+
+  const renderUserMessageContent = (text: string) => (
+    <p className="text-[14px] leading-[1.6] text-white whitespace-pre-wrap">{text}</p>
+  );
 
   useEffect(() => {
     if (!user) {
@@ -89,11 +207,48 @@ export default function AITutor() {
     if (conceptIdParam) {
       loadConceptInfo(parseInt(conceptIdParam));
     }
+
+    const goalParam = searchParams.get('goal');
+    const levelParam = searchParams.get('level');
+    const subjectParam = searchParams.get('subject');
+    const subjectKey = subjectParam || subjectId;
+    const goalKey = goalParam || '';
+    if (subjectParam) {
+      setSubjectId(subjectParam);
+    }
+    if (levelParam === 'beginner' || levelParam === 'intermediate' || levelParam === 'advanced') {
+      setLevel(levelParam);
+    }
+    if (goalParam) {
+      setGoal(goalParam);
+      setShowGoalInput(false);
+      setError(null);
+      if (!autoStartedRef.current) {
+        autoStartedRef.current = true;
+        const cachedMessages = user ? loadStoredMessages(user.user_id, subjectKey, goalKey) : [];
+        if (cachedMessages.length > 0) {
+          setMessages(cachedMessages);
+        } else {
+          setMessages([]);
+          addMessage(
+            'assistant',
+            `Xin chào! Tôi sẽ giúp bạn học: "${goalParam}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
+            null
+          );
+        }
+        loadHistory();
+      }
+    }
   }, [user, navigate, searchParams]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    if (!user || showGoalInput || !subjectId || !goal || messages.length === 0) return;
+    saveStoredMessages(user.user_id, subjectId, goal, messages);
+  }, [messages, user, showGoalInput, subjectId, goal]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -186,8 +341,47 @@ export default function AITutor() {
     setGoal(nextGoal);
     setShowGoalInput(false);
     setError(null);
-    addMessage('assistant', `Xin chào! Tôi sẽ giúp bạn học: "${nextGoal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`, null);
+    if (user) {
+      const cachedMessages = loadStoredMessages(user.user_id, subjectId, nextGoal);
+      if (cachedMessages.length > 0) {
+        setMessages(cachedMessages);
+      } else {
+        setMessages([]);
+        addMessage(
+          'assistant',
+          `Xin chào! Tôi sẽ giúp bạn học: "${nextGoal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
+          null
+        );
+      }
+    } else {
+      setMessages([]);
+      addMessage(
+        'assistant',
+        `Xin chào! Tôi sẽ giúp bạn học: "${nextGoal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
+        null
+      );
+    }
     loadHistory();
+  };
+
+  const handleClearSubjectHistory = () => {
+    if (!user) return;
+
+    if (!confirm('Bạn có chắc chắn muốn xóa lịch sử của môn học này?')) {
+      return;
+    }
+
+    if (!goal) return;
+
+    clearStoredMessages(user.user_id, subjectId, goal);
+    setMessages([]);
+    if (goal) {
+      addMessage(
+        'assistant',
+        `Xin chào! Tôi sẽ giúp bạn học: "${goal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
+        null
+      );
+    }
   };
 
   const handleSendMessage = async () => {
@@ -234,8 +428,6 @@ export default function AITutor() {
       const errorMessage = err instanceof Error ? err.message : 'Đã xảy ra lỗi không xác định';
       setError(errorMessage);
       console.error('Error sending message:', err);
-      // Re-add user message for retry
-      addMessage('user', userQuestion, null);
     } finally {
       setLoading(false);
     }
@@ -340,6 +532,12 @@ export default function AITutor() {
           <h1 className="text-[25px] font-semibold text-secondary">AI Tutor</h1>
           <div className="flex gap-3">
             <button
+              onClick={handleClearSubjectHistory}
+              className="px-4 py-2 text-[14px] bg-red-50 text-red-700 rounded-[10px] hover:bg-red-100 transition-colors"
+            >
+              🗑️ Xóa lịch sử môn
+            </button>
+            <button
               onClick={() => setShowHistory(!showHistory)}
               className="px-4 py-2 text-[14px] bg-gray-200 text-[#333] rounded-[10px] hover:bg-gray-300 transition-colors"
             >
@@ -440,7 +638,18 @@ export default function AITutor() {
                             : 'bg-gray-100 text-[#333] rounded-bl-none'
                         }`}
                       >
-                        <p className="text-[14px] mb-2">{message.content}</p>
+                        {(() => {
+                          const mainText =
+                            message.role === 'assistant'
+                              ? message.content || message.answer?.answer_text || ''
+                              : message.content;
+
+                          if (!mainText) return null;
+
+                          return message.role === 'assistant'
+                            ? renderMessageContent(mainText)
+                            : renderUserMessageContent(mainText);
+                        })()}
                         <p className="text-[12px] opacity-70">
                           {message.timestamp.toLocaleTimeString('vi-VN', {
                             hour: '2-digit',
@@ -450,25 +659,33 @@ export default function AITutor() {
 
                         {/* Answer Details */}
                         {message.role === 'assistant' && message.answer && (
-                          <div className="mt-4 pt-4 border-t border-gray-300">
+                          <div className="mt-5 pt-4 border-t-2 border-gray-200">
                             {message.answer.sources && message.answer.sources.length > 0 && (
-                              <div className="mb-3">
-                                <p className="text-[12px] font-semibold mb-2">📚 Nguồn tài liệu:</p>
-                                <div className="space-y-1">
+                              <div className="mb-4">
+                                <p className="text-[13px] font-bold mb-3 text-[#8f1025] flex items-center gap-1.5">
+                                  <span>📚</span> Nguồn tài liệu
+                                </p>
+                                <div className="space-y-2">
                                   {message.answer.sources.map((source, idx) => (
-                                    <div key={idx}>
-                                      {source.url ? (
-                                        <a
-                                          href={source.url}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="text-[12px] hover:underline"
-                                        >
-                                          {source.title}
-                                        </a>
-                                      ) : (
-                                        <p className="text-[12px]">{source.title}</p>
-                                      )}
+                                    <div
+                                      key={idx}
+                                      className="flex items-start gap-2 p-2.5 bg-[#fef3f4] border border-[#f5d5dd] rounded-lg hover:bg-[#fedde2] transition-colors"
+                                    >
+                                      <span className="text-[11px] font-bold text-[#8f1025] min-w-[18px] text-center">{idx + 1}</span>
+                                      <div className="flex-1">
+                                        {source.url ? (
+                                          <a
+                                            href={source.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-[12px] font-medium text-[#0066cc] hover:underline break-words"
+                                          >
+                                            {source.title}
+                                          </a>
+                                        ) : (
+                                          <p className="text-[12px] font-medium text-[#333]">{source.title}</p>
+                                        )}
+                                      </div>
                                     </div>
                                   ))}
                                 </div>
@@ -476,9 +693,18 @@ export default function AITutor() {
                             )}
 
                             {message.answer.confidence && (
-                              <p className="text-[12px]">
-                                <span className="font-semibold">Độ tin cậy:</span> {Math.round(message.answer.confidence * 100)}%
-                              </p>
+                              <div className="flex items-center gap-2 p-2.5 bg-[#eef9ff] border border-[#b8e0f6] rounded-lg">
+                                <span className="text-[13px] font-semibold text-[#0066cc]">⭐ Độ tin cậy:</span>
+                                <div className="flex-1 bg-white border border-[#d0e8ff] rounded-full h-2 overflow-hidden">
+                                  <div
+                                    className="h-full bg-gradient-to-r from-[#0066cc] to-[#003d99]"
+                                    style={{ width: `${Math.round(message.answer.confidence * 100)}%` }}
+                                  />
+                                </div>
+                                <span className="text-[12px] font-bold text-[#0066cc] min-w-[35px] text-right">
+                                  {Math.round(message.answer.confidence * 100)}%
+                                </span>
+                              </div>
                             )}
                           </div>
                         )}

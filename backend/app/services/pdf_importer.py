@@ -127,8 +127,22 @@ def chunk_text(
     chunks = []
     start = 0
     text_len = len(text)
+    # Guard against infinite loops and log progress for large inputs
+    step = max(1, chunk_size - overlap)
+    max_loops = max(10, (text_len // step) + 10)
+    loops = 0
     
     while start < text_len:
+        loops += 1
+        if loops > max_loops:
+            logger.warning(
+                "Chunking guard triggered: loops=%s, text_len=%s, chunk_size=%s, overlap=%s",
+                loops,
+                text_len,
+                chunk_size,
+                overlap,
+            )
+            break
         # Try to get chunk_size characters
         end = min(start + chunk_size, text_len)
         
@@ -151,16 +165,23 @@ def chunk_text(
         if len(chunk) >= min_length:
             chunks.append(chunk)
         
-        # Move start forward (with overlap)
-        start = end - overlap
-        if start <= 0:
-            start = end
+        # Move start forward (with overlap), ensure progress
+        next_start = end - overlap
+        if next_start <= start:
+            next_start = end
+        start = next_start
         
         # Prevent infinite loop: once we've processed to the end, stop
         if end >= text_len:
             break
     
-    logger.debug(f"Chunked text into {len(chunks)} chunks (size={chunk_size}, overlap={overlap})")
+    logger.debug(
+        "Chunked text into %s chunks (size=%s, overlap=%s, loops=%s)",
+        len(chunks),
+        chunk_size,
+        overlap,
+        loops,
+    )
     return chunks
 
 
@@ -422,34 +443,14 @@ def import_pdf(
         logger.info(f"Created main resource: {resource_id} for PDF: {file_path.name}")
         
         # ---------- CHUNK TEXT ----------
-        logger.debug(f"Chunking text with size={CHUNK_SIZE}, overlap={CHUNK_OVERLAP}")
-        chunks = chunk_text(full_text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
-        logger.info(f"Generated {len(chunks)} chunks from PDF")
-        
-        if not chunks and full_text.strip():
-            # Fallback: keep whole text as a single chunk when content is too short
-            chunks = [full_text.strip()]
-            logger.info("Chunk fallback: using full text as a single chunk")
-
-        if not chunks:
-            logger.warning(f"No valid chunks generated from PDF: {file_path}")
-            return {
-                "file": str(file_path),
-                "error": "PDF contains no valid chunks",
-                "detail": "Could not chunk text into segments",
-                "total_chunks": 0,
-                "inserted_chunks": 0,
-                "skipped_chunks": 0
-            }
-        
-        logger.info(f"Total chunks to process: {len(chunks)}")
-        
-        logger.info(f"Generated {len(chunks)} chunks from {len(full_text)} chars (size={CHUNK_SIZE}, overlap={CHUNK_OVERLAP})")
-        
-        # Limit chunks to prevent timeout on very large PDFs
-        if len(chunks) > MAX_CHUNKS:
-            logger.warning(f"PDF generated {len(chunks)} chunks, limiting to {MAX_CHUNKS} to prevent timeout")
-            chunks = chunks[:MAX_CHUNKS]
+        try:
+            logger.info(f"Starting chunk generation with size={CHUNK_SIZE}, overlap={CHUNK_OVERLAP}")
+            chunks = chunk_text(full_text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
+            logger.info(f"✓ Successfully generated {len(chunks)} chunks from PDF (total {len(full_text)} chars)")
+        except Exception as chunk_error:
+            logger.error(f"✗ CHUNK GENERATION FAILED: {type(chunk_error).__name__}: {chunk_error}")
+            logger.exception(f"Full traceback for chunk_text error:")
+            raise RuntimeError(f"Failed to chunk PDF text: {str(chunk_error)}")
         
         # ---------- FILTER & PROCESS CHUNKS ----------
         keywords = _get_topic_keywords(topic)

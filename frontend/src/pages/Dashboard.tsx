@@ -3,7 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardService } from '../services/dashboardService';
+import { learningPathService } from '../services/learningPathService';
 import type { ProgressOverview, ConfidenceOverview, ConceptProgress, AdaptiveRecommendation } from '../types/dashboard';
+import type { LearningPath } from '../services/learningPathService';
+import { SUBJECTS } from '../utils/subjects';
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -16,6 +19,7 @@ export default function Dashboard() {
   const [confidenceOverview, setConfidenceOverview] = useState<ConfidenceOverview | null>(null);
   const [concepts, setConcepts] = useState<ConceptProgress[]>([]);
   const [recommendations, setRecommendations] = useState<AdaptiveRecommendation[]>([]);
+  const [learningPaths, setLearningPaths] = useState<LearningPath[]>([]);
 
   useEffect(() => {
     if (!user) {
@@ -34,17 +38,35 @@ export default function Dashboard() {
       setError(null);
 
       // Fetch all dashboard data in parallel
-      const [progressData, confidenceData, summaryData, recommendationsData] = await Promise.all([
+      const [progressData, confidenceData, summaryData, recommendationsData, pathHistory] = await Promise.all([
         dashboardService.getProgressOverview(user.user_id),
         dashboardService.getConfidenceOverview(user.user_id),
         dashboardService.getProgressSummary(user.user_id),
         dashboardService.getAdaptiveRecommendations(user.user_id),
+        learningPathService.getLearningPathHistory(user.user_id),
       ]);
 
       setProgressOverview(progressData);
       setConfidenceOverview(confidenceData);
       setConcepts(summaryData.summary.concepts || []);
       setRecommendations(recommendationsData);
+
+      // Fetch full details for all learning paths
+      if (pathHistory && pathHistory.length > 0) {
+        const pathsWithDetails = await Promise.all(
+          pathHistory.map(async (path) => {
+            try {
+              const detail = await learningPathService.getLearningPathById(path.path_id);
+              const pathData = detail?.path ?? detail;
+              return pathData as LearningPath;
+            } catch (detailError) {
+              console.error('Error fetching learning path detail:', detailError);
+              return path as LearningPath;
+            }
+          })
+        );
+        setLearningPaths(pathsWithDetails);
+      }
     } catch (err) {
       console.error('Error fetching dashboard data:', err);
       setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
@@ -71,6 +93,14 @@ export default function Dashboard() {
   const handleAskAI = (conceptId: number) => {
     // TODO: Navigate to AI Tutor with concept context
     navigate(`/ai-tutor?concept=${conceptId}`);
+  };
+
+  const handleAskAIForGoal = (goal: string, level?: string) => {
+    const goalParam = encodeURIComponent(goal || '');
+    const levelParam = level ? `&level=${encodeURIComponent(level)}` : '';
+    const subjectMatch = SUBJECTS.find((subject) => goal?.startsWith(subject.goal));
+    const subjectParam = subjectMatch ? `&subject=${encodeURIComponent(subjectMatch.id)}` : '';
+    navigate(`/ai-tutor?goal=${goalParam}${levelParam}${subjectParam}`);
   };
 
   if (loading) {
@@ -104,9 +134,43 @@ export default function Dashboard() {
     );
   }
 
-  const overallProgress = progressOverview?.overall_progress_percent || 0;
-  const completedConcepts = progressOverview?.summary.total_concepts_completed || 0;
-  const totalConcepts = progressOverview?.summary.total_concepts_started || 0;
+  // Calculate statistics from learning paths
+  const calculateStatistics = () => {
+    let totalLessons = 0;
+    let completedLessons = 0;
+    let inProgressLessons = 0;
+    
+    learningPaths.forEach(path => {
+      if (path.curriculum) {
+        path.curriculum.forEach(chapter => {
+          if (chapter.lessons) {
+            chapter.lessons.forEach(lesson => {
+              totalLessons++;
+              if (lesson.status === 'complete') {
+                completedLessons++;
+              } else if (lesson.status === 'in_progress') {
+                inProgressLessons++;
+              }
+            });
+          }
+        });
+      }
+    });
+
+    const progress = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0;
+
+    return {
+      total: totalLessons,
+      completed: completedLessons,
+      inProgress: inProgressLessons,
+      progress
+    };
+  };
+
+  const stats = calculateStatistics();
+  const overallProgress = stats.progress;
+  const completedConcepts = stats.completed;
+  const totalConcepts = stats.total;
   const weeklyComparison = progressOverview?.weekly_comparison_percent || 0;
   
   const confidenceScore = confidenceOverview?.confidence || 0;
@@ -149,12 +213,12 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Completed Concepts Card */}
+            {/* Completed Lessons Card */}
             <div className="bg-white border border-[#ce6a86] rounded-[20px] p-5 h-[180px]">
-              <h3 className="text-[18px] font-medium text-[#8f1025] mb-4">Completed Concepts / Total Concepts</h3>
+              <h3 className="text-[18px] font-medium text-[#8f1025] mb-4">Completed Lessons / Total Lessons</h3>
               <div className="space-y-3 text-[12px] italic text-[#8f1025]">
-                <p className="text-[20px] font-semibold not-italic text-[#8f1025]">{completedConcepts} / {totalConcepts} concepts</p>
-                <p className="mt-3">Estimated completion time còn lại</p>
+                <p className="text-[20px] font-semibold not-italic text-[#8f1025]">{completedConcepts} / {totalConcepts} bài học</p>
+                <p className="mt-3">Đang học: {stats.inProgress} bài học</p>
               </div>
             </div>
 
@@ -191,76 +255,98 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Concepts List Section */}
+        {/* Learning Lessons List Section */}
         <div>
           <div className="flex items-center gap-2 mb-[37px]">
             <div className="w-[3px] h-[28px] bg-[#8f1025] rounded-[5px]" />
             <h2 className="text-[18px] font-medium text-[#8f1025]">Danh sách</h2>
           </div>
 
-          {/* Concept Cards */}
+          {/* Lesson Cards */}
           <div className="space-y-[24px]">
-            {concepts.length === 0 ? (
+            {learningPaths.length === 0 ? (
               <div className="bg-white border border-[#ce6a86] rounded-[20px] p-8 text-center">
-                <p className="text-[#8f1025]">Chưa có concepts nào. Hãy bắt đầu learning path của bạn!</p>
+                <p className="text-[#8f1025]">Chưa có lộ trình nào. Hãy bắt đầu learning path của bạn!</p>
               </div>
             ) : (
-              concepts.slice(0, 5).map((concept) => {
-                const displayStatus = getStatusDisplay(concept.status);
-                const progress = Math.round(concept.mastery * 100);
+              (() => {
+                // For each path, find ONE lesson (in-progress or next to study)
+                const lessonCards: JSX.Element[] = [];
                 
-                return (
-                  <div key={concept.concept_id} className="bg-white border border-[#ce6a86] rounded-[20px] p-6 w-[400px] shadow-sm">
-                    <h3 className="text-[18px] font-medium text-[#8f1025] mb-5">{concept.concept_name}</h3>
+                learningPaths.forEach((path) => {
+                  if (path.curriculum) {
+                    let selectedLesson: { chapter: any; lesson: any } | null = null;
                     
-                    {/* Progress Bar */}
-                    <div className="mb-5">
-                      <p className="text-[16px] font-medium text-[#8f1025] mb-3">Progress bar</p>
-                      <div className="flex items-center gap-3">
-                        <div className="flex-1 h-2.5 bg-gray-200 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-[#8f1025] rounded-full transition-all duration-300"
-                            style={{ width: `${progress}%` }}
-                          />
+                    // First, try to find an in-progress lesson
+                    for (const chapter of path.curriculum) {
+                      if (chapter.lessons) {
+                        const inProgressLesson = chapter.lessons.find(
+                          (lesson) => lesson.status === 'in_progress'
+                        );
+                        if (inProgressLesson) {
+                          selectedLesson = { chapter, lesson: inProgressLesson };
+                          break;
+                        }
+                      }
+                    }
+                    
+                    // If no in-progress lesson, find the first not-started lesson
+                    if (!selectedLesson) {
+                      for (const chapter of path.curriculum) {
+                        if (chapter.lessons) {
+                          const notStartedLesson = chapter.lessons.find(
+                            (lesson) => lesson.status === 'not_started' || !lesson.status
+                          );
+                          if (notStartedLesson) {
+                            selectedLesson = { chapter, lesson: notStartedLesson };
+                            break;
+                          }
+                        }
+                      }
+                    }
+                    
+                    // Only create a card if we found a lesson to show
+                    if (selectedLesson) {
+                      lessonCards.push(
+                        <div 
+                          key={`${path.path_id}-${selectedLesson.chapter.title}-${selectedLesson.lesson.title}`}
+                          className="bg-white border border-[#ce6a86] rounded-[20px] p-6 max-w-[800px] shadow-sm"
+                        >
+                          <h3 className="text-[18px] font-medium text-[#8f1025] mb-3">
+                            {path.goal || 'Môn học - Mục tiêu'}
+                          </h3>
+                          
+                          <p className="text-[14px] text-[#8f1025] mb-5">
+                            Chương: {selectedLesson.chapter.title || 'Tên chương'} - Bài: {selectedLesson.lesson.title || 'Tên bài'}
+                          </p>
+
+                          {/* Action Buttons */}
+                          <div className="flex gap-5">
+                            <button 
+                              onClick={() => handleViewResources(0)}
+                              className="bg-[#8f1025] text-white text-[14px] font-medium px-6 py-1.5 rounded-[10px] hover:bg-[#7a0e20] active:scale-95 transition-all duration-200"
+                            >
+                              Xem tài liệu
+                            </button>
+                            <button 
+                              onClick={() => handleAskAIForGoal(path.goal, path.level)}
+                              className="bg-[#8f1025] text-white text-[14px] font-medium px-8 py-1.5 rounded-[10px] hover:bg-[#7a0e20] active:scale-95 transition-all duration-200"
+                            >
+                              Hỏi AI
+                            </button>
+                          </div>
                         </div>
-                        <span className="text-[14px] font-semibold text-[#8f1025] min-w-[45px]">{progress}%</span>
-                      </div>
-                    </div>
+                      );
+                    }
+                  }
+                });
 
-                    {/* Status */}
-                    <div className="mb-5">
-                      <p className="text-[16px] font-medium text-[#8f1025] mb-2">Status:</p>
-                      <ul className="list-disc pl-6 space-y-1 text-[15px]">
-                        <li className={displayStatus === 'completed' ? 'text-[#8f1025] font-medium' : 'text-gray-400'}>
-                          Completed
-                        </li>
-                        <li className={displayStatus === 'in-progress' ? 'text-[#8f1025] font-medium' : 'text-gray-400'}>
-                          In progress
-                        </li>
-                        <li className={displayStatus === 'not-started' ? 'text-[#8f1025] font-medium' : 'text-gray-400'}>
-                          Not started
-                        </li>
-                      </ul>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="flex gap-5 mt-4">
-                      <button 
-                        onClick={() => handleViewResources(concept.concept_id)}
-                        className="bg-[#8f1025] text-white text-[14px] font-medium px-6 py-1.5 rounded-[10px] hover:bg-[#7a0e20] active:scale-95 transition-all duration-200"
-                      >
-                        Xem tài liệu
-                      </button>
-                      <button 
-                        onClick={() => handleAskAI(concept.concept_id)}
-                        className="bg-[#8f1025] text-white text-[14px] font-medium px-8 py-1.5 rounded-[10px] hover:bg-[#7a0e20] active:scale-95 transition-all duration-200"
-                      >
-                        Hỏi AI
-                      </button>
-                    </div>
+                return lessonCards.length > 0 ? lessonCards : (
+                  <div className="bg-white border border-[#ce6a86] rounded-[20px] p-8 text-center">
+                    <p className="text-[#8f1025]">Tất cả bài học đã hoàn thành! 🎉</p>
                   </div>
                 );
-              })
+              })()
             )}
           </div>
         </div>

@@ -499,7 +499,8 @@ def semantic_search(
                                 resource_scores[parent_id] = {
                                     "score": score,
                                     "doc": parent_doc,
-                                    "matched_chunk": doc.get("chunk_index", 0)
+                                    "matched_chunk": doc.get("chunk_index", 0),
+                                    "matched_chunk_content": doc.get("content") or ""
                                 }
                         except Exception as e:
                             logger.debug(f"Error fetching parent resource {parent_id}: {e}")
@@ -515,10 +516,11 @@ def semantic_search(
     for resource_id, data in resource_scores.items():
         doc = data["doc"]
         score = data["score"]
+        snippet_source = data.get("matched_chunk_content") or doc.get("content") or ""
         results.append({
             "resource_id": str(doc.get("_id") or doc.get("resource_id")),
             "title": doc.get("title"),
-            "snippet": (doc.get("content") or "")[:300],
+            "snippet": snippet_source[:600],
             "topic": doc.get("topic"),
             "level": doc.get("level"),
             "source": doc.get("source"),
@@ -529,7 +531,8 @@ def semantic_search(
             "score": round(float(score), 4),
             "created_at": doc.get("created_at"),
             "thumbnail": doc.get("thumbnail"),
-            "pdf_file_path": doc.get("pdf_file_path")
+            "pdf_file_path": doc.get("pdf_file_path"),
+            "matched_chunk": data.get("matched_chunk")
         })
 
     # sort and return top-k

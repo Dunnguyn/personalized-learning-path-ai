@@ -315,6 +315,7 @@ class AITutorService:
             rag_result = self._get_rag_answer(question, goal, level, completed or [])
             answer_text = rag_result.get("answer", "")
             sources = rag_result.get("sources", [])
+            answer_method = rag_result.get("answer_method", "unknown")  # direct_from_context or ai_generated
             
             # ===== 2. CONFIDENCE SCORING =====
             confidence = self._score_confidence(question, answer_text)
@@ -359,6 +360,7 @@ class AITutorService:
                 "success": True,
                 "answer": {
                     "answer_text": answer_text,
+                    "answer_method": answer_method,  # direct_from_context or ai_generated
                     "confidence": round(confidence, 3),
                     "sources": sources
                 },
@@ -396,6 +398,7 @@ class AITutorService:
                 "success": False,
                 "answer": {
                     "answer_text": "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi của bạn. Vui lòng thử lại.",
+                    "answer_method": "error",
                     "confidence": 0.0,
                     "sources": []
                 },

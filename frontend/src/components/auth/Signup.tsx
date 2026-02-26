@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-
-const imgElegantSubLogoDesignsForBeautyBrands1 = "https://www.figma.com/api/mcp/asset/b9f53a19-9c58-41bc-a927-b3c36a787a5d";
-const imgTiXung11 = "https://www.figma.com/api/mcp/asset/74bb8a67-994b-40d2-9369-9f290e40e751";
+import bunnyLogo from '../../assets/Elegant Sub-Logo Designs for Beauty Brands.jpg';
+import illustrationLearning from '../../assets/tải xuống (1).jpg';
 
 interface SignupFormData {
   fullName: string;
@@ -67,7 +66,7 @@ export default function Signup() {
             <img 
               alt="Logo" 
               className="w-full h-full object-cover" 
-              src={imgElegantSubLogoDesignsForBeautyBrands1} 
+              src={bunnyLogo} 
             />
           </div>
 
@@ -163,7 +162,7 @@ export default function Signup() {
           <img 
             alt="Learning illustration" 
             className="w-full h-full object-cover" 
-            src={imgTiXung11} 
+            src={illustrationLearning} 
           />
         </div>
       </div>
