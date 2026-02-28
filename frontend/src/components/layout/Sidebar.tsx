@@ -61,7 +61,7 @@ export default function Sidebar() {
                 <span>{item.name}</span>
               </Link>
               {isActive && (
-                <div className="absolute -left-[21px] top-0 w-[78px] h-[2px] bg-secondary mt-6 rounded-full" />
+                <div className="mt-2 w-[110px] h-[2px] bg-secondary rounded-full" />
               )}
             </div>
           );
