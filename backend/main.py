@@ -16,6 +16,7 @@ from backend.app.api import (
     users,
     resources,
     learning_path,
+    lesson_quiz,
     progress,
     ask,
     recommendations,
@@ -150,6 +151,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(resources.router, prefix="/api")
 app.include_router(learning_path.router, prefix="/api")
+app.include_router(lesson_quiz.router, prefix="/api")
 app.include_router(progress.router, prefix="/api")
 app.include_router(ask.router, prefix="/api")
 app.include_router(recommendations.router, prefix="/api")

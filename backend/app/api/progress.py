@@ -33,8 +33,19 @@ from backend.app.services.progress_service import (
     get_user_progress_summary,
     get_progress
 )
+from backend.app.services.confidence_service import (
+    get_attempt_confidence,
+    get_lesson_confidence,
+    get_user_confidence_overview,
+)
 from backend.app.api.auth import get_current_user
-from backend.app.api.schemas import ProgressUpdate, ProgressUpdateResponse
+from backend.app.api.schemas import (
+    AttemptConfidenceResponse,
+    LessonConfidenceResponse,
+    ProgressUpdate,
+    ProgressUpdateResponse,
+    UserConfidenceOverviewResponse,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)

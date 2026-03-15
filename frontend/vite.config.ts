@@ -44,19 +44,8 @@ export default defineConfig({
     // Source map for production debugging (can be disabled for smaller builds)
     sourcemap: false,
     
-    // Minify configuration
-    minify: 'terser',
-    terserOptions: {
-      compress: {
-        dead_code: true,
-        drop_console: true,
-        drop_debugger: true,
-      },
-      mangle: true,
-      format: {
-        comments: false,
-      },
-    },
+    // Use esbuild minification for compatibility with the current Vite version.
+    minify: 'esbuild',
 
     // Chunk size optimization
     rollupOptions: {
@@ -65,7 +54,6 @@ export default defineConfig({
         manualChunks: {
           // Vendor chunks for reduce initial load time
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-          'vendor-axios': ['axios'],
         },
         
         // Asset naming

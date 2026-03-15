@@ -14,7 +14,7 @@ export const dashboardService = {
     const endpoint = userId 
       ? `/progress/overview?user_id=${userId}` 
       : '/progress/overview';
-    return apiClient.get(endpoint);
+    return apiClient.get(endpoint) as Promise<ProgressOverview>;
   },
 
   /**
@@ -24,7 +24,7 @@ export const dashboardService = {
     const endpoint = userId 
       ? `/progress/confidence?user_id=${userId}` 
       : '/progress/confidence';
-    return apiClient.get(endpoint);
+    return apiClient.get(endpoint) as Promise<ConfidenceOverview>;
   },
 
   /**
@@ -34,7 +34,7 @@ export const dashboardService = {
     const endpoint = userId 
       ? `/progress/summary?user_id=${userId}` 
       : '/progress/summary';
-    return apiClient.get(endpoint);
+    return apiClient.get(endpoint) as Promise<{ success: boolean; user_id: string; summary: ProgressSummary }>;
   },
 
   /**

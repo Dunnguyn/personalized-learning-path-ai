@@ -3,17 +3,16 @@ import type {
   LoginRequest, 
   SignUpRequest, 
   LoginResponse, 
-  SignupResponse,
-  UpdateUserLevelRequest 
+  SignupResponse
 } from '../types/auth';
 
 export const authService = {
   async login(credentials: LoginRequest): Promise<LoginResponse> {
-    return apiClient.post('/auth/login', credentials);
+    return apiClient.post('/auth/login', credentials) as Promise<LoginResponse>;
   },
 
   async signup(data: SignUpRequest): Promise<SignupResponse> {
-    return apiClient.post('/auth/signup', data);
+    return apiClient.post('/auth/signup', data) as Promise<SignupResponse>;
   },
 
   async updateUserLevel(data: { user_id: string; level: string; learning_goal?: string }): Promise<any> {

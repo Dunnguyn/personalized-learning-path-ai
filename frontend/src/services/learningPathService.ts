@@ -33,6 +33,14 @@ export interface LearningPath {
         min_correct_required: number;
         passed: boolean;
         score_percent: number;
+        question_results: Array<{
+          question_id: string;
+          selected_answer: string;
+          is_correct: boolean;
+          correct_option: 'A' | 'B' | 'C' | 'D' | '';
+          correct_answer: string;
+          explanation: string;
+        }>;
         questions: Array<{
           question_id: string;
           question: string;
@@ -72,7 +80,85 @@ export interface LessonProgressApiResponse {
     min_correct_required: number;
     passed: boolean;
     score_percent: number;
+    restarted?: boolean;
+    question_results: Array<{
+      question_id: string;
+      selected_answer: string;
+      is_correct: boolean;
+      correct_option: 'A' | 'B' | 'C' | 'D' | '';
+      correct_answer: string;
+      explanation: string;
+    }>;
   };
+}
+
+export interface QuizOption {
+  key: 'A' | 'B' | 'C' | 'D';
+  text: string;
+}
+
+export interface LessonQuizQuestion {
+  question_id: string;
+  lesson_id: string;
+  concept: string;
+  relation_type: string;
+  question_text: string;
+  template_id: string;
+  related_concepts: string[];
+  options: QuizOption[];
+}
+
+export interface LessonQuizAttemptResponse {
+  attempt_id: string;
+  user_id: string;
+  lesson_id: string;
+  selected_question_ids: string[];
+  pass_threshold_count: number;
+  questions: LessonQuizQuestion[];
+  created_at: string;
+}
+
+export interface LessonQuizSubmitResponse {
+  attempt_id: string;
+  lesson_id: string;
+  score: number;
+  correct_count: number;
+  total_questions: number;
+  pass_threshold_count: number;
+  is_passed: boolean;
+  submitted_at: string;
+  results: Array<{
+    question_id: string;
+    selected_answer: string;
+    correct_option: 'A' | 'B' | 'C' | 'D' | '';
+    is_correct: boolean;
+    answer: string;
+  }>;
+  can_retry: boolean;
+}
+
+export interface LessonQuestionBankSummary {
+  lesson_id: string;
+  chapter_id: string;
+  concept_list: Array<{ id?: string; name?: string }>;
+  total_questions: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LessonQuestionBankDetail extends LessonQuestionBankSummary {
+  questions: Array<{
+    question_id: string;
+    lesson_id: string;
+    concept: string;
+    relation_type: string;
+    question_text: string;
+    answer: string;
+    template_id: string;
+    related_concepts: string[];
+    options: QuizOption[];
+    correct_option: 'A' | 'B' | 'C' | 'D';
+  }>;
 }
 
 export const learningPathService = {
@@ -84,7 +170,7 @@ export const learningPathService = {
     goal: string;
     level: 'beginner' | 'intermediate' | 'advanced';
   }): Promise<LearningPath> {
-    return apiClient.post('/learning-path/generate', data);
+    return apiClient.post('/learning-path/generate', data) as Promise<LearningPath>;
   },
 
   /**
@@ -92,7 +178,7 @@ export const learningPathService = {
    */
   async getLearningPathHistory(userId?: string): Promise<LearningPathHistory[]> {
     const endpoint = userId ? `/learning-path/history?user_id=${userId}` : '/learning-path/history';
-    const response = await apiClient.get(endpoint);
+    const response = await apiClient.get(endpoint) as { paths?: LearningPathHistory[] };
     return response.paths || [];
   },
 
@@ -111,8 +197,39 @@ export const learningPathService = {
     lesson_id: string;
     status: 'not_started' | 'in_progress' | 'complete';
     answered_questions?: string[];
+    restart_assessment?: boolean;
   }): Promise<LessonProgressApiResponse> {
     return apiClient.post('/learning-path/lesson-progress', data) as Promise<LessonProgressApiResponse>;
+  },
+
+  async generateLessonQuestionBank(lessonId: string): Promise<any> {
+    return apiClient.post('/lesson-question-bank/generate', {
+      lesson_id: lessonId,
+    }) as Promise<LessonQuestionBankDetail>;
+  },
+
+  async getLessonQuestionBank(lessonId: string): Promise<LessonQuestionBankDetail> {
+    return apiClient.get(`/lesson-question-bank/${lessonId}`) as Promise<LessonQuestionBankDetail>;
+  },
+
+  async listLessonQuestionBanks(limit = 50): Promise<{ total: number; items: LessonQuestionBankSummary[] }> {
+    return apiClient.get(`/lesson-question-banks?limit=${limit}`) as Promise<{ total: number; items: LessonQuestionBankSummary[] }>;
+  },
+
+  async createLessonQuizAttempt(lessonId: string): Promise<LessonQuizAttemptResponse> {
+    return apiClient.post('/lesson-quiz/attempt', {
+      lesson_id: lessonId,
+    }) as Promise<LessonQuizAttemptResponse>;
+  },
+
+  async submitLessonQuiz(
+    attemptId: string,
+    userAnswers: Record<string, string>
+  ): Promise<LessonQuizSubmitResponse> {
+    return apiClient.post('/lesson-quiz/submit', {
+      attempt_id: attemptId,
+      user_answers: userAnswers,
+    }) as Promise<LessonQuizSubmitResponse>;
   },
 
   /**
@@ -120,7 +237,7 @@ export const learningPathService = {
    */
   async getConcepts(): Promise<any[]> {
     try {
-      const response = await apiClient.get('/concepts');
+      const response = await apiClient.get('/concepts') as { concepts?: any[] };
       return response.concepts || [];
     } catch (error) {
       console.error('Error fetching concepts:', error);
@@ -160,7 +277,7 @@ export const learningPathService = {
    */
   async getConceptResources(conceptId: number): Promise<any[]> {
     try {
-      const response = await apiClient.get(`/resources?concept_id=${conceptId}`);
+      const response = await apiClient.get(`/resources?concept_id=${conceptId}`) as { resources?: any[] };
       return response.resources || [];
     } catch (error) {
       console.error('Error fetching concept resources:', error);

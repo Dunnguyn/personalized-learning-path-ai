@@ -30,31 +30,45 @@ logger = logging.getLogger(__name__)
 
 
 SUPPORTED_RELATIONS = {"prerequisite", "related_to", "used_in", "part_of"}
+RELATION_PRIORITY = {
+    "prerequisite": 1,
+    "used_in": 2,
+    "part_of": 3,
+    "related_to": 4,
+    "comparison": 5,
+    "definition": 6,
+}
 
 DEFAULT_TEMPLATES: Dict[str, List[str]] = {
     "definition": [
         "{concept} là gì?",
         "Hãy giải thích khái niệm {concept}.",
+        "Khái niệm cốt lõi của {concept} là gì?",
     ],
     "prerequisite": [
         "Vì sao cần học {concept1} trước {concept2}?",
         "{concept1} đóng vai trò nền tảng như thế nào cho {concept2}?",
+        "Nếu chưa hiểu {concept1} thì sẽ gặp khó khăn gì khi học {concept2}?",
     ],
     "related_to": [
         "{concept1} liên quan như thế nào đến {concept2}?",
         "Mối liên hệ giữa {concept1} và {concept2} là gì?",
+        "{concept1} hỗ trợ việc hiểu {concept2} ra sao?",
     ],
     "used_in": [
         "{concept1} được sử dụng như thế nào trong {concept2}?",
         "Vai trò của {concept1} trong {concept2} là gì?",
+        "Khi áp dụng {concept2}, {concept1} xuất hiện ở bước nào?",
     ],
     "part_of": [
         "{concept1} là một phần của {concept2} như thế nào?",
         "{concept1} đóng góp gì trong cấu trúc của {concept2}?",
+        "Trong tổng thể {concept2}, {concept1} giữ vai trò gì?",
     ],
     "comparison": [
         "Sự khác nhau giữa {concept1} và {concept2} là gì?",
         "Hãy so sánh {concept1} và {concept2}.",
+        "Điểm giống và khác giữa {concept1} với {concept2} là gì?",
     ],
 }
 
@@ -125,8 +139,9 @@ class QuestionGenerator:
 
         all_questions = relation_questions + comparison_questions + definition_questions
         deduplicated = self._deduplicate_questions(all_questions)
+        ordered = self._prioritize_questions(deduplicated)
 
-        return deduplicated[:num_questions]
+        return ordered[:num_questions]
 
     def _get_chapter(self, chapter_id: str) -> Optional[Dict]:
         """
@@ -293,9 +308,10 @@ class QuestionGenerator:
 
             templates = self.templates.get(relation.relation_type, [])
             for template in templates:
+                focus_concept = target_name if relation.relation_type == "prerequisite" else source_name
                 results.append({
                     "question": template.format(concept1=source_name, concept2=target_name),
-                    "concept": target_name if relation.relation_type == "prerequisite" else source_name,
+                    "concept": focus_concept,
                     "relation_type": relation.relation_type,
                     "related_concepts": [source_name, target_name]
                 })
@@ -319,8 +335,8 @@ class QuestionGenerator:
             return []
 
         results: List[Dict] = []
-        pairs = self._pairwise(concepts)
-        for left, right in pairs:
+        related_pairs = self._related_concept_pairs(concepts)
+        for left, right in related_pairs:
             for template in self.templates.get("comparison", []):
                 results.append({
                     "question": template.format(concept1=left.name, concept2=right.name),
@@ -335,6 +351,12 @@ class QuestionGenerator:
         for index, left in enumerate(concepts):
             for right in concepts[index + 1:]:
                 yield left, right
+
+    def _related_concept_pairs(self, concepts: Sequence[ConceptNode]) -> List[Tuple[ConceptNode, ConceptNode]]:
+        pairs = list(self._pairwise(concepts))
+        if len(pairs) <= 3:
+            return pairs
+        return pairs[:3]
 
     def _lookup_concept_name(self, concept_id: str) -> Optional[str]:
         query_options = []
@@ -365,6 +387,34 @@ class QuestionGenerator:
             results.append(item)
 
         return results
+
+    def _prioritize_questions(self, questions: Sequence[Dict]) -> List[Dict]:
+        buckets: Dict[str, List[Dict]] = {}
+        for item in questions:
+            concept_name = str(item.get("concept", "")).strip().lower() or "unknown"
+            buckets.setdefault(concept_name, []).append(item)
+
+        for concept_name in buckets:
+            buckets[concept_name].sort(
+                key=lambda item: (
+                    RELATION_PRIORITY.get(str(item.get("relation_type", "")), 99),
+                    len(item.get("related_concepts", [])) * -1,
+                    item.get("question", "")
+                )
+            )
+
+        ordered: List[Dict] = []
+        while True:
+            added = False
+            for concept_name in sorted(buckets.keys()):
+                if not buckets[concept_name]:
+                    continue
+                ordered.append(buckets[concept_name].pop(0))
+                added = True
+            if not added:
+                break
+
+        return ordered
 
 
 def generate_questions(chapter_id: str, num_questions: int) -> List[Dict]:

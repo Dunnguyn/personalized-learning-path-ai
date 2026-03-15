@@ -4,7 +4,7 @@ import DashboardLayout from '../components/layout/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardService } from '../services/dashboardService';
 import { learningPathService } from '../services/learningPathService';
-import type { ProgressOverview, ConfidenceOverview, ConceptProgress, AdaptiveRecommendation } from '../types/dashboard';
+import type { ProgressOverview, ConfidenceOverview, AdaptiveRecommendation } from '../types/dashboard';
 import type { LearningPath } from '../services/learningPathService';
 import { SUBJECTS } from '../utils/subjects';
 
@@ -17,7 +17,6 @@ export default function Dashboard() {
   
   const [progressOverview, setProgressOverview] = useState<ProgressOverview | null>(null);
   const [confidenceOverview, setConfidenceOverview] = useState<ConfidenceOverview | null>(null);
-  const [concepts, setConcepts] = useState<ConceptProgress[]>([]);
   const [recommendations, setRecommendations] = useState<AdaptiveRecommendation[]>([]);
   const [learningPaths, setLearningPaths] = useState<LearningPath[]>([]);
 
@@ -38,17 +37,15 @@ export default function Dashboard() {
       setError(null);
 
       // Fetch all dashboard data in parallel
-      const [progressData, confidenceData, summaryData, recommendationsData, pathHistory] = await Promise.all([
+      const [progressData, confidenceData, recommendationsData, pathHistory] = await Promise.all([
         dashboardService.getProgressOverview(user.user_id),
         dashboardService.getConfidenceOverview(user.user_id),
-        dashboardService.getProgressSummary(user.user_id),
         dashboardService.getAdaptiveRecommendations(user.user_id),
         learningPathService.getLearningPathHistory(user.user_id),
       ]);
 
       setProgressOverview(progressData);
       setConfidenceOverview(confidenceData);
-      setConcepts(summaryData.summary.concepts || []);
       setRecommendations(recommendationsData);
 
       // Fetch full details for all learning paths
@@ -75,25 +72,11 @@ export default function Dashboard() {
     }
   };
 
-  const getStatusDisplay = (status: string) => {
-    const statusMap: Record<string, string> = {
-      'not_started': 'not-started',
-      'in_progress': 'in-progress',
-      'proficient': 'completed',
-      'complete': 'completed',
-    };
-    return statusMap[status] || status;
-  };
-
   const handleViewResources = (conceptId: number) => {
     // TODO: Navigate to resources page filtered by concept
     navigate(`/resources?concept=${conceptId}`);
   };
-
-  const handleAskAI = (conceptId: number) => {
-    // TODO: Navigate to AI Tutor with concept context
-    navigate(`/ai-tutor?concept=${conceptId}`);
-  };
+  void handleViewResources;
 
   const handleAskAIForGoal = (goal: string, level?: string) => {
     const goalParam = encodeURIComponent(goal || '');

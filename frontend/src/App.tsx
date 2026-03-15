@@ -6,6 +6,7 @@ import SignupStep2 from './components/auth/SignupStep2'
 import Dashboard from './pages/Dashboard'
 import LearningPath from './pages/LearningPath'
 import LearningPathDetail from './pages/LearningPathDetail'
+import QuestionBankManager from './pages/QuestionBankManager'
 import Resources from './pages/Resources'
 import AITutor from './pages/AITutor'
 import Settings from './pages/Settings'
@@ -24,6 +25,7 @@ function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/learning-path" element={<LearningPath />} />
           <Route path="/learning-path/:pathId" element={<LearningPathDetail />} />
+          <Route path="/question-banks" element={<QuestionBankManager />} />
           <Route path="/resources" element={<Resources />} />
           <Route path="/ai-tutor" element={<AITutor />} />
           <Route path="/rag" element={<RagSimple />} />

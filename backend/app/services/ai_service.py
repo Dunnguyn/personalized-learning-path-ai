@@ -1,9 +1,8 @@
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 import logging
 import numpy as np
 from datetime import datetime
 from functools import lru_cache
-import json
 import re
 
 from backend.app.services.rag_pipeline import RAGPipeline
@@ -418,157 +417,14 @@ class AITutorService:
         num_questions: int
     ) -> List[Dict[str, str]]:
         """
-        Generate assessment questions in strict JSON format.
-
-        Strategy:
-        1) Try LLM with strict prompt and JSON-only output instructions.
-        2) Validate/normalize output to expected schema.
-        3) Fallback to deterministic rule-based generation from chapter content.
+        Generate assessment questions using deterministic rules only.
         """
-        prompt = self._build_assessment_prompt(
-            concept=concept,
-            difficulty=difficulty,
-            chapter_content=chapter_content,
-            num_questions=num_questions
-        )
-
-        llm_output = None
-        try:
-            llm_output = self.rag.generate(prompt=prompt, resources=[])
-        except Exception as e:
-            logger.warning(f"Assessment LLM generation failed, fallback to rule-based: {e}")
-
-        parsed_questions = self._parse_assessment_json(llm_output) if llm_output else []
-        normalized = self._normalize_assessment_questions(
-            parsed_questions,
-            concept=concept,
-            difficulty=difficulty,
-            num_questions=num_questions
-        )
-
-        if len(normalized) == num_questions:
-            return normalized
-
-        logger.info(
-            "Assessment output incomplete from LLM (%s/%s), using rule-based fallback",
-            len(normalized),
-            num_questions
-        )
-
         return self._generate_rule_based_assessment(
             concept=concept,
             difficulty=difficulty,
             chapter_content=chapter_content,
             num_questions=num_questions
         )
-
-    def _build_assessment_prompt(
-        self,
-        concept: str,
-        difficulty: str,
-        chapter_content: str,
-        num_questions: int
-    ) -> str:
-        return (
-            "Bạn là một trợ lý AI giáo dục có nhiệm vụ tạo câu hỏi kiểm tra kiến thức cho hệ thống học tập cá nhân hóa.\n\n"
-            "Nhiệm vụ của bạn là tạo câu hỏi dựa trên nội dung chương học và concept được cung cấp.\n\n"
-            "Yêu cầu:\n"
-            "1. Câu hỏi phải bám sát nội dung chương học.\n"
-            "2. Câu hỏi phải tập trung vào concept chính.\n"
-            "3. Độ khó của câu hỏi phải đúng với mức difficulty được cung cấp.\n"
-            "4. Không tạo thông tin ngoài nội dung.\n"
-            "5. Câu trả lời phải chính xác và ngắn gọn.\n"
-            "6. Cung cấp giải thích để hỗ trợ học tập.\n\n"
-            "Quy tắc độ khó:\n"
-            "- easy -> câu hỏi định nghĩa hoặc nhớ kiến thức\n"
-            "- medium -> câu hỏi giải thích hoặc áp dụng\n"
-            "- hard -> câu hỏi phân tích, so sánh hoặc giải quyết vấn đề\n\n"
-            f"Concept: {concept}\n"
-            f"Độ khó: {difficulty}\n"
-            f"Số câu hỏi cần tạo: {num_questions}\n\n"
-            "Nội dung chương học:\n"
-            f"{chapter_content}\n\n"
-            "Trả kết quả dưới dạng JSON hợp lệ, chỉ trả về một mảng JSON duy nhất, không có markdown, không có text ngoài JSON:\n"
-            "[\n"
-            "  {\n"
-            "    \"question\": \"...\",\n"
-            "    \"answer\": \"...\",\n"
-            "    \"explanation\": \"...\",\n"
-            "    \"difficulty\": \"...\",\n"
-            "    \"concept\": \"...\"\n"
-            "  }\n"
-            "]\n"
-        )
-
-    def _parse_assessment_json(self, text: str) -> List[Dict[str, Any]]:
-        if not text:
-            return []
-
-        raw = text.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?", "", raw).strip()
-            raw = re.sub(r"```$", "", raw).strip()
-
-        # Try full parse first
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                return parsed
-        except Exception:
-            pass
-
-        # Fallback: extract first JSON array in string
-        start = raw.find("[")
-        end = raw.rfind("]")
-        if start >= 0 and end > start:
-            snippet = raw[start:end + 1]
-            try:
-                parsed = json.loads(snippet)
-                if isinstance(parsed, list):
-                    return parsed
-            except Exception:
-                return []
-
-        return []
-
-    def _normalize_assessment_questions(
-        self,
-        questions: List[Dict[str, Any]],
-        concept: str,
-        difficulty: str,
-        num_questions: int
-    ) -> List[Dict[str, str]]:
-        normalized: List[Dict[str, str]] = []
-        seen_questions = set()
-
-        for item in questions:
-            if not isinstance(item, dict):
-                continue
-
-            question = str(item.get("question", "")).strip()
-            answer = str(item.get("answer", "")).strip()
-            explanation = str(item.get("explanation", "")).strip()
-
-            if not question or not answer or not explanation:
-                continue
-
-            q_key = question.lower()
-            if q_key in seen_questions:
-                continue
-            seen_questions.add(q_key)
-
-            normalized.append({
-                "question": question,
-                "answer": answer,
-                "explanation": explanation,
-                "difficulty": difficulty,
-                "concept": concept
-            })
-
-            if len(normalized) >= num_questions:
-                break
-
-        return normalized
 
     def _generate_rule_based_assessment(
         self,

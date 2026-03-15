@@ -18,7 +18,6 @@ export default function LearningPath() {
   const [concepts, setConcepts] = useState<ConceptWithProgress[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedConcept, setSelectedConcept] = useState<ConceptWithProgress | null>(null);
   const [showCreatePath, setShowCreatePath] = useState(false);
   const [pathForm, setPathForm] = useState({
     subjectId: SUBJECTS[0]?.id ?? '',
@@ -154,47 +153,6 @@ export default function LearningPath() {
     }
   };
 
-  const handleStartConcept = async (conceptId: number) => {
-    if (!user) return;
-    try {
-      await learningPathService.updateConceptProgress({
-        user_id: user.user_id,
-        concept_id: conceptId,
-        mastery: 0.05,
-        confidence: 0.3,
-        total_attempts: 1,
-      });
-      
-      // Refresh data
-      await fetchLearningPath();
-    } catch (err) {
-      console.error('Error starting concept:', err);
-    }
-  };
-
-  const handleViewResources = (conceptId: number) => {
-    navigate(`/resources?concept=${conceptId}`);
-  };
-
-  const handleAskAI = (conceptId: number) => {
-    navigate(`/ai-tutor?concept=${conceptId}`);
-  };
-
-  const getStatusColor = (status?: string) => {
-    switch (status) {
-      case 'complete':
-        return 'bg-green-100 border-green-300 text-green-800';
-      case 'in_progress':
-        return 'bg-blue-100 border-blue-300 text-blue-800';
-      case 'proficient':
-        return 'bg-cyan-100 border-cyan-300 text-cyan-800';
-      case 'not_started':
-        return 'bg-gray-100 border-gray-300 text-gray-800';
-      default:
-        return 'bg-gray-100 border-gray-300 text-gray-800';
-    }
-  };
-
   const getStatusText = (status?: string) => {
     switch (status) {
       case 'complete':
@@ -209,6 +167,7 @@ export default function LearningPath() {
         return '◯ Chưa bắt đầu';
     }
   };
+  void getStatusText;
 
   const getDifficultyColor = (difficulty: number) => {
     if (difficulty === 1) return 'text-green-600';
@@ -216,6 +175,7 @@ export default function LearningPath() {
     if (difficulty === 3) return 'text-orange-600';
     return 'text-red-600';
   };
+  void getDifficultyColor;
 
   const getDifficultyText = (difficulty: number) => {
     switch (difficulty) {
@@ -231,6 +191,7 @@ export default function LearningPath() {
         return 'N/A';
     }
   };
+  void getDifficultyText;
 
   const getChapterStatus = (lessons: Array<{ status?: string }>) => {
     if (!lessons.length) return 'Chưa bắt đầu';

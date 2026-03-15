@@ -207,11 +207,13 @@ class LessonAssessmentResponse(BaseModel):
     required_questions: int = 10
     attempted_questions: int = 0
     completed: bool = False
+    generation: int = 0
     correct_answers: int = 0
     min_correct_required: int = 7
     passed: bool = False
     score_percent: float = 0.0
     questions: List[LessonAssessmentQuestionResponse] = Field(default_factory=list)
+    question_results: List[dict] = Field(default_factory=list)
 
 
 class LessonResponse(BaseModel):
@@ -245,6 +247,7 @@ class LessonProgressUpdate(BaseModel):
     lesson_id: str = Field(..., description="Lesson identifier")
     status: Literal["not_started", "in_progress", "complete"]
     answered_questions: Optional[List[str]] = None
+    restart_assessment: bool = False
 
 
 class LessonProgressResponse(BaseModel):
@@ -253,6 +256,148 @@ class LessonProgressResponse(BaseModel):
     status: str
     updated_at: datetime
     assessment_result: Optional[dict] = None
+
+
+# =========================
+# LESSON QUESTION BANK / QUIZ
+# =========================
+class QuestionBankOptionResponse(BaseModel):
+    key: str
+    text: str
+
+
+class QuestionBankQuestionResponse(BaseModel):
+    question_id: str
+    lesson_id: str
+    concept: str
+    relation_type: str
+    question_text: str
+    answer: str
+    template_id: str
+    related_concepts: List[str] = Field(default_factory=list)
+    options: List[QuestionBankOptionResponse] = Field(default_factory=list)
+    correct_option: str = "A"
+
+
+class GenerateLessonQuestionBankRequest(BaseModel):
+    lesson_id: str = Field(..., min_length=1, description="Lesson identifier")
+
+
+class LessonQuestionBankResponse(BaseModel):
+    lesson_id: str
+    chapter_id: str
+    concept_list: List[dict] = Field(default_factory=list)
+    total_questions: int
+    questions: List[QuestionBankQuestionResponse] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class LessonQuestionBankSummaryResponse(BaseModel):
+    lesson_id: str
+    chapter_id: str
+    concept_list: List[dict] = Field(default_factory=list)
+    total_questions: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class LessonQuestionBankListResponse(BaseModel):
+    total: int
+    items: List[LessonQuestionBankSummaryResponse] = Field(default_factory=list)
+
+
+class CreateLessonQuizAttemptRequest(BaseModel):
+    lesson_id: str = Field(..., min_length=1, description="Lesson identifier")
+
+
+class LessonQuizAttemptQuestionResponse(BaseModel):
+    question_id: str
+    lesson_id: str
+    concept: str
+    relation_type: str
+    question_text: str
+    template_id: str
+    related_concepts: List[str] = Field(default_factory=list)
+    options: List[QuestionBankOptionResponse] = Field(default_factory=list)
+
+
+class LessonQuizAttemptResponse(BaseModel):
+    attempt_id: str
+    user_id: str
+    lesson_id: str
+    attempt_number: int
+    selected_question_ids: List[str] = Field(default_factory=list)
+    pass_threshold_count: int
+    questions: List[LessonQuizAttemptQuestionResponse] = Field(default_factory=list)
+    created_at: datetime
+
+
+class SubmitLessonQuizRequest(BaseModel):
+    attempt_id: str = Field(..., min_length=1, description="Quiz attempt identifier")
+    user_answers: dict = Field(default_factory=dict, description="Mapping question_id -> selected option")
+
+
+class LessonQuizResultItemResponse(BaseModel):
+    question_id: str
+    selected_answer: str
+    correct_option: str
+    is_correct: bool
+    answer: str
+
+
+class SubmitLessonQuizResponse(BaseModel):
+    attempt_id: str
+    lesson_id: str
+    score: float
+    correct_count: int
+    total_questions: int
+    attempt_number: int
+    confidence_score: float
+    pass_threshold_count: int
+    is_passed: bool
+    submitted_at: datetime
+    results: List[LessonQuizResultItemResponse] = Field(default_factory=list)
+    can_retry: bool
+
+
+class AttemptConfidenceResponse(BaseModel):
+    attempt_id: str
+    lesson_id: str
+    confidence_score: float
+    correct_count: int
+    total_questions: int
+    attempt_number: int
+    is_passed: bool
+    score: float
+    submitted_at: Optional[datetime] = None
+
+
+class LessonConfidenceResponse(BaseModel):
+    lesson_id: str
+    confidence_score: float
+    mastery_score: float
+    best_confidence_score: float
+    correct_count: int
+    total_questions: int
+    attempt_number: int
+    is_passed: bool
+    score: float
+    band: str
+    updated_at: Optional[datetime] = None
+
+
+class UserConfidenceOverviewResponse(BaseModel):
+    success: bool = True
+    user_id: str
+    confidence: float
+    average_mastery: float
+    lesson_count: int
+    passed_lessons: int
+    recent_average_confidence: float
+    trend: str
+    explanation: str
+    details: List[dict] = Field(default_factory=list)
 
 
 # =========================

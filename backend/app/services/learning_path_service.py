@@ -6,10 +6,12 @@ import os
 from functools import lru_cache
 import json
 import re
+import random
 
 from backend.app.database.mongo import get_db
 from backend.app.services.resource_recommender import recommend_resources_for_concept
 from backend.app.services.progress_service import get_progress
+from backend.app.services.question_generator import generate_questions as generate_template_questions
 from backend.app.services.adaptive_engine import (
     decide_learning_mode,
     filter_resources_by_mode,
@@ -39,6 +41,12 @@ logger.info(f"Learning path service initialized: max_recs={MAX_RECOMMENDATIONS}"
 _curriculum_rag = RAGPipeline()
 LESSON_ASSESSMENT_QUESTION_COUNT = 10
 MCQ_OPTION_KEYS = ["A", "B", "C", "D"]
+
+
+def calculate_min_correct_required(required_questions: int) -> int:
+    if required_questions <= 0:
+        return 0
+    return max(1, min(required_questions, int(required_questions * 0.7 + 0.9999)))
 
 
 # =====================================================
@@ -186,168 +194,129 @@ def _difficulty_from_level(level: str) -> str:
     return mapping.get(level, "medium")
 
 
-def _build_rule_based_lesson_questions(
-    concept: str,
-    difficulty: str,
-    lesson_summary: str,
-    lesson_resources: List[str],
-    num_questions: int = LESSON_ASSESSMENT_QUESTION_COUNT
-) -> List[Dict]:
-    summary = re.sub(r"\s+", " ", (lesson_summary or "").strip())
-    resource_text = "; ".join([r for r in lesson_resources if isinstance(r, str) and r.strip()])
-    source = summary or resource_text or f"Noi dung bai hoc ve {concept}."
-    source = source[:260] + ("..." if len(source) > 260 else "")
+def _relation_answer_text(item: Dict, fallback_concept: str) -> str:
+    concept_name = item.get("concept") or fallback_concept
+    related = item.get("related_concepts") or [concept_name]
+    relation_type = item.get("relation_type", "definition")
 
-    questions = []
-    for idx in range(num_questions):
-        options = [
-            {"key": "A", "text": source},
-            {"key": "B", "text": f"Noi dung tap trung vao cong cu khong lien quan truc tiep den {concept}."},
-            {"key": "C", "text": f"Noi dung cho rang chi can hoc thuoc ly thuyet ma khong can ap dung cho {concept}."},
-            {"key": "D", "text": f"Noi dung mo ta mot chu de ngoai pham vi bai hoc ve {concept}."}
+    if relation_type == "prerequisite" and len(related) >= 2:
+        return f"{related[0]} la kien thuc nen tang can nam truoc khi hoc {related[1]}."
+    if relation_type == "used_in" and len(related) >= 2:
+        return f"{related[0]} duoc ap dung truc tiep trong {related[1]}."
+    if relation_type == "part_of" and len(related) >= 2:
+        return f"{related[0]} la mot thanh phan cau thanh cua {related[1]}."
+    if relation_type == "related_to" and len(related) >= 2:
+        return f"{related[0]} co moi lien he truc tiep va ho tro viec hieu {related[1]}."
+    if relation_type == "comparison" and len(related) >= 2:
+        return f"{related[0]} va {related[1]} khac nhau ve vai tro, dac diem hoac cach ap dung."
+    return f"{concept_name} la mot khai niem can duoc hieu ro trong chuong hoc nay."
+
+
+def _relation_distractors(item: Dict, fallback_concept: str) -> List[str]:
+    concept_name = item.get("concept") or fallback_concept
+    related = item.get("related_concepts") or [concept_name]
+    other_name = related[1] if len(related) > 1 else concept_name
+    relation_type = item.get("relation_type", "definition")
+
+    if relation_type == "prerequisite":
+        return [
+            f"{other_name} can hoc truoc ma khong can biet {concept_name}.",
+            f"{concept_name} va {other_name} hoan toan doc lap, khong co thu tu hoc tap.",
+            f"{concept_name} chi la mot vi du phu, khong anh huong den viec hoc {other_name}.",
+        ]
+    if relation_type == "used_in":
+        return [
+            f"{concept_name} khong duoc su dung trong {other_name}.",
+            f"{other_name} chi lien quan den ghi nho ly thuyet, khong can {concept_name}.",
+            f"{concept_name} va {other_name} thuoc hai chu de tach biet, khong giao nhau.",
+        ]
+    if relation_type == "part_of":
+        return [
+            f"{concept_name} khong nam trong cau truc cua {other_name}.",
+            f"{other_name} co the hieu day du ma khong can den {concept_name}.",
+            f"{concept_name} chi la mot vi du ngoai le, khong phai thanh phan cua {other_name}.",
+        ]
+    if relation_type == "related_to":
+        return [
+            f"{concept_name} khong lien quan den viec hieu {other_name}.",
+            f"{concept_name} va {other_name} khong co diem chung trong chuong hoc nay.",
+            f"{other_name} chi thuoc mot chu de khac, khong can xet {concept_name}.",
+        ]
+    if relation_type == "comparison":
+        return [
+            f"{concept_name} va {other_name} hoan toan giong nhau, khong co diem nao can phan biet.",
+            f"{concept_name} va {other_name} khong the dat canh de so sanh.",
+            f"Chi can hoc mot trong hai, vi {concept_name} va {other_name} la mot.",
         ]
 
-        if difficulty == "easy":
-            question = f"Cau {idx + 1}: Theo bai hoc, phat bieu nao dung nhat ve {concept}?"
-        elif difficulty == "medium":
-            question = f"Cau {idx + 1}: Dua vao bai hoc, lua chon phat bieu ap dung dung cho {concept}."
-        else:
-            question = f"Cau {idx + 1}: Chon nhan dinh phan tich hop ly nhat theo bai hoc ve {concept}."
-
-        questions.append({
-            "question_id": uuid.uuid4().hex,
-            "question": question,
-            "answer": source,
-            "explanation": "Dap an va giai thich duoc sinh truc tiep tu noi dung bai hoc de ho tro on tap.",
-            "difficulty": difficulty,
-            "concept": concept,
-            "options": options,
-            "correct_option": "A"
-        })
-
-    return questions
+    return [
+        f"{concept_name} khong co lien quan den noi dung cua chuong hoc nay.",
+        f"{concept_name} chi can ghi nho ten goi, khong can hieu quan he voi {other_name}.",
+        f"{concept_name} thuoc mot chu de khac va khong xuat hien trong chuong nay.",
+    ]
 
 
-def _build_mcq_prompt(
-    concept: str,
+def _build_chapter_graph_questions(
+    chapter_id: str,
+    fallback_concept: str,
     difficulty: str,
-    lesson_summary: str,
-    lesson_resources: List[str],
-    rag_resources: List[Dict],
-    num_questions: int
-) -> str:
-    lesson_materials = "\n".join([f"- {r}" for r in lesson_resources if isinstance(r, str) and r.strip()])
-    if not lesson_materials:
-        lesson_materials = "- No explicit lesson resources"
-
-    rag_lines = []
-    for idx, item in enumerate(rag_resources[:8], start=1):
-        title = item.get("title", "unknown")
-        snippet = re.sub(r"\s+", " ", (item.get("snippet") or "").strip())
-        if len(snippet) > 280:
-            snippet = snippet[:280] + "..."
-        rag_lines.append(f"- [{idx}] {title}: {snippet}")
-
-    rag_context = "\n".join(rag_lines) if rag_lines else "- No additional retrieved context"
-
-    return (
-        "You are an educational assessment designer.\n"
-        "Create high-quality multiple-choice questions (MCQ) grounded ONLY in the provided materials.\n"
-        "Do not invent facts outside materials.\n"
-        "Return ONLY valid JSON array with exactly the requested number of items.\n"
-        "Each item schema:\n"
-        "{\"question\":string,\"options\":[{\"key\":\"A\",\"text\":string},{\"key\":\"B\",\"text\":string},{\"key\":\"C\",\"text\":string},{\"key\":\"D\",\"text\":string}],\"correct_option\":\"A|B|C|D\",\"answer\":string,\"explanation\":string,\"difficulty\":string,\"concept\":string}\n"
-        "Rules:\n"
-        "- Questions must be diverse and non-duplicated.\n"
-        "- Options must be plausible; exactly one correct option.\n"
-        "- explanation must briefly justify why the correct option is right.\n"
-        "- difficulty and concept must match provided values exactly.\n\n"
-        f"Concept: {concept}\n"
-        f"Difficulty: {difficulty}\n"
-        f"Number of questions: {num_questions}\n\n"
-        "Lesson summary:\n"
-        f"{lesson_summary or 'No summary provided'}\n\n"
-        "Lesson resources:\n"
-        f"{lesson_materials}\n\n"
-        "Retrieved context:\n"
-        f"{rag_context}\n"
-    )
-
-
-def _extract_json_array(text: str) -> Optional[str]:
-    if not text:
-        return None
-
-    raw = text.strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?", "", raw).strip()
-        raw = re.sub(r"```$", "", raw).strip()
-
-    start = raw.find("[")
-    end = raw.rfind("]")
-    if start >= 0 and end > start:
-        return raw[start:end + 1]
-    return None
-
-
-def _normalize_mcq_items(
-    items: List[Dict],
-    concept: str,
-    difficulty: str,
-    num_questions: int
+    num_questions: int,
+    variation_seed: int
 ) -> List[Dict]:
-    normalized = []
-    seen = set()
+    try:
+        generated = generate_template_questions(
+            chapter_id=chapter_id,
+            num_questions=max(num_questions * 2, num_questions)
+        )
+    except Exception as e:
+        logger.warning(f"QuestionGenerator failed for chapter {chapter_id}: {e}")
+        return []
 
-    for item in items:
-        if not isinstance(item, dict):
+    if not generated:
+        return []
+
+    rng = random.Random(f"chapter:{chapter_id}:{difficulty}:{variation_seed}")
+    pool = generated[:]
+    rng.shuffle(pool)
+
+    normalized: List[Dict] = []
+    seen_questions = set()
+
+    for idx, item in enumerate(pool):
+        question_text = str(item.get("question", "")).strip()
+        if not question_text:
             continue
-
-        question = str(item.get("question", "")).strip()
-        answer = str(item.get("answer", "")).strip()
-        explanation = str(item.get("explanation", "")).strip()
-        correct_option = str(item.get("correct_option", "")).strip().upper()
-        options = item.get("options", [])
-
-        if not question or not explanation:
+        question_key = question_text.lower()
+        if question_key in seen_questions:
             continue
-        if correct_option not in MCQ_OPTION_KEYS:
-            continue
-        if not isinstance(options, list) or len(options) != 4:
-            continue
+        seen_questions.add(question_key)
 
-        option_map = {}
-        valid_options = []
-        for opt in options:
-            if not isinstance(opt, dict):
-                continue
-            key = str(opt.get("key", "")).strip().upper()
-            text = str(opt.get("text", "")).strip()
-            if key in MCQ_OPTION_KEYS and text:
-                option_map[key] = text
+        correct_text = _relation_answer_text(item, fallback_concept)
+        distractors = _relation_distractors(item, fallback_concept)
 
-        if set(option_map.keys()) != set(MCQ_OPTION_KEYS):
-            continue
+        option_payload = [
+            {"is_correct": True, "text": correct_text},
+            {"is_correct": False, "text": distractors[0]},
+            {"is_correct": False, "text": distractors[1]},
+            {"is_correct": False, "text": distractors[2]},
+        ]
+        rng.shuffle(option_payload)
 
-        for key in MCQ_OPTION_KEYS:
-            valid_options.append({"key": key, "text": option_map[key]})
-
-        if not answer:
-            answer = option_map.get(correct_option, "")
-
-        q_key = question.lower()
-        if q_key in seen:
-            continue
-        seen.add(q_key)
+        options = []
+        correct_option = "A"
+        for option_key, payload in zip(MCQ_OPTION_KEYS, option_payload):
+            options.append({"key": option_key, "text": payload["text"]})
+            if payload["is_correct"]:
+                correct_option = option_key
 
         normalized.append({
             "question_id": uuid.uuid4().hex,
-            "question": question,
-            "answer": answer,
-            "explanation": explanation,
+            "question": question_text,
+            "answer": correct_text,
+            "explanation": "Cau hoi duoc sinh tu concept va quan he trong knowledge graph cua chuong hoc.",
             "difficulty": difficulty,
-            "concept": concept,
-            "options": valid_options,
+            "concept": item.get("concept") or fallback_concept,
+            "options": options,
             "correct_option": correct_option
         })
 
@@ -362,62 +331,33 @@ def generate_lesson_mcq_questions(
     level: str,
     lesson_summary: str,
     lesson_resources: List[str],
-    num_questions: int = LESSON_ASSESSMENT_QUESTION_COUNT
+    num_questions: int = LESSON_ASSESSMENT_QUESTION_COUNT,
+    variation_seed: int = 0,
+    chapter_id: Optional[str] = None
 ) -> List[Dict]:
     difficulty = _difficulty_from_level(level)
+    if not chapter_id:
+        raise ValueError("chapter_id is required for assessment question generation")
 
-    rag_resources: List[Dict] = []
-    try:
-        query = f"{concept}. {lesson_summary}".strip()
-        rag_resources = _curriculum_rag.retrieve_context(
-            query=query or concept,
-            goal=concept,
-            level=level,
-            k=8
-        )
-    except Exception as e:
-        logger.warning(f"Assessment retrieval context failed: {e}")
-
-    if USE_LLM and _curriculum_rag:
-        try:
-            prompt = _build_mcq_prompt(
-                concept=concept,
-                difficulty=difficulty,
-                lesson_summary=lesson_summary,
-                lesson_resources=lesson_resources,
-                rag_resources=rag_resources,
-                num_questions=num_questions
-            )
-            llm_text = _curriculum_rag._call_llm_with_retry(prompt)
-            json_array = _extract_json_array(llm_text or "")
-            if json_array:
-                parsed = json.loads(json_array)
-                if isinstance(parsed, list):
-                    normalized = _normalize_mcq_items(
-                        parsed,
-                        concept=concept,
-                        difficulty=difficulty,
-                        num_questions=num_questions
-                    )
-                    if len(normalized) == num_questions:
-                        return normalized
-        except Exception as e:
-            logger.warning(f"Assessment LLM generation failed, fallback enabled: {e}")
-
-    return _build_rule_based_lesson_questions(
-        concept=concept,
+    questions = _build_chapter_graph_questions(
+        chapter_id=chapter_id,
+        fallback_concept=concept,
         difficulty=difficulty,
-        lesson_summary=lesson_summary,
-        lesson_resources=lesson_resources,
-        num_questions=num_questions
+        num_questions=num_questions,
+        variation_seed=variation_seed
     )
+    if not questions:
+        raise ValueError(f"No knowledge-graph questions generated for chapter_id={chapter_id}")
+    return questions
 
 
 def _build_lesson_assessment(
     lesson_title: str,
     level: str,
     lesson_summary: str,
-    lesson_resources: List[str]
+    lesson_resources: List[str],
+    variation_seed: int = 0,
+    chapter_id: Optional[str] = None
 ) -> Dict:
     concept = lesson_title or "concept"
 
@@ -426,13 +366,23 @@ def _build_lesson_assessment(
         level=level,
         lesson_summary=lesson_summary,
         lesson_resources=lesson_resources,
-        num_questions=LESSON_ASSESSMENT_QUESTION_COUNT
+        num_questions=LESSON_ASSESSMENT_QUESTION_COUNT,
+        variation_seed=variation_seed,
+        chapter_id=chapter_id
     )
+    required_questions = len(questions)
+    min_correct_required = calculate_min_correct_required(required_questions)
 
     return {
-        "required_questions": LESSON_ASSESSMENT_QUESTION_COUNT,
+        "required_questions": required_questions,
         "attempted_questions": 0,
         "completed": False,
+        "generation": variation_seed,
+        "correct_answers": 0,
+        "min_correct_required": min_correct_required,
+        "passed": False,
+        "score_percent": 0.0,
+        "question_results": [],
         "questions": questions
     }
 
@@ -445,6 +395,7 @@ def _build_curriculum_from_recommended(recommended: List[Dict], level: str) -> L
     chunk_size = 3
     for idx in range(0, len(recommended), chunk_size):
         chunk = recommended[idx:idx + chunk_size]
+        chapter_id = uuid.uuid4().hex
         lessons = []
         for item in chunk:
             lesson_resources = [r.get("title") for r in item.get("resources", []) if r.get("title")]
@@ -457,11 +408,12 @@ def _build_curriculum_from_recommended(recommended: List[Dict], level: str) -> L
                     lesson_title=item.get("concept_name") or "Bai hoc",
                     level=level,
                     lesson_summary="Hoc va luyen tap cac kien thuc co ban cho muc nay.",
-                    lesson_resources=lesson_resources
+                    lesson_resources=lesson_resources,
+                    chapter_id=chapter_id
                 )
             })
         chapters.append({
-            "chapter_id": uuid.uuid4().hex,
+            "chapter_id": chapter_id,
             "title": f"Chuong {len(chapters) + 1}",
             "lessons": lessons
         })
@@ -492,6 +444,7 @@ def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> List
 
         normalized = []
         for chapter in chapters:
+            chapter_id = chapter.get("chapter_id") or uuid.uuid4().hex
             title = chapter.get("title") or "Chuong"
             lessons = []
             for lesson in chapter.get("lessons", []):
@@ -504,11 +457,13 @@ def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> List
                         lesson_title=lesson.get("title") or "Bai hoc",
                         level=level,
                         lesson_summary=lesson.get("summary") or "",
-                        lesson_resources=lesson.get("resources") or []
+                        lesson_resources=lesson.get("resources") or [],
+                        chapter_id=chapter_id
                     )
                 })
             if lessons:
                 normalized.append({
+                    "chapter_id": chapter_id,
                     "title": title,
                     "lessons": lessons
                 })
