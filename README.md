@@ -1,351 +1,472 @@
 
 # Personalized Learning Path AI
 
-Hệ thống cá nhân hóa lộ trình học tập sử dụng AI (Google Gemini) kết hợp Retrieval-Augmented Generation (RAG). Hỗ trợ người học đạt mục tiêu rõ ràng, theo dõi tiến độ và nhận gợi ý tài nguyên phù hợp.
+Hệ thống cá nhân hóa lộ trình học tập dựa trên AI, kết hợp `FastAPI + MongoDB + React + RAG + Adaptive Learning`.
 
-## 🎯 Tính năng nổi bật
+Mục tiêu của dự án là trả lời câu hỏi học tập thông minh, theo dõi mức độ nắm vững kiến thức theo từng concept, và tự động đề xuất lộ trình tiếp theo phù hợp với năng lực hiện tại của từng người học.
 
-✅ **Xác thực an toàn** - JWT-based authentication với Argon2 password hashing  
-✅ **AI tích hợp** - Google Gemini cho hỏi đáp thông minh (AI Tutor)  
-✅ **RAG Pipeline** - Tìm kiếm ngữ cảnh liên quan trước khi trả lời  
-✅ **Trả lời thông minh** - Ưu tiên trả lời từ tài liệu, chỉ dùng AI khi cần thiết  
-✅ **Lộ trình cá nhân hóa** - Tự động tạo lộ trình dựa trên mục tiêu và trình độ  
-✅ **Quản lý tài nguyên** - Hỗ trợ PDF, YouTube, web links  
-✅ **Học thích ứng** - Tự động điều chỉnh độ khó dựa trên tiến độ  
-✅ **Theo dõi tiến độ** - Dashboard chi tiết về tiến độ học tập  
+## 1. Tổng Quan Bài Toán
 
-## 🏗️ Kiến trúc hệ thống
+Nền tảng giải quyết 4 bài toán chính:
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Frontend (React)                     │
-│         React 18 + TypeScript + Tailwind CSS            │
-│                   (Vite Build Tool)                     │
-└────────────────────┬────────────────────────────────────┘
-                     │
-                     ├─── HTTP/REST API
-                     │
-┌────────────────────▼────────────────────────────────────┐
-│               Backend (FastAPI)                         │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │  API Routes (auth, resources, learning-path, ask) │ │
-│  ├────────────────────────────────────────────────────┤ │
-│  │           AI Services Layer                        │ │
-│  │  • AITutorService (Gemini integration)            │ │
-│  │  • RAGPipeline (retrieval + generation)           │ │
-│  │  • EmbeddingService (vector search)               │ │
-│  │  • AdaptiveEngine (learning difficulty)           │ │
-│  ├────────────────────────────────────────────────────┤ │
-│  │        Database Layer (MongoDB)                    │ │
-│  └────────────────────────────────────────────────────┘ │
-└────────────────────┬────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
-│  MongoDB (NoSQL Database)                              │
-│  Collections: users, courses, concepts, resources...   │
-└─────────────────────────────────────────────────────────┘
+1. Trả lời câu hỏi học tập có ngữ cảnh (`RAG`), ưu tiên tài liệu nội bộ trước khi gọi LLM.
+2. Đo tiến độ học tập theo concept bằng điểm `mastery` và `confidence`.
+3. Điều chỉnh chiến lược học (`remedial`, `normal`, `advanced`) theo năng lực thực tế.
+4. Sinh lộ trình học mới theo đồ thị tiên quyết (`prerequisite graph`) và đề xuất tài nguyên phù hợp.
+
+## 2. Kiến Trúc Hệ Thống
+
+```text
+Frontend (React + TypeScript + Vite)
+   |
+   | HTTP/REST
+   v
+Backend API (FastAPI)
+  - API Layer (auth, ask, learning-path, resources, progress, ...)
+  - Service Layer (RAG, adaptive, progress, recommendations, importers)
+  - Data Layer (MongoDB collections + embedding utilities)
+   |
+   v
+MongoDB (users, concepts, resources, progress, learning_paths, ...)
 ```
 
-## 🤖 AI Tutor - Hệ Thống Trả Lời Thông Minh
+### 2.1 Backend kiến trúc theo lớp
 
-AI Tutor sử dụng chiến lược **hybrid** để tối ưu hóa chất lượng và chi phí:
+- `backend/main.py`: bootstrap app, middleware logging, CORS, health/readiness, router registration.
+- `backend/app/api/*.py`: định nghĩa REST endpoints và validate request/response.
+- `backend/app/services/*.py`: xử lý nghiệp vụ và thuật toán.
+- `backend/app/database/mongo.py`: kết nối MongoDB và cung cấp `get_db()`.
 
-### 📚 Ưu tiên tìm kiếm từ tài liệu
-1. **Bước 1**: Semantic search tìm tài liệu liên quan (chunking)
-2. **Bước 2**: Đánh giá chất lượng kết quả:
-   - ✅ Score >= 0.75 với ít nhất 2 tài liệu → **Trả lời trực tiếp**
-   - ✅ Score >= 0.85 với ít nhất 1 tài liệu → **Trả lời trực tiếp**
-   - ❌ Không đủ chất lượng → **Gọi AI Gemini**
+### 2.2 Frontend kiến trúc
 
-### 💡 Lợi ích
-- **Tiết kiệm 60-70%** chi phí API
-- **Giảm 40-50%** độ trễ phản hồi
-- **Tăng tính nhất quán** với tài liệu học tập
-- **Duy trì >90%** chất lượng câu trả lời
+- Router chính trong `frontend/src/App.tsx`.
+- State xác thực trong `frontend/src/contexts/AuthContext.tsx`.
+- Tách service gọi API trong `frontend/src/services/*`.
+- Các trang chính: Dashboard, LearningPath, LearningPathDetail, Resources, AITutor, Settings, RagSimple.
 
-> 📖 Xem thêm: [AI Tutor Guide](docs/AI_TUTOR_GUIDE.md)
+## 3. Chức Năng Cốt Lõi
 
-## 📋 Yêu cầu hệ thống
+### 3.1 Authentication và Authorization
 
-| Component | Minimum | Recommended |
-|-----------|---------|------------|
-| Python | 3.8+ | 3.11/3.12 |
-| Node.js | 16+ | 18+ |
-| MongoDB | 4.6+ | 6.0+ |
-| RAM | 2GB | 4GB+ |
+- JWT (`python-jose`) với `HS256`.
+- Hash mật khẩu bằng `Argon2` (`passlib[argon2]`).
+- `Depends(get_current_user)` bảo vệ endpoint.
+- Kiểm tra user đang gọi có đúng `user_id` mục tiêu hay không.
 
-**Cần có:**
-- Google Gemini API Key (từ [ai.google.dev](https://ai.google.dev))
-- MongoDB instance (local hoặc MongoDB Atlas)
+### 3.2 AI Tutor (Q&A)
 
-## 🚀 Cài đặt nhanh
+Endpoint chính: `POST /api/ask/`
 
-### 1️⃣ Clone và chuẩn bị
+Luồng xử lý:
+
+1. Xác thực JWT và quyền truy cập.
+2. Validate `question`, `goal`, `level`.
+3. Gọi `AITutorService.ask_ai(...)`.
+4. Bên trong service:
+ - Chạy RAG lấy câu trả lời.
+ - Chấm confidence.
+ - Detect concept.
+ - Cập nhật progress.
+ - Tính adaptive mode.
+ - Sinh learning path mới.
+5. Lưu lịch sử hỏi đáp (`ask_history`).
+
+### 3.3 Quản lý tài nguyên học
+
+- Thêm thủ công: `POST /api/resources/`
+- Import batch: `POST /api/resources/import`
+- Import PDF: `POST /api/resources/import-pdf`
+- Import YouTube: `POST /api/resources/import-youtube`
+- Search semantic: `GET /api/resources/search`
+- Tải PDF: `GET /api/resources/pdf/{resource_id}`
+
+### 3.4 Learning Path cá nhân hóa
+
+- Sinh lộ trình: `POST /api/learning-path/generate`
+- Lịch sử lộ trình: `GET /api/learning-path/history`
+- Cập nhật trạng thái lesson: `POST /api/learning-path/lesson-progress`
+- Xem chi tiết path: `GET /api/learning-path/{path_id}`
+
+### 3.5 Progress Tracking
+
+- Cập nhật tiến độ: `POST /api/progress/update`
+- Tổng quan: `GET /api/progress/overview`
+- Summary: `GET /api/progress/summary`
+- Confidence analytics: `GET /api/progress/confidence`
+
+## 4. Thuật Toán Và Logic Nghiệp Vụ (Chi Tiết)
+
+### 4.1 RAG Pipeline (`backend/app/services/rag_pipeline.py`)
+
+Pipeline chính:
+
+1. `retrieve_context`: semantic search tài nguyên liên quan.
+2. `build_context`: ghép context có giới hạn ký tự (`RAG_MAX_CONTEXT_CHARS`).
+3. `build_prompt`: prompt theo ngữ cảnh có/không có tài liệu thực.
+4. Quyết định chiến lược trả lời:
+ - Trả lời trực tiếp từ context nếu đủ mạnh.
+ - Hoặc gọi Gemini nếu context chưa đủ.
+5. Fallback khi LLM lỗi hoặc quota exhausted.
+
+Điều kiện trả lời trực tiếp từ tài liệu:
+
+- Tài liệu phải là tài liệu thật từ DB (`is_real_resource = True`).
+- Số tài liệu chất lượng cao `>= RAG_MIN_HIGH_QUALITY_RESOURCES`.
+- Mỗi tài liệu chất lượng cao có `score >= RAG_DIRECT_ANSWER_THRESHOLD`.
+
+Tư duy thiết kế:
+
+- Nếu context đủ tốt thì không cần gọi LLM để giảm latency/cost.
+- Nếu context chưa đủ thì gọi AI để tăng độ đầy đủ và chính xác.
+- Nếu AI unavailable/quota hết thì trả lời fallback từ knowledge base để không fail cứng.
+
+### 4.2 Concept Detection đa chiến lược (`ai_service.py`)
+
+`ConceptDetector.detect()` chạy theo thứ tự:
+
+1. `detect_semantic`: embedding câu hỏi, so cosine similarity với embedding concept.
+2. `detect_rule_based`: match keyword theo `concept_name/topic` + biến thể từ đồng nghĩa.
+3. `detect_fallback`: chọn concept dễ nhất nếu 2 bước trên không tìm được.
+
+Điều này giúp hệ thống vừa có độ phủ cao (fallback) vừa có độ chính xác tốt hơn ở câu hỏi rõ ngữ nghĩa (semantic).
+
+### 4.3 Confidence Scoring (`confidence_scorer.py`)
+
+Input: `question`, `answer`, optional `context`.
+
+Luồng:
+
+1. Prompt LLM yêu cầu trả về duy nhất số từ `0.0 -> 1.0`.
+2. Parse output theo nhiều shape response SDK.
+3. Parse số bằng regex robust.
+4. Lỗi hoặc parse thất bại thì fallback `0.5`.
+
+Mục tiêu: ổn định scoring dù SDK response khác nhau hoặc AI trả về format không chuẩn.
+
+### 4.4 Progress bằng EMA (`progress_service.py`)
+
+Mỗi lần learner hỏi và hệ thống detect được concept, tiến độ concept được cập nhật bằng EMA:
+
+```text
+new_mastery = old_mastery * (1 - alpha) + confidence * alpha
+```
+
+Trong đó:
+
+- `alpha = PROGRESS_ALPHA` (mặc định `0.3`)
+- `confidence` trong `[0, 1]`
+
+Các chỉ số cập nhật đồng thời:
+
+- `total_attempts += 1`
+- `successful_attempts += 1` nếu `confidence >= PROGRESS_MIN_CONFIDENCE`
+- `success_rate = successful_attempts / total_attempts`
+- `status` theo mastery:
+ - `complete` nếu `mastery >= 0.8`
+ - `proficient` nếu `mastery >= 0.6`
+ - `in_progress` nếu `mastery > 0`
+ - `not_started` nếu `mastery = 0`
+
+### 4.5 Adaptive Engine (`adaptive_engine.py`)
+
+Decision tree `decide_learning_mode(mastery, confidence, total_attempts)`:
+
+1. Nếu `mastery < MASTERY_LOW` hoặc `confidence < CONFIDENCE_LOW` -> `REMEDIAL`.
+2. Nếu `mastery >= MASTERY_HIGH` và `confidence >= CONFIDENCE_HIGH` và `attempts <= MAX_ATTEMPTS_FOR_ADVANCE` -> `ADVANCED`.
+3. Ngược lại -> `NORMAL`.
+
+Adaptive mode được dùng để:
+
+- Lọc tài nguyên theo Bloom levels (`filter_resources_by_mode`).
+- Gợi ý mức độ luyện tập (`get_practice_recommendations`).
+- Đề xuất tăng/giảm difficulty (`recommend_difficulty_boost`).
+
+### 4.6 Sinh Learning Path bằng đồ thị tiên quyết (`learning_path_service.py`)
+
+Các bước:
+
+1. Lấy progress hiện tại của user.
+2. Xác định concept đã hoàn thành (`mastery >= 0.8`).
+3. Xây graph `concept -> prerequisites` từ collection `prerequisites`.
+4. Kiểm tra cycle bằng DFS (`_has_cycle`).
+5. Topological sort (`_topological_sort`) để có thứ tự học an toàn.
+6. Lọc theo level bằng difficulty range:
+ - beginner: 1-4
+ - intermediate: 3-7
+ - advanced: 6-10
+7. Chỉ giữ concept chưa hoàn thành và đã thỏa prerequisites.
+8. Tính `priority_score` dựa trên level factor, difficulty và trạng thái đã học.
+9. Recommend resource cho từng concept.
+10. Tạo curriculum (qua LLM nếu khả dụng, fallback sang build rule-based nếu không).
+
+### 4.7 Resource Recommendation (`recommendations.py`)
+
+`GET /api/recommendations/resources`:
+
+- Lấy concept theo `goal`.
+- Tìm concept chưa completed.
+- Lấy resource theo level tương ứng, fallback level cao hơn nếu thiếu.
+- Chấm điểm `relevance_score` theo:
+ - base score
+ - level match bonus
+ - pedagogy bonus (ví dụ beginner ưu tiên video)
+
+## 5. Công Nghệ Sử Dụng
+
+### 5.1 Backend
+
+- Python 3.12
+- FastAPI + Uvicorn
+- Pydantic v2
+- MongoDB (`pymongo`, `motor`)
+- Auth: `python-jose`, `passlib[argon2]`
+- AI: `google-genai` (Gemini)
+- Scientific: `numpy`, `scipy`, `scikit-learn`
+- Importers: `pypdf`, `PyMuPDF`, `pytube`, `youtube-transcript-api`, `yt-dlp`
+
+### 5.2 Frontend
+
+- React 18
+- TypeScript
+- Vite
+- TailwindCSS
+- Axios
+- React Router DOM
+
+### 5.3 Dev Tooling
+
+- Backend: `pytest`, `black`, `flake8`, `mypy`, `isort`, `pylint`, `bandit`
+- Frontend: `eslint`, `prettier`, `tsc`
+- Docker: `docker-compose` cho local stack
+
+## 6. Cấu Trúc Thư Mục (Giải Thích Theo Module)
+
+```text
+personalized-learning-path-ai/
+├── backend/
+│   ├── main.py
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── auth.py
+│   │   │   ├── users.py
+│   │   │   ├── ask.py
+│   │   │   ├── learning_path.py
+│   │   │   ├── progress.py
+│   │   │   ├── resources.py
+│   │   │   ├── recommendations.py
+│   │   │   ├── concepts.py
+│   │   │   └── rag.py
+│   │   ├── services/
+│   │   │   ├── ai_service.py
+│   │   │   ├── rag_pipeline.py
+│   │   │   ├── learning_path_service.py
+│   │   │   ├── adaptive_engine.py
+│   │   │   ├── progress_service.py
+│   │   │   ├── confidence_scorer.py
+│   │   │   ├── embedding_service.py
+│   │   │   ├── resource_service.py
+│   │   │   ├── pdf_importer.py
+│   │   │   └── youtube_importer.py
+│   │   └── database/
+│   │       └── mongo.py
+│   └── uploads/
+├── frontend/
+│   ├── src/
+│   │   ├── pages/
+│   │   ├── components/
+│   │   ├── contexts/
+│   │   ├── services/
+│   │   ├── types/
+│   │   └── utils/
+│   └── package.json
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+└── README.md
+```
+
+## 7. API Endpoints (Theo Router Hiện Tại)
+
+Tất cả router backend được mount dưới prefix `/api`.
+
+### 7.1 Auth
+
+- `POST /api/auth/signup`
+- `POST /api/auth/login`
+
+### 7.2 Users
+
+- `POST /api/users/`
+- `GET /api/users/me`
+- `PUT /api/users/{user_id}`
+
+### 7.3 Ask / AI Tutor
+
+- `POST /api/ask/`
+- `GET /api/ask/adaptive-status`
+- `POST /api/ask/detect-concepts`
+- `GET /api/ask/recommend-concepts`
+- `GET /api/ask/history`
+- `DELETE /api/ask/history/{history_id}`
+
+### 7.4 Learning Path
+
+- `POST /api/learning-path/generate`
+- `GET /api/learning-path/history`
+- `POST /api/learning-path/lesson-progress`
+- `GET /api/learning-path/{path_id}`
+
+### 7.5 Progress
+
+- `POST /api/progress/update`
+- `GET /api/progress/summary`
+- `GET /api/progress/overview`
+- `GET /api/progress/confidence`
+
+### 7.6 Resources
+
+- `GET /api/resources/`
+- `POST /api/resources/`
+- `POST /api/resources/import`
+- `GET /api/resources/search`
+- `POST /api/resources/import-pdf`
+- `POST /api/resources/import-youtube`
+- `GET /api/resources/pdf/{resource_id}`
+
+### 7.7 Recommendations
+
+- `GET /api/recommendations/resources`
+- `GET /api/recommendations/progress`
+
+### 7.8 Concepts
+
+- `GET /api/concepts`
+- `GET /api/concepts/{concept_id}`
+
+### 7.9 RAG Utilities
+
+- `POST /api/rag/upload-pdf`
+- `POST /api/rag/chat`
+
+## 8. Cài Đặt Và Chạy Local
+
+### 8.1 Yêu cầu hệ thống
+
+- Python `3.11+` (khuyến nghị `3.12`)
+- Node.js `18+`
+- MongoDB `6+` (hoặc Atlas)
+
+### 8.2 Backend
 
 ```bash
-git clone <repo>
-cd personalized-learning-path-ai
-
-# Tạo virtual environment
-python -m venv venv
-
-# Kích hoạt (Windows)
-venv\Scripts\activate
-# Hoặc (Linux/Mac)
-source venv/bin/activate
-```
-
-### 2️⃣ Cài đặt Backend
-
-```bash
-# Cài đặt dependencies
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
-
-# Cấu hình biến môi trường
-cp .env.example .env
-# Mở .env và điền các giá trị thực tế
-
-# Khởi động API server
+copy .env.example .env
 python -m uvicorn backend.main:app --reload
 ```
 
-✅ Backend chạy tại: `http://localhost:8000`  
-📚 API Docs tại: `http://localhost:8000/api/docs`
+Backend chạy tại `http://localhost:8000`.
+Swagger docs: `http://localhost:8000/api/docs`
 
-### 3️⃣ Cài đặt Frontend
+### 8.3 Frontend
 
 ```bash
 cd frontend
-
-# Cài đặt node dependencies
 npm install
-
-# Khởi động dev server
 npm run dev
 ```
 
-✅ Frontend chạy tại: `http://localhost:5173`
+Frontend chạy tại `http://localhost:5173`.
 
-## 🔧 Biến môi trường quan trọng
+### 8.4 Biến môi trường quan trọng
 
-Tạo file `.env` dựa trên `.env.example`:
+Trong file `.env`:
 
 ```env
-# Database
 MONGODB_URI=mongodb://localhost:27017/learning_path_ai
 DB_NAME=learning_path_ai
-
-# Security (Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))")
-SECRET_KEY=your-32-chars-secret-key-here
+SECRET_KEY=your-secret-key-min-32-chars
 ACCESS_TOKEN_EXPIRE_MINUTES=60
-
-# AI
-GEMINI_API_KEY=your-gemini-key-from-ai.google.dev
-
-# AI Tutor Strategy (Optional - có giá trị mặc định)
-RAG_DIRECT_ANSWER_THRESHOLD=0.75         # Ngưỡng điểm để trả lời trực tiếp
-RAG_MIN_HIGH_QUALITY_RESOURCES=2         # Số tài liệu chất lượng cao tối thiểu
-
-# Frontend URLs
+GEMINI_API_KEY=your-gemini-api-key
 VITE_API_URL=http://localhost:8000
 VITE_API_BASE_PATH=/api
-
-# CORS
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 ```
 
-**Xem file `.env.example` để biết tất cả tùy chọn cấu hình.**
+Riêng AI/RAG có thể tinh chỉnh thêm trong `.env.example`:
 
-## 📁 Cấu trúc dự án
+- `RAG_DIRECT_ANSWER_THRESHOLD`
+- `RAG_MIN_HIGH_QUALITY_RESOURCES`
+- `RAG_MAX_CONTEXT_CHARS`
+- `RAG_MAX_PROMPT_CHARS`
 
-```
-personalized-learning-path-ai/
-│
-├── backend/                          # FastAPI Backend
-│   ├── main.py                       # Ứng dụng chính (khởi động server)
-│   └── app/
-│       ├── api/                      # API Routes
-│       │   ├── auth.py              # Xác thực, JWT
-│       │   ├── ask.py               # AI Tutor Q&A
-│       │   ├── learning_path.py     # Tạo lộ trình
-│       │   ├── progress.py          # Theo dõi tiến độ
-│       │   └── ... (6 routers khác)
-│       ├── services/                 # Business Logic
-│       │   ├── ai_service.py        # Tích hợp Gemini AI
-│       │   ├── rag_pipeline.py      # RAG (Retrieval-Augmented Generation)
-│       │   ├── adaptive_engine.py   # Lộ trình thích ứng
-│       │   ├── embedding_service.py # Vector embeddings
-│       │   └── ... (10+ services)
-│       └── database/
-│           └── mongo.py              # MongoDB connection
-│
-├── frontend/                         # React + TypeScript + Vite
-│   ├── src/
-│   │   ├── pages/                   # Page components
-│   │   ├── components/              # Reusable components
-│   │   ├── contexts/                # React Context (Auth)
-│   │   ├── services/                # API service layer
-│   │   ├── types/                   # TypeScript types & interfaces
-│   │   └── utils/                   # Utilities (apiClient, etc)
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── vite.config.ts
-│   └── tailwind.config.js
-│
-├── requirements.txt                  # Python dependencies
-├── .env.example                      # Environment template
-├── README.md                         # This file
-└── LICENSE
-```
-
-## 📡 API Endpoints
-
-### Authentication
-```
-POST   /api/auth/signup          - Đăng ký tài khoản mới
-POST   /api/auth/login           - Đăng nhập
-GET    /api/users/me             - Lấy thông tin user hiện tại
-```
-
-### Learning Paths
-```
-GET    /api/learning-paths       - Danh sách lộ trình
-POST   /api/learning-paths       - Tạo lộ trình mới
-GET    /api/learning-paths/{id}  - Chi tiết lộ trình
-```
-
-### AI & Learning
-```
-POST   /api/ask                  - Hỏi câu hỏi (AI Tutor)
-GET    /api/ask/adaptive-status  - Trạng thái học thích ứng
-GET    /api/recommend-concepts   - Gợi ý khái niệm tiếp theo
-```
-
-### Resources
-```
-GET    /api/resources            - Danh sách tài nguyên
-POST   /api/resources/import     - Import tài nguyên (PDF/YouTube)
-```
-
-### Progress
-```
-GET    /api/progress/overview    - Tổng quan tiến độ
-POST   /api/progress/update      - Cập nhật tiến độ
-```
-
-## 🛠️ Phát triển (Development)
-
-### Code Quality Tools
+## 9. Chạy Bằng Docker
 
 ```bash
-# Type checking
-npm run type-check          # Frontend
-mypy backend/               # Backend
-
-# Linting & Formatting
-npm run lint                # Frontend
-flake8 backend/             # Backend
-
-# Auto-fix
-npm run lint:fix            # Frontend
-black backend/              # Backend
-isort backend/              # Backend
-
-# Run all checks
-npm run format:check && npm run lint && npm run type-check
+docker compose up -d --build
 ```
 
-### Testing
+Services chính:
+
+- `mongodb` (27017)
+- `redis` (6379)
+- `backend` (8000)
+- `frontend` (5173)
+- `mongo-express` (8081, profile `dev`)
+
+## 10. Kiểm Thử Và Chất Lượng Mã
+
+### 10.1 Backend
 
 ```bash
-# Backend tests
 pytest backend/
-pytest backend/ --cov        # With coverage
-
-# Frontend tests (setup required)
-npm test
+black backend/
+isort backend/
+flake8 backend/
+mypy backend/
 ```
 
-## 🎯 Optimization Tips
+### 10.2 Frontend
 
-### Backend Performance
-✅ **Database Indexing** - MongoDB indexes on `user_id`, `concept_id`  
-✅ **Caching** - Redis optional cho concept cache (TTL: 1 hour)  
-✅ **Async Operations** - FastAPI async handlers mặc định  
-✅ **Response Compression** - GZIP middleware tự động  
-✅ **Connection Pooling** - MongoDB connection pool tự động
-
-### Frontend Performance
-✅ **Code Splitting** - Vite tự động chunk JS files  
-✅ **Lazy Loading** - React Router lazy loading cho routes  
-✅ **Image Optimization** - Tailwind purge unused CSS  
-✅ **API Caching** - Request deduplication trong API client  
-✅ **Bundle Analysis** - `npm run build` hiển thị size
-
-### Deployment Checklist
-- [ ] Set `DEBUG=False` trong `.env`
-- [ ] Update `SECRET_KEY` với giá trị ngẫu nhiên dài 32+ ký tự
-- [ ] Cấu hình `CORS_ORIGINS` cho production domain
-- [ ] Enable HTTPS cho production
-- [ ] Setup MongoDB backup/replica set
-- [ ] Configure logs centralization
-- [ ] Setup monitoring/alerting (Sentry optional)
-
-## 📊 Key Metrics
-
-| Metric | Target | Thực tế |
-|--------|--------|--------|
-| API Response Time | <200ms | ~150ms |
-| Frontend Build Time | <10s | ~5s |
-| Frontend Bundle Size | <150KB | ~120KB |
-| Concept Detection Accuracy | >90% | ~92% |
-
-## 🐛 Troubleshooting
-
-### Backend không kết nối MongoDB
 ```bash
-# Kiểm tra MongoDB đang chạy
-mongosh
-# Hoặc dùng MongoDB Compass GUI
+cd frontend
+npm run type-check
+npm run lint
+npm run format:check
 ```
 
-### Frontend API 401 Unauthorized
-- Kiểm tra token trong localStorage
-- Logout và login lại
-- Kiểm tra `SECRET_KEY` trong `.env`
+## 11. Troubleshooting Nhanh
 
-### CORS errors
-- Kiểm tra `CORS_ORIGINS` trong `.env`
-- Kiểm tra `VITE_API_URL` trong `.env`
+### 11.1 `401 Unauthorized`
 
-### Gemini API errors
-- Kiểm tra `GEMINI_API_KEY` hợp lệ
-- Kiểm tra quota trên Google Cloud Console
-- Verify API đã được enable
+- Token hết hạn hoặc sai `SECRET_KEY`.
+- Header Authorization thiếu `Bearer <token>`.
+- `user_id` trong request không trùng user trong token.
 
-## 📚 Tài liệu bổ sung
+### 11.2 Không kết nối được MongoDB
 
-- [FastAPI Docs](https://fastapi.tiangolo.com/)
-- [React Docs](https://react.dev/)
-- [MongoDB Manual](https://docs.mongodb.com/manual/)
-- [Google Gemini API](https://ai.google.dev/docs)
-- [Tailwind CSS](https://tailwindcss.com/docs)
+- Kiểm tra `MONGODB_URI`.
+- Kiểm tra Mongo service có chạy không.
+- Kiểm tra network/firewall nếu dùng Atlas.
 
-## 🤝 Contributing
+### 11.3 AI trả fallback thường xuyên
 
-Contributions are welcome! Please:
-1. Fork the repo
-2. Create feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open Pull Request
+- Kiểm tra `GEMINI_API_KEY` và quota.
+- Giảm `RAG_DIRECT_ANSWER_THRESHOLD` nếu muốn tăng trả lời trực tiếp từ tài liệu.
+- Kiểm tra chất lượng dữ liệu trong `resources`/`embeddings`.
 
-## 📄 License
+### 11.4 Search không chính xác
 
-MIT License - See [LICENSE](LICENSE) for details
+- Hiện tại embedding fallback là hash-based deterministic nếu chưa bật external embedding provider.
+- Để tăng semantic quality, cần cấu hình provider embedding thực tế.
 
----
+## 12. Ghi Chú Thiết Kế
 
-**Made with ❤️ for personalized learning**
+- Dự án ưu tiên tính ổn định: có nhiều nhánh fallback khi LLM/SDK lỗi.
+- Adaptive learning và RAG có thể tinh chỉnh gần như toàn bộ qua biến môi trường.
+- Kiến trúc service tách rõ giúp mở rộng dễ: thêm model AI, thêm nguồn dữ liệu, thêm chiến lược chấm điểm.
 
-Last updated: February 2025
+## 13. License
+
+MIT. Xem file `LICENSE` để biết chi tiết.

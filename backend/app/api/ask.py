@@ -24,7 +24,9 @@ import uuid
 from backend.app.api.schemas import (
     AskRequest,
     AskResponse,
-    LevelEnum
+    LevelEnum,
+    GenerateAssessmentQuestionsRequest,
+    GenerateAssessmentQuestionsResponse
 )
 from backend.app.api.auth import get_current_user
 from backend.app.services.ai_service import AITutorService
@@ -572,4 +574,54 @@ def delete_ask_history_item(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete history item"
+        )
+
+
+@router.post(
+    "/generate-assessment",
+    response_model=GenerateAssessmentQuestionsResponse,
+    status_code=status.HTTP_200_OK
+)
+def generate_assessment_questions(
+    request: GenerateAssessmentQuestionsRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Generate assessment questions from chapter content and concept.
+    """
+    logger.info(
+        "Generate assessment request: user_id=%s, concept=%s, difficulty=%s, num_questions=%s",
+        request.user_id,
+        request.concept,
+        request.difficulty.value,
+        request.num_questions
+    )
+
+    try:
+        current_user_id = str(current_user.get("_id", ""))
+        if current_user_id != request.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Cannot generate questions for another user"
+            )
+
+        questions = ai_tutor.generate_assessment_questions(
+            concept=request.concept,
+            difficulty=request.difficulty.value,
+            chapter_content=request.chapter_content,
+            num_questions=request.num_questions
+        )
+
+        return GenerateAssessmentQuestionsResponse(
+            success=True,
+            questions=questions
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Generate assessment error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Assessment question generation failed"
         )

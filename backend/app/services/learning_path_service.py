@@ -37,6 +37,8 @@ MAX_CYCLE_DETECTION_DEPTH = 100  # Prevent infinite loops
 logger.info(f"Learning path service initialized: max_recs={MAX_RECOMMENDATIONS}")
 
 _curriculum_rag = RAGPipeline()
+LESSON_ASSESSMENT_QUESTION_COUNT = 10
+MCQ_OPTION_KEYS = ["A", "B", "C", "D"]
 
 
 # =====================================================
@@ -166,6 +168,8 @@ def _build_curriculum_prompt(goal: str, level: str, resources: List[Dict]) -> st
 
 def _add_lesson_ids(chapters: List[Dict]) -> List[Dict]:
     for chapter in chapters:
+        if not chapter.get("chapter_id"):
+            chapter["chapter_id"] = uuid.uuid4().hex
         lessons = chapter.get("lessons", [])
         for lesson in lessons:
             if not lesson.get("lesson_id"):
@@ -173,7 +177,267 @@ def _add_lesson_ids(chapters: List[Dict]) -> List[Dict]:
     return chapters
 
 
-def _build_curriculum_from_recommended(recommended: List[Dict]) -> List[Dict]:
+def _difficulty_from_level(level: str) -> str:
+    mapping = {
+        "beginner": "easy",
+        "intermediate": "medium",
+        "advanced": "hard"
+    }
+    return mapping.get(level, "medium")
+
+
+def _build_rule_based_lesson_questions(
+    concept: str,
+    difficulty: str,
+    lesson_summary: str,
+    lesson_resources: List[str],
+    num_questions: int = LESSON_ASSESSMENT_QUESTION_COUNT
+) -> List[Dict]:
+    summary = re.sub(r"\s+", " ", (lesson_summary or "").strip())
+    resource_text = "; ".join([r for r in lesson_resources if isinstance(r, str) and r.strip()])
+    source = summary or resource_text or f"Noi dung bai hoc ve {concept}."
+    source = source[:260] + ("..." if len(source) > 260 else "")
+
+    questions = []
+    for idx in range(num_questions):
+        options = [
+            {"key": "A", "text": source},
+            {"key": "B", "text": f"Noi dung tap trung vao cong cu khong lien quan truc tiep den {concept}."},
+            {"key": "C", "text": f"Noi dung cho rang chi can hoc thuoc ly thuyet ma khong can ap dung cho {concept}."},
+            {"key": "D", "text": f"Noi dung mo ta mot chu de ngoai pham vi bai hoc ve {concept}."}
+        ]
+
+        if difficulty == "easy":
+            question = f"Cau {idx + 1}: Theo bai hoc, phat bieu nao dung nhat ve {concept}?"
+        elif difficulty == "medium":
+            question = f"Cau {idx + 1}: Dua vao bai hoc, lua chon phat bieu ap dung dung cho {concept}."
+        else:
+            question = f"Cau {idx + 1}: Chon nhan dinh phan tich hop ly nhat theo bai hoc ve {concept}."
+
+        questions.append({
+            "question_id": uuid.uuid4().hex,
+            "question": question,
+            "answer": source,
+            "explanation": "Dap an va giai thich duoc sinh truc tiep tu noi dung bai hoc de ho tro on tap.",
+            "difficulty": difficulty,
+            "concept": concept,
+            "options": options,
+            "correct_option": "A"
+        })
+
+    return questions
+
+
+def _build_mcq_prompt(
+    concept: str,
+    difficulty: str,
+    lesson_summary: str,
+    lesson_resources: List[str],
+    rag_resources: List[Dict],
+    num_questions: int
+) -> str:
+    lesson_materials = "\n".join([f"- {r}" for r in lesson_resources if isinstance(r, str) and r.strip()])
+    if not lesson_materials:
+        lesson_materials = "- No explicit lesson resources"
+
+    rag_lines = []
+    for idx, item in enumerate(rag_resources[:8], start=1):
+        title = item.get("title", "unknown")
+        snippet = re.sub(r"\s+", " ", (item.get("snippet") or "").strip())
+        if len(snippet) > 280:
+            snippet = snippet[:280] + "..."
+        rag_lines.append(f"- [{idx}] {title}: {snippet}")
+
+    rag_context = "\n".join(rag_lines) if rag_lines else "- No additional retrieved context"
+
+    return (
+        "You are an educational assessment designer.\n"
+        "Create high-quality multiple-choice questions (MCQ) grounded ONLY in the provided materials.\n"
+        "Do not invent facts outside materials.\n"
+        "Return ONLY valid JSON array with exactly the requested number of items.\n"
+        "Each item schema:\n"
+        "{\"question\":string,\"options\":[{\"key\":\"A\",\"text\":string},{\"key\":\"B\",\"text\":string},{\"key\":\"C\",\"text\":string},{\"key\":\"D\",\"text\":string}],\"correct_option\":\"A|B|C|D\",\"answer\":string,\"explanation\":string,\"difficulty\":string,\"concept\":string}\n"
+        "Rules:\n"
+        "- Questions must be diverse and non-duplicated.\n"
+        "- Options must be plausible; exactly one correct option.\n"
+        "- explanation must briefly justify why the correct option is right.\n"
+        "- difficulty and concept must match provided values exactly.\n\n"
+        f"Concept: {concept}\n"
+        f"Difficulty: {difficulty}\n"
+        f"Number of questions: {num_questions}\n\n"
+        "Lesson summary:\n"
+        f"{lesson_summary or 'No summary provided'}\n\n"
+        "Lesson resources:\n"
+        f"{lesson_materials}\n\n"
+        "Retrieved context:\n"
+        f"{rag_context}\n"
+    )
+
+
+def _extract_json_array(text: str) -> Optional[str]:
+    if not text:
+        return None
+
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?", "", raw).strip()
+        raw = re.sub(r"```$", "", raw).strip()
+
+    start = raw.find("[")
+    end = raw.rfind("]")
+    if start >= 0 and end > start:
+        return raw[start:end + 1]
+    return None
+
+
+def _normalize_mcq_items(
+    items: List[Dict],
+    concept: str,
+    difficulty: str,
+    num_questions: int
+) -> List[Dict]:
+    normalized = []
+    seen = set()
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        question = str(item.get("question", "")).strip()
+        answer = str(item.get("answer", "")).strip()
+        explanation = str(item.get("explanation", "")).strip()
+        correct_option = str(item.get("correct_option", "")).strip().upper()
+        options = item.get("options", [])
+
+        if not question or not explanation:
+            continue
+        if correct_option not in MCQ_OPTION_KEYS:
+            continue
+        if not isinstance(options, list) or len(options) != 4:
+            continue
+
+        option_map = {}
+        valid_options = []
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            key = str(opt.get("key", "")).strip().upper()
+            text = str(opt.get("text", "")).strip()
+            if key in MCQ_OPTION_KEYS and text:
+                option_map[key] = text
+
+        if set(option_map.keys()) != set(MCQ_OPTION_KEYS):
+            continue
+
+        for key in MCQ_OPTION_KEYS:
+            valid_options.append({"key": key, "text": option_map[key]})
+
+        if not answer:
+            answer = option_map.get(correct_option, "")
+
+        q_key = question.lower()
+        if q_key in seen:
+            continue
+        seen.add(q_key)
+
+        normalized.append({
+            "question_id": uuid.uuid4().hex,
+            "question": question,
+            "answer": answer,
+            "explanation": explanation,
+            "difficulty": difficulty,
+            "concept": concept,
+            "options": valid_options,
+            "correct_option": correct_option
+        })
+
+        if len(normalized) >= num_questions:
+            break
+
+    return normalized
+
+
+def generate_lesson_mcq_questions(
+    concept: str,
+    level: str,
+    lesson_summary: str,
+    lesson_resources: List[str],
+    num_questions: int = LESSON_ASSESSMENT_QUESTION_COUNT
+) -> List[Dict]:
+    difficulty = _difficulty_from_level(level)
+
+    rag_resources: List[Dict] = []
+    try:
+        query = f"{concept}. {lesson_summary}".strip()
+        rag_resources = _curriculum_rag.retrieve_context(
+            query=query or concept,
+            goal=concept,
+            level=level,
+            k=8
+        )
+    except Exception as e:
+        logger.warning(f"Assessment retrieval context failed: {e}")
+
+    if USE_LLM and _curriculum_rag:
+        try:
+            prompt = _build_mcq_prompt(
+                concept=concept,
+                difficulty=difficulty,
+                lesson_summary=lesson_summary,
+                lesson_resources=lesson_resources,
+                rag_resources=rag_resources,
+                num_questions=num_questions
+            )
+            llm_text = _curriculum_rag._call_llm_with_retry(prompt)
+            json_array = _extract_json_array(llm_text or "")
+            if json_array:
+                parsed = json.loads(json_array)
+                if isinstance(parsed, list):
+                    normalized = _normalize_mcq_items(
+                        parsed,
+                        concept=concept,
+                        difficulty=difficulty,
+                        num_questions=num_questions
+                    )
+                    if len(normalized) == num_questions:
+                        return normalized
+        except Exception as e:
+            logger.warning(f"Assessment LLM generation failed, fallback enabled: {e}")
+
+    return _build_rule_based_lesson_questions(
+        concept=concept,
+        difficulty=difficulty,
+        lesson_summary=lesson_summary,
+        lesson_resources=lesson_resources,
+        num_questions=num_questions
+    )
+
+
+def _build_lesson_assessment(
+    lesson_title: str,
+    level: str,
+    lesson_summary: str,
+    lesson_resources: List[str]
+) -> Dict:
+    concept = lesson_title or "concept"
+
+    questions = generate_lesson_mcq_questions(
+        concept=concept,
+        level=level,
+        lesson_summary=lesson_summary,
+        lesson_resources=lesson_resources,
+        num_questions=LESSON_ASSESSMENT_QUESTION_COUNT
+    )
+
+    return {
+        "required_questions": LESSON_ASSESSMENT_QUESTION_COUNT,
+        "attempted_questions": 0,
+        "completed": False,
+        "questions": questions
+    }
+
+
+def _build_curriculum_from_recommended(recommended: List[Dict], level: str) -> List[Dict]:
     chapters: List[Dict] = []
     if not recommended:
         return chapters
@@ -188,9 +452,16 @@ def _build_curriculum_from_recommended(recommended: List[Dict]) -> List[Dict]:
                 "lesson_id": uuid.uuid4().hex,
                 "title": item.get("concept_name") or "Bai hoc",
                 "summary": "Hoc va luyen tap cac kien thuc co ban cho muc nay.",
-                "resources": lesson_resources
+                "resources": lesson_resources,
+                "assessment": _build_lesson_assessment(
+                    lesson_title=item.get("concept_name") or "Bai hoc",
+                    level=level,
+                    lesson_summary="Hoc va luyen tap cac kien thuc co ban cho muc nay.",
+                    lesson_resources=lesson_resources
+                )
             })
         chapters.append({
+            "chapter_id": uuid.uuid4().hex,
             "title": f"Chuong {len(chapters) + 1}",
             "lessons": lessons
         })
@@ -199,7 +470,7 @@ def _build_curriculum_from_recommended(recommended: List[Dict]) -> List[Dict]:
 
 def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> List[Dict]:
     if not (USE_LLM and _curriculum_rag):
-        return _build_curriculum_from_recommended(recommended)
+        return _build_curriculum_from_recommended(recommended, level)
 
     try:
         resources = _curriculum_rag.retrieve_context(
@@ -212,12 +483,12 @@ def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> List
         response_text = _curriculum_rag._call_llm_with_retry(prompt)
         json_text = _extract_json_block(response_text or "")
         if not json_text:
-            return _build_curriculum_from_recommended(recommended)
+            return _build_curriculum_from_recommended(recommended, level)
 
         data = json.loads(json_text)
         chapters = data.get("chapters") if isinstance(data, dict) else None
         if not chapters or not isinstance(chapters, list):
-            return _build_curriculum_from_recommended(recommended)
+            return _build_curriculum_from_recommended(recommended, level)
 
         normalized = []
         for chapter in chapters:
@@ -228,17 +499,23 @@ def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> List
                     "lesson_id": lesson.get("lesson_id") or uuid.uuid4().hex,
                     "title": lesson.get("title") or "Bai hoc",
                     "summary": lesson.get("summary") or "",
-                    "resources": lesson.get("resources") or []
+                    "resources": lesson.get("resources") or [],
+                    "assessment": _build_lesson_assessment(
+                        lesson_title=lesson.get("title") or "Bai hoc",
+                        level=level,
+                        lesson_summary=lesson.get("summary") or "",
+                        lesson_resources=lesson.get("resources") or []
+                    )
                 })
             if lessons:
                 normalized.append({
                     "title": title,
                     "lessons": lessons
                 })
-        return _add_lesson_ids(normalized) or _build_curriculum_from_recommended(recommended)
+        return _add_lesson_ids(normalized) or _build_curriculum_from_recommended(recommended, level)
     except Exception as e:
         logger.warning(f"Curriculum generation failed: {e}")
-        return _build_curriculum_from_recommended(recommended)
+        return _build_curriculum_from_recommended(recommended, level)
 def generate_learning_path(
     user_id: str,
     goal: str,

@@ -9,6 +9,9 @@ interface PathState {
   path?: LearningPath;
 }
 
+type LessonItem = NonNullable<LearningPath['curriculum']>[number]['lessons'][number];
+type OptionKey = 'A' | 'B' | 'C' | 'D';
+
 const levelLabel = (level?: string) => {
   switch (level) {
     case 'beginner':
@@ -31,6 +34,8 @@ export default function LearningPathDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [path, setPath] = useState<LearningPath | null>(null);
+  const [lessonAnswers, setLessonAnswers] = useState<Record<string, string[]>>({});
+  const [expandedAssessments, setExpandedAssessments] = useState<Record<string, boolean>>({});
 
   const statePath = (location.state as PathState | null)?.path;
 
@@ -76,6 +81,25 @@ export default function LearningPathDetail() {
   const steps = useMemo(() => path?.recommended_path || [], [path]);
   const chapters = useMemo(() => path?.curriculum || [], [path]);
 
+  useEffect(() => {
+    if (!path?.curriculum) {
+      return;
+    }
+
+    setLessonAnswers((prev) => {
+      const next = { ...prev };
+      for (const chapter of path.curriculum || []) {
+        for (const lesson of chapter.lessons || []) {
+          const required = lesson.assessment?.required_questions || 10;
+          const existing = next[lesson.lesson_id] || [];
+          const normalized = Array.from({ length: required }, (_, idx) => existing[idx] || '');
+          next[lesson.lesson_id] = normalized;
+        }
+      }
+      return next;
+    });
+  }, [path?.curriculum]);
+
   const handleBack = () => navigate('/learning-path');
 
   const handleViewResources = (conceptId: number) => {
@@ -93,18 +117,21 @@ export default function LearningPathDetail() {
 
   const handleLessonStatusUpdate = async (
     lessonId: string,
-    status: 'not_started' | 'in_progress' | 'complete'
+    status: 'not_started' | 'in_progress' | 'complete',
+    answeredQuestions?: string[]
   ) => {
     if (!path?.path_id) {
       return;
     }
 
     try {
-      await learningPathService.updateLessonProgress({
+      const response = await learningPathService.updateLessonProgress({
         path_id: path.path_id,
         lesson_id: lessonId,
         status,
+        answered_questions: answeredQuestions,
       });
+      setError(null);
 
       setPath((prev) => {
         if (!prev?.curriculum) {
@@ -113,9 +140,33 @@ export default function LearningPathDetail() {
 
         const updatedCurriculum = prev.curriculum.map((chapter) => ({
           ...chapter,
-          lessons: chapter.lessons.map((lesson) =>
-            lesson.lesson_id === lessonId ? { ...lesson, status } : lesson
-          ),
+          lessons: chapter.lessons.map((lesson) => {
+            if (lesson.lesson_id !== lessonId) {
+              return lesson;
+            }
+
+            const required = lesson.assessment?.required_questions || 10;
+            const attempted = response.assessment_result?.attempted_questions ?? lesson.assessment?.attempted_questions ?? 0;
+            const correct = response.assessment_result?.correct_answers ?? lesson.assessment?.correct_answers ?? 0;
+            const minRequired = response.assessment_result?.min_correct_required ?? lesson.assessment?.min_correct_required ?? 7;
+            const passed = response.assessment_result?.passed ?? lesson.assessment?.passed ?? false;
+            const scorePercent = response.assessment_result?.score_percent ?? lesson.assessment?.score_percent ?? 0;
+
+            return {
+              ...lesson,
+              status: response.status,
+              assessment: {
+                required_questions: required,
+                attempted_questions: attempted,
+                completed: response.status === 'complete',
+                correct_answers: correct,
+                min_correct_required: minRequired,
+                passed,
+                score_percent: scorePercent,
+                questions: lesson.assessment?.questions || [],
+              },
+            };
+          }),
         }));
 
         return {
@@ -127,6 +178,36 @@ export default function LearningPathDetail() {
       const message = err instanceof Error ? err.message : 'Không thể cập nhật tiến độ bài học';
       setError(message);
     }
+  };
+
+  const handleAnswerChange = (lessonId: string, index: number, value: OptionKey) => {
+    setLessonAnswers((prev) => {
+      const current = prev[lessonId] || [];
+      const nextAnswers = [...current];
+      nextAnswers[index] = value;
+      return {
+        ...prev,
+        [lessonId]: nextAnswers,
+      };
+    });
+  };
+
+  const handleCompleteWithAssessment = async (lesson: LessonItem) => {
+    const required = lesson.assessment?.required_questions || 10;
+    const answers = lessonAnswers[lesson.lesson_id] || [];
+    const answered = answers.filter((item) => item.trim());
+
+    if (answered.length < required) {
+      setError(`Cần trả lời đủ ${required} câu trước khi hoàn thành bài học.`);
+      return;
+    }
+
+    await handleLessonStatusUpdate(lesson.lesson_id, 'complete', answers);
+  };
+
+  const handleSubmitAssessment = async (lesson: LessonItem) => {
+    const answers = lessonAnswers[lesson.lesson_id] || [];
+    await handleLessonStatusUpdate(lesson.lesson_id, 'in_progress', answers);
   };
 
   const getLessonStatusLabel = (status?: string) => {
@@ -232,14 +313,87 @@ export default function LearningPathDetail() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleLessonStatusUpdate(lesson.lesson_id, 'complete')}
+                                  onClick={() => handleCompleteWithAssessment(lesson)}
                                   className="text-[11px] px-2 py-1 rounded-[8px] bg-[#8f1025] text-white hover:bg-[#7a0e20]"
                                 >
-                                  Hoàn thành
+                                  Hoàn thành (10 câu)
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedAssessments((prev) => ({
+                                      ...prev,
+                                      [lesson.lesson_id]: !prev[lesson.lesson_id],
+                                    }))
+                                  }
+                                  className="text-[11px] px-2 py-1 rounded-[8px] border border-[#ce6a86] text-[#8f1025] hover:bg-[#fdf3f7]"
+                                >
+                                  {expandedAssessments[lesson.lesson_id] ? 'Ẩn bài tập' : 'Làm bài tập'}
                                 </button>
                               </div>
                             </div>
                           </div>
+
+                          {lesson.assessment && (
+                            <div className="mt-3 rounded-[12px] border border-[#f0c8d7] bg-[#fff8fb] p-3">
+                              <p className="text-[12px] font-semibold text-[#8f1025]">
+                                Bài tập bắt buộc: {lesson.assessment.attempted_questions || 0}/{lesson.assessment.required_questions || 10} câu
+                              </p>
+                              <p className="text-[11px] text-[#666] mt-1">
+                                Cần hoàn thành đủ {lesson.assessment.required_questions || 10} câu và đạt tối thiểu {lesson.assessment.min_correct_required || 7} câu đúng để chuyển trạng thái sang Hoàn thành.
+                              </p>
+                              <p className="text-[11px] text-[#4a4a4a] mt-1">
+                                Kết quả hiện tại: {lesson.assessment.correct_answers || 0}/{lesson.assessment.required_questions || 10} câu đúng ({lesson.assessment.score_percent || 0}%)
+                              </p>
+                              <p className={`text-[11px] mt-1 font-medium ${lesson.assessment.passed ? 'text-green-700' : 'text-amber-700'}`}>
+                                {lesson.assessment.passed ? 'Đã đạt điều kiện hoàn thành bài học.' : 'Chưa đạt điều kiện điểm, vui lòng cải thiện câu trả lời.'}
+                              </p>
+
+                              {expandedAssessments[lesson.lesson_id] && (
+                                <div className="mt-3 space-y-3 max-h-[360px] overflow-y-auto pr-1">
+                                  {(lesson.assessment.questions || []).map((question, qIndex) => (
+                                    <div key={question.question_id} className="rounded-[10px] border border-[#f2d5dd] bg-white p-3">
+                                      <p className="text-[12px] font-medium text-[#333] mb-2">
+                                        {qIndex + 1}. {question.question}
+                                      </p>
+                                      <div className="space-y-2">
+                                        {(question.options || []).map((option) => {
+                                          const selected = ((lessonAnswers[lesson.lesson_id] || [])[qIndex] || '') === option.key;
+                                          return (
+                                            <label
+                                              key={`${question.question_id}-${option.key}`}
+                                              className={`flex items-start gap-2 rounded-[8px] border px-3 py-2 cursor-pointer ${selected ? 'border-[#8f1025] bg-[#fdf3f7]' : 'border-[#e8d3da] bg-white'}`}
+                                            >
+                                              <input
+                                                type="radio"
+                                                name={`answer-${lesson.lesson_id}-${qIndex}`}
+                                                value={option.key}
+                                                checked={selected}
+                                                onChange={() => handleAnswerChange(lesson.lesson_id, qIndex, option.key as OptionKey)}
+                                                className="mt-0.5"
+                                              />
+                                              <span className="text-[12px] text-[#333]">
+                                                <strong>{option.key}.</strong> {option.text}
+                                              </span>
+                                            </label>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  ))}
+                                  <div className="pt-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSubmitAssessment(lesson)}
+                                      className="text-[11px] px-3 py-2 rounded-[8px] border border-[#8f1025] text-[#8f1025] hover:bg-[#f7dfed]"
+                                    >
+                                      Nộp và chấm điểm
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
 
                           {lesson.resources && lesson.resources.length > 0 && (
                             <div className="mt-3">

@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 import logging
+from bson import ObjectId
 
 from backend.app.services.progress_service import (
     update_progress_with_confidence,
@@ -39,6 +40,76 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 router = APIRouter(prefix="/progress", tags=["Progress"])
+
+
+def _resolve_user_level(db, user_id: str) -> str:
+    """Resolve user level with ObjectId-safe lookup."""
+    user = None
+    try:
+        if ObjectId.is_valid(user_id):
+            user = db.users.find_one({"_id": ObjectId(user_id)})
+    except Exception:
+        user = None
+
+    if not user:
+        user = db.users.find_one({"_id": user_id})
+
+    return user.get("level", "beginner") if user else "beginner"
+
+
+def _get_assessment_confidence(db, user_id: str) -> tuple[float, int]:
+    """
+    Aggregate lesson assessment score_percent into [0,1] confidence signal.
+    Returns (confidence, counted_lessons).
+    """
+    paths = list(db.learning_paths.find({"user_id": user_id}, {"curriculum": 1}))
+    if not paths:
+        return 0.0, 0
+
+    total = 0.0
+    count = 0
+    for path in paths:
+        for chapter in path.get("curriculum", []) or []:
+            for lesson in chapter.get("lessons", []) or []:
+                assessment = lesson.get("assessment") or {}
+                if "score_percent" not in assessment:
+                    continue
+                try:
+                    score_percent = float(assessment.get("score_percent", 0.0) or 0.0)
+                    score_percent = max(0.0, min(100.0, score_percent))
+                    total += score_percent / 100.0
+                    count += 1
+                except Exception:
+                    continue
+
+    if count == 0:
+        return 0.0, 0
+    return total / count, count
+
+
+def _average_confidence_events(db, user_id: str, start: datetime, end: datetime = None) -> tuple[float, int]:
+    query = {
+        "user_id": user_id,
+        "created_at": {"$gte": start}
+    }
+    if end is not None:
+        query["created_at"]["$lt"] = end
+
+    cursor = db.confidence_events.find(query, {"confidence": 1})
+    total = 0.0
+    count = 0
+    for item in cursor:
+        try:
+            value = float(item.get("confidence", 0.0) or 0.0)
+            value = max(0.0, min(1.0, value))
+            total += value
+            count += 1
+        except Exception:
+            continue
+
+    if count == 0:
+        return 0.0, 0
+    return total / count, count
 
 
 # =========================
@@ -313,51 +384,90 @@ def get_progress_confidence(
     try:
         from backend.app.services.progress_service import get_user_progress_summary, get_db
         summary = get_user_progress_summary(user_id=user_id)
-        confidence = summary.get("average_confidence", 0.0)
-        # Get user level
+
+        # Base confidence from concept progress
+        base_confidence = float(summary.get("average_confidence", 0.0) or 0.0)
+        base_confidence = max(0.0, min(1.0, base_confidence))
+
+        # Get DB handle
         db = get_db()
-        user = db.users.find_one({"_id": user_id})
-        level = user.get("level", "beginner") if user else "beginner"
+
+        # Resolve user level robustly (ObjectId/string)
+        level = _resolve_user_level(db, user_id)
+
+        # Assessment-based confidence from lesson quizzes
+        assessment_confidence, assessed_lessons = _get_assessment_confidence(db, user_id)
+
+        # Blend signals: concept confidence + lesson assessment confidence
+        if assessed_lessons > 0:
+            confidence = (base_confidence * 0.7) + (assessment_confidence * 0.3)
+        else:
+            confidence = base_confidence
+        confidence = max(0.0, min(1.0, confidence))
+
         # Trend: compare average confidence this week vs last week
         now = datetime.utcnow()
         week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
-        recent_confidences = db.progress.find({
-            "user_id": user_id,
-            "last_updated": {"$gte": week_ago}
-        })
-        recent_avg = 0.0
-        recent_count = 0
-        for p in recent_confidences:
-            recent_avg += p.get("confidence", 0.0)
-            recent_count += 1
-        recent_avg = recent_avg / recent_count if recent_count > 0 else confidence
-        # Previous week
         two_weeks_ago = week_ago - timedelta(days=7)
-        prev_confidences = db.progress.find({
-            "user_id": user_id,
-            "last_updated": {"$gte": two_weeks_ago, "$lt": week_ago}
-        })
-        prev_avg = 0.0
-        prev_count = 0
-        for p in prev_confidences:
-            prev_avg += p.get("confidence", 0.0)
-            prev_count += 1
-        prev_avg = prev_avg / prev_count if prev_count > 0 else confidence
+
+        # Prefer event-based trend (time-series from lesson submissions)
+        recent_avg, recent_count = _average_confidence_events(db, user_id, week_ago)
+        prev_avg, prev_count = _average_confidence_events(db, user_id, two_weeks_ago, week_ago)
+
+        # Fallback to progress snapshots if event stream is insufficient
+        if recent_count == 0:
+            recent_confidences = db.progress.find({
+                "user_id": user_id,
+                "last_updated": {"$gte": week_ago}
+            })
+            snapshot_total = 0.0
+            snapshot_count = 0
+            for p in recent_confidences:
+                snapshot_total += float(p.get("confidence", 0.0) or 0.0)
+                snapshot_count += 1
+            recent_avg = snapshot_total / snapshot_count if snapshot_count > 0 else confidence
+
+        if prev_count == 0:
+            prev_confidences = db.progress.find({
+                "user_id": user_id,
+                "last_updated": {"$gte": two_weeks_ago, "$lt": week_ago}
+            })
+            snapshot_total = 0.0
+            snapshot_count = 0
+            for p in prev_confidences:
+                snapshot_total += float(p.get("confidence", 0.0) or 0.0)
+                snapshot_count += 1
+            prev_avg = snapshot_total / snapshot_count if snapshot_count > 0 else base_confidence
+
         # Determine trend
-        if recent_avg > prev_avg + 0.01:
+        if recent_avg > prev_avg + 0.02:
             trend = "↑ improving"
-        elif recent_avg < prev_avg - 0.01:
+        elif recent_avg < prev_avg - 0.02:
             trend = "↓ declining"
         else:
             trend = "→ stable"
-        explanation = "Hệ thống đánh giá mức độ tự tin của bạn dựa trên tiến độ, độ chính xác và thời gian hoàn thành."
+
+        explanation = (
+            "Hệ thống đánh giá mức độ tự tin dựa trên trung bình confidence theo concept "
+            "và kết quả quiz trong learning path (nếu có)."
+        )
+
         return {
             "success": True,
             "user_id": user_id,
             "confidence": round(confidence, 2),
             "level": level,
             "trend": trend,
-            "explanation": explanation
+            "explanation": explanation,
+            "details": {
+                "base_confidence": round(base_confidence, 3),
+                "assessment_confidence": round(assessment_confidence, 3),
+                "assessed_lessons": assessed_lessons,
+                "recent_event_count": recent_count,
+                "previous_event_count": prev_count,
+                "recent_period_confidence": round(recent_avg, 3),
+                "previous_period_confidence": round(prev_avg, 3)
+            }
         }
     except Exception as e:
         logger.exception(f"Error getting confidence overview: {e}")

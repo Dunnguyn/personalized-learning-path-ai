@@ -25,6 +25,28 @@ export interface LearningPath {
       summary: string;
       resources: string[];
       status?: 'not_started' | 'in_progress' | 'complete';
+      assessment?: {
+        required_questions: number;
+        attempted_questions: number;
+        completed: boolean;
+        correct_answers: number;
+        min_correct_required: number;
+        passed: boolean;
+        score_percent: number;
+        questions: Array<{
+          question_id: string;
+          question: string;
+          answer: string;
+          explanation: string;
+          difficulty: 'easy' | 'medium' | 'hard';
+          concept: string;
+          options: Array<{
+            key: 'A' | 'B' | 'C' | 'D';
+            text: string;
+          }>;
+          correct_option: 'A' | 'B' | 'C' | 'D';
+        }>;
+      };
     }>;
   }>;
   message: string;
@@ -36,6 +58,21 @@ export interface LearningPathHistory {
   goal: string;
   level: string;
   generated_at: string;
+}
+
+export interface LessonProgressApiResponse {
+  path_id: string;
+  lesson_id: string;
+  status: 'not_started' | 'in_progress' | 'complete';
+  updated_at: string;
+  assessment_result?: {
+    attempted_questions: number;
+    correct_answers: number;
+    required_questions: number;
+    min_correct_required: number;
+    passed: boolean;
+    score_percent: number;
+  };
 }
 
 export const learningPathService = {
@@ -73,8 +110,9 @@ export const learningPathService = {
     path_id: string;
     lesson_id: string;
     status: 'not_started' | 'in_progress' | 'complete';
-  }): Promise<any> {
-    return apiClient.post('/learning-path/lesson-progress', data);
+    answered_questions?: string[];
+  }): Promise<LessonProgressApiResponse> {
+    return apiClient.post('/learning-path/lesson-progress', data) as Promise<LessonProgressApiResponse>;
   },
 
   /**

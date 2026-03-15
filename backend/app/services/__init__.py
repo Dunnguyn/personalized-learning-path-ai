@@ -31,6 +31,7 @@ __all__ = [
     'ai_service',
     'progress_service',
     'learning_path_service',
+    'question_generator',
     'resource_service',
     'adaptive_engine',
 ]

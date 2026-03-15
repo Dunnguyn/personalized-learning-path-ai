@@ -1,26 +1,22 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { dashboardService } from '../../services/dashboardService';
 import iconUser from '../../assets/account.png';
 import iconSearch from '../../assets/search.png';
 
 export default function Header() {
   const [searchQuery, setSearchQuery] = useState('');
   const { user } = useAuth();
+  const navigate = useNavigate();
   
   const userName = user?.name || "Guest User";
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim()) return;
-    
-    try {
-      const results = await dashboardService.searchResources(searchQuery);
-      console.log('Search results:', results);
-      // TODO: Navigate to search results page or show modal
-    } catch (error) {
-      console.error('Search error:', error);
-    }
+    const query = searchQuery.trim();
+    if (!query) return;
+
+    navigate(`/resources?q=${encodeURIComponent(query)}`);
   };
 
   return (

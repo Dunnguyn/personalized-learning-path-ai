@@ -24,8 +24,9 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
 import logging
+import re
 
-from backend.app.services.learning_path_service import generate_learning_path
+from backend.app.services.learning_path_service import generate_learning_path, generate_lesson_mcq_questions
 from backend.app.api.auth import get_current_user
 from backend.app.api.schemas import (
     LevelEnum,
@@ -42,6 +43,80 @@ logging.basicConfig(level=logging.INFO)
 # ROUTER
 # =========================
 router = APIRouter(prefix="/learning-path", tags=["Learning Path"])
+MIN_CORRECT_TO_PASS = 7
+
+
+def _save_confidence_event(
+    db,
+    user_id: str,
+    path_id: str,
+    lesson_id: str,
+    lesson_status: str,
+    assessment_result: Optional[dict],
+    timestamp: datetime
+) -> None:
+    """Store confidence event for time-series analytics."""
+    if not assessment_result:
+        return
+
+    try:
+        confidence_value = float(assessment_result.get("score_percent", 0.0) or 0.0) / 100.0
+        confidence_value = max(0.0, min(1.0, confidence_value))
+        db.confidence_events.insert_one({
+            "user_id": user_id,
+            "path_id": path_id,
+            "lesson_id": lesson_id,
+            "status": lesson_status,
+            "source": "lesson_assessment",
+            "confidence": round(confidence_value, 4),
+            "assessment_result": {
+                "attempted_questions": int(assessment_result.get("attempted_questions", 0) or 0),
+                "correct_answers": int(assessment_result.get("correct_answers", 0) or 0),
+                "required_questions": int(assessment_result.get("required_questions", 10) or 10),
+                "min_correct_required": int(assessment_result.get("min_correct_required", MIN_CORRECT_TO_PASS) or MIN_CORRECT_TO_PASS),
+                "passed": bool(assessment_result.get("passed", False)),
+                "score_percent": float(assessment_result.get("score_percent", 0.0) or 0.0)
+            },
+            "created_at": timestamp
+        })
+    except Exception as e:
+        logger.warning(f"Failed to persist confidence event: {e}")
+
+
+def _build_legacy_assessment_questions(lesson_title: str, required: int = 10) -> List[dict]:
+    title = lesson_title or "Bai hoc"
+    try:
+        return generate_lesson_mcq_questions(
+            concept=title,
+            level="intermediate",
+            lesson_summary=f"Noi dung tong quan cua bai {title}",
+            lesson_resources=[title],
+            num_questions=required
+        )
+    except Exception as e:
+        logger.warning(f"Legacy assessment generation fallback failed: {e}")
+        questions = []
+        for idx in range(required):
+            option_a = f"Noi dung bai '{title}' can duoc hieu va ap dung theo muc tieu hoc tap."
+            option_b = f"Noi dung bai '{title}' khong can lien he voi kien thuc trong chuong."
+            option_c = f"Chi can hoc thuoc tieu de bai '{title}' la du."
+            option_d = f"Bai '{title}' khong co lien quan toi mon hoc hien tai."
+            questions.append({
+                "question_id": f"legacy-{idx + 1}",
+                "question": f"Cau {idx + 1}: Chon phat bieu dung nhat ve bai '{title}'.",
+                "answer": option_a,
+                "explanation": "Can dua vao noi dung bai hoc de lua chon dap an dung.",
+                "difficulty": "medium",
+                "concept": title,
+                "options": [
+                    {"key": "A", "text": option_a},
+                    {"key": "B", "text": option_b},
+                    {"key": "C", "text": option_c},
+                    {"key": "D", "text": option_d}
+                ],
+                "correct_option": "A"
+            })
+        return questions
 
 
 def _build_lesson_progress(curriculum: Optional[List[dict]]) -> dict:
@@ -63,7 +138,183 @@ def _apply_lesson_progress(curriculum: Optional[List[dict]], lesson_progress: di
             lesson_id = lesson.get("lesson_id")
             if lesson_id:
                 lesson["status"] = lesson_progress.get(lesson_id, "not_started")
+            assessment = lesson.get("assessment") or {}
+            required = int(assessment.get("required_questions", 10) or 10)
+            attempted = int(assessment.get("attempted_questions", 0) or 0)
+            if attempted > required:
+                attempted = required
+            questions = assessment.get("questions", [])
+            if not questions:
+                questions = _build_legacy_assessment_questions(lesson.get("title") or "Bai hoc", required)
+            lesson["assessment"] = {
+                "required_questions": required,
+                "attempted_questions": attempted,
+                "completed": bool(assessment.get("completed", False)) or lesson.get("status") == "complete",
+                "correct_answers": int(assessment.get("correct_answers", 0) or 0),
+                "min_correct_required": int(assessment.get("min_correct_required", MIN_CORRECT_TO_PASS) or MIN_CORRECT_TO_PASS),
+                "passed": bool(assessment.get("passed", False)),
+                "score_percent": float(assessment.get("score_percent", 0.0) or 0.0),
+                "questions": questions
+            }
     return curriculum
+
+
+def _normalize_tokens(text: str) -> List[str]:
+    if not text:
+        return []
+    return re.findall(r"[a-zA-Z0-9_]+", text.lower())
+
+
+def _is_answer_correct(user_answer: str, expected_answer: str) -> bool:
+    user_tokens = set(_normalize_tokens(user_answer))
+    expected_tokens = set(_normalize_tokens(expected_answer))
+
+    if not expected_tokens:
+        return bool(user_tokens)
+    if not user_tokens:
+        return False
+
+    stop_words = {
+        "the", "a", "an", "is", "are", "to", "in", "on", "for", "of", "and", "or",
+        "la", "gi", "mot", "nhung", "cac", "trong", "voi", "dua", "theo", "noi", "dung"
+    }
+    user_core = {t for t in user_tokens if t not in stop_words}
+    expected_core = {t for t in expected_tokens if t not in stop_words}
+
+    if not expected_core:
+        expected_core = expected_tokens
+    if not user_core:
+        user_core = user_tokens
+
+    overlap = user_core & expected_core
+    overlap_ratio = len(overlap) / max(len(expected_core), 1)
+
+    expected_text = (expected_answer or "").strip().lower()
+    user_text = (user_answer or "").strip().lower()
+    contains_expected = expected_text and expected_text[:80] in user_text
+
+    return overlap_ratio >= 0.35 or bool(contains_expected)
+
+
+def _is_option_correct(user_answer: str, question: dict) -> bool:
+    selected = (user_answer or "").strip().upper()
+    correct_option = str(question.get("correct_option", "")).strip().upper()
+    if selected and correct_option:
+        return selected == correct_option
+
+    expected_answer = str(question.get("answer", ""))
+    return _is_answer_correct(user_answer, expected_answer)
+
+
+def _grade_lesson_answers(assessment: dict, answered_questions: Optional[List[str]]) -> dict:
+    questions = assessment.get("questions", []) or []
+    required = int(assessment.get("required_questions", 10) or 10)
+    answers = answered_questions or []
+
+    attempted = 0
+    correct = 0
+
+    for idx, question in enumerate(questions[:required]):
+        user_answer = answers[idx].strip() if idx < len(answers) and isinstance(answers[idx], str) else ""
+        if not user_answer:
+            continue
+
+        attempted += 1
+        if _is_option_correct(user_answer, question):
+            correct += 1
+
+    score_percent = round((correct / max(required, 1)) * 100, 2)
+    passed = correct >= MIN_CORRECT_TO_PASS and attempted >= required
+
+    return {
+        "required_questions": required,
+        "attempted_questions": min(attempted, required),
+        "correct_answers": correct,
+        "min_correct_required": MIN_CORRECT_TO_PASS,
+        "passed": passed,
+        "score_percent": score_percent
+    }
+
+
+def _update_lesson_assessment_progress(
+    curriculum: Optional[List[dict]],
+    lesson_id: str,
+    lesson_status: str,
+    answered_questions: Optional[List[str]]
+) -> tuple[Optional[List[dict]], Optional[dict]]:
+    if not curriculum:
+        return curriculum, None
+
+    updated = []
+    found = False
+    grading_result = None
+
+    for chapter in curriculum:
+        new_chapter = {**chapter, "lessons": []}
+        for lesson in chapter.get("lessons", []):
+            if lesson.get("lesson_id") != lesson_id:
+                new_chapter["lessons"].append(lesson)
+                continue
+
+            found = True
+            lesson_copy = {**lesson}
+            assessment = lesson_copy.get("assessment") or {}
+            required = int(assessment.get("required_questions", 10) or 10)
+            scored = _grade_lesson_answers(assessment, answered_questions)
+            existing_attempted = int(assessment.get("attempted_questions", 0) or 0)
+            if scored["attempted_questions"] < existing_attempted:
+                scored["attempted_questions"] = existing_attempted
+            if scored["attempted_questions"] > required:
+                scored["attempted_questions"] = required
+
+            existing_correct = int(assessment.get("correct_answers", 0) or 0)
+            if scored["correct_answers"] < existing_correct:
+                scored["correct_answers"] = existing_correct
+
+            scored["score_percent"] = round((scored["correct_answers"] / max(required, 1)) * 100, 2)
+            scored["passed"] = scored["correct_answers"] >= MIN_CORRECT_TO_PASS and scored["attempted_questions"] >= required
+
+            if lesson_status == "complete" and scored["attempted_questions"] < required:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"You must answer all {required} assessment questions before completing this lesson"
+                )
+
+            if lesson_status == "complete" and not scored["passed"]:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Assessment not passed: {scored['correct_answers']}/{required} correct. Minimum required is {MIN_CORRECT_TO_PASS}."
+                )
+
+            lesson_copy["status"] = lesson_status
+            lesson_copy["assessment"] = {
+                "required_questions": required,
+                "attempted_questions": scored["attempted_questions"],
+                "completed": lesson_status == "complete",
+                "correct_answers": scored["correct_answers"],
+                "min_correct_required": MIN_CORRECT_TO_PASS,
+                "passed": scored["passed"],
+                "score_percent": scored["score_percent"],
+                "questions": assessment.get("questions", [])
+            }
+            grading_result = {
+                "attempted_questions": scored["attempted_questions"],
+                "correct_answers": scored["correct_answers"],
+                "required_questions": required,
+                "min_correct_required": MIN_CORRECT_TO_PASS,
+                "passed": scored["passed"],
+                "score_percent": scored["score_percent"]
+            }
+            new_chapter["lessons"].append(lesson_copy)
+        updated.append(new_chapter)
+
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Lesson not found in learning path"
+        )
+
+    return updated, grading_result
 
 
 # =========================
@@ -312,21 +563,40 @@ def update_lesson_progress(
             )
 
         updated_at = datetime.utcnow()
+        updated_curriculum, assessment_result = _update_lesson_assessment_progress(
+            path.get("curriculum"),
+            payload.lesson_id,
+            payload.status,
+            payload.answered_questions
+        )
+
         db.learning_paths.update_one(
             {"_id": path.get("_id")},
             {
                 "$set": {
                     f"lesson_progress.{payload.lesson_id}": payload.status,
+                    "curriculum": updated_curriculum,
                     "updated_at": updated_at
                 }
             }
+        )
+
+        _save_confidence_event(
+            db=db,
+            user_id=user_id,
+            path_id=payload.path_id,
+            lesson_id=payload.lesson_id,
+            lesson_status=payload.status,
+            assessment_result=assessment_result,
+            timestamp=updated_at
         )
 
         return LessonProgressResponse(
             path_id=payload.path_id,
             lesson_id=payload.lesson_id,
             status=payload.status,
-            updated_at=updated_at
+            updated_at=updated_at,
+            assessment_result=assessment_result
         )
 
     except HTTPException:

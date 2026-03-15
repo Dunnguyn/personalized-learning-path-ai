@@ -6,6 +6,7 @@ import DashboardLayout from '../components/layout/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../utils/apiClient';
 import { SUBJECTS } from '../utils/subjects';
+import { assessmentService, type AssessmentQuestion, type AssessmentDifficulty } from '../services/assessmentService';
 
 interface Message {
   id: string;
@@ -57,6 +58,13 @@ interface HistoryItem {
   concept_name?: string;
   confidence: number;
   timestamp: string;
+}
+
+interface AssessmentDraft {
+  concept: string;
+  difficulty: AssessmentDifficulty;
+  num_questions: number;
+  chapter_content: string;
 }
 
 type StoredMessage = Omit<Message, 'timestamp'> & { timestamp: string };
@@ -120,6 +128,15 @@ export default function AITutor() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [assessmentDraft, setAssessmentDraft] = useState<AssessmentDraft>({
+    concept: '',
+    difficulty: 'easy',
+    num_questions: 5,
+    chapter_content: '',
+  });
+  const [assessmentLoading, setAssessmentLoading] = useState(false);
+  const [assessmentQuestions, setAssessmentQuestions] = useState<AssessmentQuestion[]>([]);
+  const [assessmentError, setAssessmentError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const autoStartedRef = useRef(false);
 
@@ -146,8 +163,8 @@ export default function AITutor() {
             {children}
           </a>
         ),
-        code: ({ inline, children }) =>
-          inline ? (
+        code: ({ className, children }) =>
+          !className ? (
             <code className="px-1.5 py-0.5 bg-[#f3f4f6] border border-[#e5e7eb] rounded text-[13px] font-mono text-[#d63384]">
               {children}
             </code>
@@ -278,7 +295,10 @@ export default function AITutor() {
     
     setHistoryLoading(true);
     try {
-      const data = await apiClient.get('/ask/history?limit=20');
+      const data = (await apiClient.get('/ask/history?limit=20')) as {
+        success: boolean;
+        history?: HistoryItem[];
+      };
       if (data.success) {
         setHistory(data.history || []);
       }
@@ -295,7 +315,7 @@ export default function AITutor() {
     }
 
     try {
-      const response = await apiClient.delete(`/ask/history/${historyId}`);
+      const response = (await apiClient.delete(`/ask/history/${historyId}`)) as { success: boolean };
       if (response.success) {
         setHistory(history.filter((item) => item._id !== historyId));
       } else {
@@ -406,13 +426,38 @@ export default function AITutor() {
         throw new Error('Mục tiêu học tập không hợp lệ');
       }
 
-      const data = await apiClient.post('/ask/', {
+      const data = (await apiClient.post('/ask/', {
         user_id: user.user_id,
         question: userQuestion,
         goal: goal,
         level: level,
         completed: currentConcept ? [currentConcept.concept_id.toString()] : [],
-      });
+      })) as {
+        success: boolean;
+        answer?: {
+          answer_text?: string;
+          sources?: Array<{ title: string; url?: string; type?: string }>;
+          confidence?: number;
+          latency_ms?: number;
+        };
+        concept_detected?: {
+          concept_id: number;
+          concept_name: string;
+          score: number;
+        };
+        learning_path?: Array<{
+          concept_id: number;
+          concept_name: string;
+          order: number;
+          status: string;
+        }>;
+        adaptive_info?: {
+          mode: string;
+          difficulty_boost: number;
+          practice_recommendations: string[];
+        };
+        error?: string;
+      };
       
       if (data.success) {
         addMessage('assistant', data.answer?.answer_text || 'Xin lỗi, tôi không thể trả lời câu hỏi này lúc này.', {
@@ -430,6 +475,53 @@ export default function AITutor() {
       console.error('Error sending message:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGenerateAssessment = async () => {
+    if (!user) {
+      return;
+    }
+
+    setAssessmentError(null);
+    setAssessmentQuestions([]);
+
+    if (!assessmentDraft.concept.trim()) {
+      setAssessmentError('Vui lòng nhập concept');
+      return;
+    }
+
+    if (!assessmentDraft.chapter_content.trim() || assessmentDraft.chapter_content.trim().length < 50) {
+      setAssessmentError('Nội dung chương học cần ít nhất 50 ký tự');
+      return;
+    }
+
+    if (assessmentDraft.num_questions < 1 || assessmentDraft.num_questions > 20) {
+      setAssessmentError('Số câu hỏi phải từ 1 đến 20');
+      return;
+    }
+
+    setAssessmentLoading(true);
+
+    try {
+      const response = await assessmentService.generateQuestions({
+        user_id: user.user_id,
+        concept: assessmentDraft.concept.trim(),
+        difficulty: assessmentDraft.difficulty,
+        num_questions: assessmentDraft.num_questions,
+        chapter_content: assessmentDraft.chapter_content.trim(),
+      });
+
+      if (!response.success) {
+        throw new Error('Không thể tạo câu hỏi kiểm tra');
+      }
+
+      setAssessmentQuestions(response.questions || []);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Đã xảy ra lỗi khi tạo câu hỏi';
+      setAssessmentError(message);
+    } finally {
+      setAssessmentLoading(false);
     }
   };
 
@@ -772,6 +864,107 @@ export default function AITutor() {
 
           {/* Right Sidebar - Learning Context */}
           <div className="w-[300px] flex flex-col gap-4">
+            {/* Assessment Generator Card */}
+            <div className="bg-white border border-[#ce6a86] rounded-[20px] p-5">
+              <h3 className="text-[14px] font-semibold text-[#8f1025] mb-3">📝 Tạo câu hỏi kiểm tra</h3>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-[12px] text-[#8f1025] mb-1">Concept</label>
+                  <input
+                    type="text"
+                    value={assessmentDraft.concept}
+                    onChange={(e) =>
+                      setAssessmentDraft((prev) => ({
+                        ...prev,
+                        concept: e.target.value,
+                      }))
+                    }
+                    placeholder="Ví dụ: RAG Pipeline"
+                    className="w-full px-3 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[12px] text-[#8f1025] mb-1">Độ khó</label>
+                    <select
+                      value={assessmentDraft.difficulty}
+                      onChange={(e) =>
+                        setAssessmentDraft((prev) => ({
+                          ...prev,
+                          difficulty: e.target.value as AssessmentDifficulty,
+                        }))
+                      }
+                      className="w-full px-2 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
+                    >
+                      <option value="easy">easy</option>
+                      <option value="medium">medium</option>
+                      <option value="hard">hard</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[12px] text-[#8f1025] mb-1">Số câu</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={assessmentDraft.num_questions}
+                      onChange={(e) =>
+                        setAssessmentDraft((prev) => ({
+                          ...prev,
+                          num_questions: Number(e.target.value) || 1,
+                        }))
+                      }
+                      className="w-full px-2 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[12px] text-[#8f1025] mb-1">Nội dung chương học</label>
+                  <textarea
+                    value={assessmentDraft.chapter_content}
+                    onChange={(e) =>
+                      setAssessmentDraft((prev) => ({
+                        ...prev,
+                        chapter_content: e.target.value,
+                      }))
+                    }
+                    rows={6}
+                    placeholder="Dán nội dung chương học vào đây..."
+                    className="w-full px-3 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025] resize-y"
+                  />
+                </div>
+
+                {assessmentError && (
+                  <div className="text-[12px] text-red-700 bg-red-50 border border-red-200 rounded-[8px] px-2 py-2">
+                    {assessmentError}
+                  </div>
+                )}
+
+                <button
+                  onClick={handleGenerateAssessment}
+                  disabled={assessmentLoading}
+                  className="w-full px-3 py-2 bg-[#8f1025] text-white rounded-[8px] text-[12px] font-medium hover:bg-[#7a0e20] disabled:opacity-50"
+                >
+                  {assessmentLoading ? 'Đang tạo...' : 'Tạo câu hỏi'}
+                </button>
+              </div>
+
+              {assessmentQuestions.length > 0 && (
+                <div className="mt-4 border-t border-[#f2c9d4] pt-3">
+                  <p className="text-[12px] font-semibold text-[#8f1025] mb-2">Kết quả JSON</p>
+                  <div className="max-h-[260px] overflow-y-auto border border-[#f2d5dd] rounded-[10px] bg-[#fff9fb] p-2">
+                    <pre className="text-[11px] text-[#333] whitespace-pre-wrap break-words">
+                      {JSON.stringify(assessmentQuestions, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Goal Card */}
             <div className="bg-white border border-[#ce6a86] rounded-[20px] p-5">
               <h3 className="text-[14px] font-semibold text-[#8f1025] mb-3">📚 Mục tiêu</h3>

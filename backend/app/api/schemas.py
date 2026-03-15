@@ -192,15 +192,39 @@ class LearningPathItemResponse(BaseModel):
     resources: list = Field(default_factory=list)
 
 
+class LessonAssessmentQuestionResponse(BaseModel):
+    question_id: str
+    question: str
+    answer: str
+    explanation: str
+    difficulty: str
+    concept: str
+    options: List[dict] = Field(default_factory=list)
+    correct_option: str = "A"
+
+
+class LessonAssessmentResponse(BaseModel):
+    required_questions: int = 10
+    attempted_questions: int = 0
+    completed: bool = False
+    correct_answers: int = 0
+    min_correct_required: int = 7
+    passed: bool = False
+    score_percent: float = 0.0
+    questions: List[LessonAssessmentQuestionResponse] = Field(default_factory=list)
+
+
 class LessonResponse(BaseModel):
     lesson_id: str
     title: str
     summary: str
     resources: list = Field(default_factory=list)
     status: Optional[str] = None
+    assessment: Optional[LessonAssessmentResponse] = None
 
 
 class ChapterResponse(BaseModel):
+    chapter_id: Optional[str] = None
     title: str
     lessons: List[LessonResponse]
 
@@ -220,6 +244,7 @@ class LessonProgressUpdate(BaseModel):
     path_id: str = Field(..., description="Learning path UUID")
     lesson_id: str = Field(..., description="Lesson identifier")
     status: Literal["not_started", "in_progress", "complete"]
+    answered_questions: Optional[List[str]] = None
 
 
 class LessonProgressResponse(BaseModel):
@@ -227,6 +252,7 @@ class LessonProgressResponse(BaseModel):
     lesson_id: str
     status: str
     updated_at: datetime
+    assessment_result: Optional[dict] = None
 
 
 # =========================
@@ -248,3 +274,30 @@ class AskResponse(BaseModel):
     concept_detected: Optional[dict] = None
     adaptive_info: Optional[dict] = None
     progress_updated: bool = False
+
+
+class AssessmentDifficultyEnum(str, Enum):
+    easy = "easy"
+    medium = "medium"
+    hard = "hard"
+
+
+class AssessmentQuestionItem(BaseModel):
+    question: str
+    answer: str
+    explanation: str
+    difficulty: AssessmentDifficultyEnum
+    concept: str
+
+
+class GenerateAssessmentQuestionsRequest(BaseModel):
+    user_id: str = Field(..., description="MongoDB ObjectId as string")
+    concept: str = Field(..., min_length=2, max_length=200)
+    difficulty: AssessmentDifficultyEnum
+    num_questions: int = Field(..., ge=1, le=20)
+    chapter_content: str = Field(..., min_length=50, max_length=50000)
+
+
+class GenerateAssessmentQuestionsResponse(BaseModel):
+    success: bool
+    questions: List[AssessmentQuestionItem]
