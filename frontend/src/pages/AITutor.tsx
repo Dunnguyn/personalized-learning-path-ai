@@ -61,8 +61,10 @@ interface HistoryItem {
 }
 
 interface AssessmentDraft {
+  lesson_title: string;
   concept: string;
   difficulty: AssessmentDifficulty;
+  question_type: string;
   num_questions: number;
   chapter_content: string;
 }
@@ -129,8 +131,10 @@ export default function AITutor() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [assessmentDraft, setAssessmentDraft] = useState<AssessmentDraft>({
+    lesson_title: '',
     concept: '',
     difficulty: 'easy',
+    question_type: 'short_answer',
     num_questions: 5,
     chapter_content: '',
   });
@@ -506,10 +510,13 @@ export default function AITutor() {
     try {
       const response = await assessmentService.generateQuestions({
         user_id: user.user_id,
+        lesson_title: assessmentDraft.lesson_title.trim() || assessmentDraft.concept.trim(),
         concept: assessmentDraft.concept.trim(),
         difficulty: assessmentDraft.difficulty,
+        question_type: assessmentDraft.question_type.trim() || 'short_answer',
         num_questions: assessmentDraft.num_questions,
         chapter_content: assessmentDraft.chapter_content.trim(),
+        retrieved_context: assessmentDraft.chapter_content.trim(),
       });
 
       if (!response.success) {
@@ -870,6 +877,22 @@ export default function AITutor() {
 
               <div className="space-y-3">
                 <div>
+                  <label className="block text-[12px] text-[#8f1025] mb-1">Ten bai hoc</label>
+                  <input
+                    type="text"
+                    value={assessmentDraft.lesson_title}
+                    onChange={(e) =>
+                      setAssessmentDraft((prev) => ({
+                        ...prev,
+                        lesson_title: e.target.value,
+                      }))
+                    }
+                    placeholder="Vi du: Gioi thieu ve RAG"
+                    className="w-full px-3 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
+                  />
+                </div>
+
+                <div>
                   <label className="block text-[12px] text-[#8f1025] mb-1">Concept</label>
                   <input
                     type="text"
@@ -905,11 +928,29 @@ export default function AITutor() {
                   </div>
 
                   <div>
+                    <label className="block text-[12px] text-[#8f1025] mb-1">Loai cau hoi</label>
+                    <input
+                      type="text"
+                      aria-label="Loai cau hoi"
+                      value={assessmentDraft.question_type}
+                      onChange={(e) =>
+                        setAssessmentDraft((prev) => ({
+                          ...prev,
+                          question_type: e.target.value,
+                        }))
+                      }
+                      placeholder="short_answer"
+                      className="w-full px-2 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
+                    />
+                  </div>
+
+                  <div>
                     <label className="block text-[12px] text-[#8f1025] mb-1">Số câu</label>
                     <input
                       type="number"
                       min={1}
                       max={20}
+                      aria-label="So cau"
                       value={assessmentDraft.num_questions}
                       onChange={(e) =>
                         setAssessmentDraft((prev) => ({

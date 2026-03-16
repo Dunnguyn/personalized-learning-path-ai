@@ -20,11 +20,13 @@ type QuestionResult = NonNullable<NonNullable<LessonItem['assessment']>['questio
 
 interface LessonQuizState {
   attemptId: string;
+  attemptNumber: number;
   questions: LessonQuizQuestion[];
   results: LessonQuizSubmitResponse['results'];
   passThresholdCount: number;
   correctCount: number;
   score: number;
+  confidenceScore: number;
   isPassed: boolean;
 }
 
@@ -100,6 +102,18 @@ export default function LearningPathDetail() {
 
   const steps = useMemo(() => path?.recommended_path || [], [path]);
   const chapters = useMemo(() => path?.curriculum || [], [path]);
+  const curriculumNotice = useMemo(() => {
+    if (!path) {
+      return null;
+    }
+    if (path.curriculum_source === 'fallback') {
+      return (
+        path.curriculum_notice ||
+        'AI hiện chưa phản hồi ổn định. Hệ thống đã dùng lộ trình dự phòng để bạn vẫn có thể bắt đầu học.'
+      );
+    }
+    return null;
+  }, [path]);
 
   useEffect(() => {
     if (!path?.curriculum) {
@@ -137,9 +151,7 @@ export default function LearningPathDetail() {
 
   const handleLessonStatusUpdate = async (
     lessonId: string,
-    status: 'not_started' | 'in_progress' | 'complete',
-    answeredQuestions?: string[],
-    restartAssessment = false
+    status: 'not_started' | 'in_progress' | 'complete'
   ) => {
     if (!path?.path_id) {
       return;
@@ -150,26 +162,8 @@ export default function LearningPathDetail() {
         path_id: path.path_id,
         lesson_id: lessonId,
         status,
-        answered_questions: answeredQuestions,
-        restart_assessment: restartAssessment,
       });
       setError(null);
-
-      if (restartAssessment && path?.path_id) {
-        const refreshed = await learningPathService.getLearningPathById(path.path_id);
-        if (refreshed?.path) {
-          setPath(refreshed.path as LearningPath);
-          setLessonAnswers((prev) => ({
-            ...prev,
-            [lessonId]: [],
-          }));
-          setExpandedAssessments((prev) => ({
-            ...prev,
-            [lessonId]: true,
-          }));
-        }
-        return;
-      }
 
       setPath((prev) => {
         if (!prev?.curriculum) {
@@ -190,6 +184,7 @@ export default function LearningPathDetail() {
             const passed = response.assessment_result?.passed ?? lesson.assessment?.passed ?? false;
             const scorePercent = response.assessment_result?.score_percent ?? lesson.assessment?.score_percent ?? 0;
             const questionResults = response.assessment_result?.question_results ?? lesson.assessment?.question_results ?? [];
+            const existingQuestions = lesson.assessment?.questions || [];
 
             return {
               ...lesson,
@@ -203,7 +198,7 @@ export default function LearningPathDetail() {
                 passed,
                 score_percent: scorePercent,
                 question_results: questionResults,
-                questions: lesson.assessment?.questions || [],
+                questions: existingQuestions,
               },
             };
           }),
@@ -266,6 +261,25 @@ export default function LearningPathDetail() {
   const getAnsweredProgress = (lesson: LessonItem) => {
     const required = getRequiredQuestionCount(lesson);
     return Math.round((getAnsweredCount(lesson) / Math.max(required, 1)) * 100);
+  };
+
+  const getConfidenceTone = (confidenceScore: number) => {
+    if (confidenceScore >= 0.8) {
+      return {
+        bar: 'bg-green-500',
+        badge: 'bg-green-100 text-green-700 border-green-200',
+      };
+    }
+    if (confidenceScore >= 0.6) {
+      return {
+        bar: 'bg-amber-400',
+        badge: 'bg-amber-100 text-amber-700 border-amber-200',
+      };
+    }
+    return {
+      bar: 'bg-red-400',
+      badge: 'bg-red-100 text-red-700 border-red-200',
+    };
   };
 
   const updateLessonAssessmentSnapshot = (
@@ -348,15 +362,16 @@ export default function LearningPathDetail() {
   const createQuizAttempt = async (lesson: LessonItem, phase: LessonBusyPhase = 'creating') => {
     setLessonBusyPhase(lesson.lesson_id, phase);
     try {
-      await learningPathService.generateLessonQuestionBank(lesson.lesson_id);
       const attempt: LessonQuizAttemptResponse = await learningPathService.createLessonQuizAttempt(lesson.lesson_id);
       const nextQuizState: LessonQuizState = {
         attemptId: attempt.attempt_id,
+        attemptNumber: attempt.attempt_number,
         questions: attempt.questions,
         results: [],
         passThresholdCount: attempt.pass_threshold_count,
         correctCount: 0,
         score: 0,
+        confidenceScore: 0,
         isPassed: false,
       };
 
@@ -417,10 +432,12 @@ export default function LearningPathDetail() {
       const result = await learningPathService.submitLessonQuiz(quizState.attemptId, answerMap);
       const nextQuizState: LessonQuizState = {
         ...quizState,
+        attemptNumber: result.attempt_number,
         results: result.results,
         passThresholdCount: result.pass_threshold_count,
         correctCount: result.correct_count,
         score: result.score,
+        confidenceScore: result.confidence_score,
         isPassed: result.is_passed,
       };
 
@@ -530,8 +547,18 @@ export default function LearningPathDetail() {
                   <span>Ngày tạo: {new Date(path.generated_at).toLocaleString()}</span>
                 )}
                 <span>Tổng bước: {steps.length}</span>
+                {path?.curriculum_source && (
+                  <span>Nguồn sinh: {path.curriculum_source === 'ai' ? 'AI' : 'Dự phòng'}</span>
+                )}
               </div>
             </div>
+
+            {curriculumNotice && (
+              <div className="mb-6 rounded-[16px] border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-900">
+                <div className="font-semibold">AI chưa sẵn sàng cho lần tạo lộ trình này</div>
+                <div className="mt-1">{curriculumNotice}</div>
+              </div>
+            )}
 
             {chapters.length > 0 ? (
               <div className="space-y-6">
@@ -582,7 +609,9 @@ export default function LearningPathDetail() {
                                   disabled={getLessonBusyPhase(lesson.lesson_id) !== 'idle'}
                                   className="text-[11px] px-2 py-1 rounded-[8px] bg-[#8f1025] text-white hover:bg-[#7a0e20] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
-                                  {getLessonBusyPhase(lesson.lesson_id) === 'submitting' ? 'Đang chấm...' : 'Hoàn thành (10 câu)'}
+                                  {getLessonBusyPhase(lesson.lesson_id) === 'submitting'
+                                    ? 'Đang chấm...'
+                                    : `Hoàn thành (${getRequiredQuestionCount(lesson)} câu)`}
                                 </button>
                                 <button
                                   type="button"
@@ -625,6 +654,33 @@ export default function LearningPathDetail() {
                                   />
                                 </div>
                               </div>
+                              {!!lessonQuizState[lesson.lesson_id]?.confidenceScore && (
+                                <div className="mt-3 rounded-[10px] border border-[#f0c8d7] bg-white p-3">
+                                  <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div>
+                                      <p className="text-[11px] text-[#666]">Confidence score</p>
+                                      <div className="mt-1 flex items-center gap-2">
+                                        <span className={`rounded-full border px-2 py-1 text-[11px] font-medium ${getConfidenceTone(lessonQuizState[lesson.lesson_id].confidenceScore).badge}`}>
+                                          {Math.round(lessonQuizState[lesson.lesson_id].confidenceScore * 100)}%
+                                        </span>
+                                        <span className="text-[11px] text-[#666]">
+                                          Attempt #{lessonQuizState[lesson.lesson_id].attemptNumber}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div className="text-right text-[11px] text-[#666]">
+                                      <p>Đúng: {lessonQuizState[lesson.lesson_id].correctCount}</p>
+                                      <p>Sai: {Math.max(getRequiredQuestionCount(lesson) - lessonQuizState[lesson.lesson_id].correctCount, 0)}</p>
+                                    </div>
+                                  </div>
+                                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#eef0f2]">
+                                    <div
+                                      className={`h-full rounded-full transition-all duration-300 ${getConfidenceTone(lessonQuizState[lesson.lesson_id].confidenceScore).bar}`}
+                                      style={{ width: `${Math.round(lessonQuizState[lesson.lesson_id].confidenceScore * 100)}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              )}
                               <p className={`text-[11px] mt-1 font-medium ${lesson.assessment.passed ? 'text-green-700' : 'text-amber-700'}`}>
                                 {lesson.assessment.passed ? 'Đã đạt điều kiện hoàn thành bài học.' : 'Chưa đạt điều kiện điểm, vui lòng cải thiện câu trả lời.'}
                               </p>

@@ -17,6 +17,8 @@ export interface LearningPath {
   level: 'beginner' | 'intermediate' | 'advanced';
   generated_at: string;
   recommended_path: ConceptNode[];
+  curriculum_source?: 'ai' | 'fallback' | string;
+  curriculum_notice?: string | null;
   curriculum?: Array<{
     title: string;
     lessons: Array<{
@@ -112,6 +114,7 @@ export interface LessonQuizAttemptResponse {
   attempt_id: string;
   user_id: string;
   lesson_id: string;
+  attempt_number: number;
   selected_question_ids: string[];
   pass_threshold_count: number;
   questions: LessonQuizQuestion[];
@@ -124,6 +127,8 @@ export interface LessonQuizSubmitResponse {
   score: number;
   correct_count: number;
   total_questions: number;
+  attempt_number: number;
+  confidence_score: number;
   pass_threshold_count: number;
   is_passed: boolean;
   submitted_at: string;
@@ -152,13 +157,39 @@ export interface LessonQuestionBankDetail extends LessonQuestionBankSummary {
     lesson_id: string;
     concept: string;
     relation_type: string;
+    bloom_level?: string;
     question_text: string;
-    answer: string;
     template_id: string;
+    difficulty?: number;
     related_concepts: string[];
     options: QuizOption[];
-    correct_option: 'A' | 'B' | 'C' | 'D';
   }>;
+}
+
+export interface LessonConfidenceResponse {
+  lesson_id: string;
+  confidence_score: number;
+  mastery_score: number;
+  best_confidence_score: number;
+  correct_count: number;
+  total_questions: number;
+  attempt_number: number;
+  is_passed: boolean;
+  score: number;
+  band: 'low' | 'medium' | 'high' | string;
+  updated_at?: string;
+}
+
+export interface AttemptConfidenceResponse {
+  attempt_id: string;
+  lesson_id: string;
+  confidence_score: number;
+  correct_count: number;
+  total_questions: number;
+  attempt_number: number;
+  is_passed: boolean;
+  score: number;
+  submitted_at?: string;
 }
 
 export const learningPathService = {
@@ -196,8 +227,6 @@ export const learningPathService = {
     path_id: string;
     lesson_id: string;
     status: 'not_started' | 'in_progress' | 'complete';
-    answered_questions?: string[];
-    restart_assessment?: boolean;
   }): Promise<LessonProgressApiResponse> {
     return apiClient.post('/learning-path/lesson-progress', data) as Promise<LessonProgressApiResponse>;
   },
@@ -230,6 +259,14 @@ export const learningPathService = {
       attempt_id: attemptId,
       user_answers: userAnswers,
     }) as Promise<LessonQuizSubmitResponse>;
+  },
+
+  async getLessonConfidence(lessonId: string): Promise<LessonConfidenceResponse> {
+    return apiClient.get(`/progress/confidence/${lessonId}`) as Promise<LessonConfidenceResponse>;
+  },
+
+  async getAttemptConfidence(attemptId: string): Promise<AttemptConfidenceResponse> {
+    return apiClient.get(`/progress/attempt-confidence/${attemptId}`) as Promise<AttemptConfidenceResponse>;
   },
 
   /**

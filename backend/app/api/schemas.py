@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, model_validator
 from typing import List, Optional, Literal
 from datetime import datetime
 from enum import Enum
@@ -239,6 +239,8 @@ class LearningPathResponse(BaseModel):
     generated_at: datetime
     recommended_path: List[LearningPathItemResponse]
     curriculum: Optional[List[ChapterResponse]] = None
+    curriculum_source: str = "fallback"
+    curriculum_notice: Optional[str] = None
     message: str = ""
 
 
@@ -271,12 +273,33 @@ class QuestionBankQuestionResponse(BaseModel):
     lesson_id: str
     concept: str
     relation_type: str
+    bloom_level: str = "remember"
     question_text: str
     answer: str
     template_id: str
+    difficulty: int = 1
     related_concepts: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    source_excerpt: str = ""
+    source_chunk_id: Optional[str] = None
     options: List[QuestionBankOptionResponse] = Field(default_factory=list)
     correct_option: str = "A"
+
+
+class PublicQuestionBankQuestionResponse(BaseModel):
+    question_id: str
+    lesson_id: str
+    concept: str
+    relation_type: str
+    bloom_level: str = "remember"
+    question_text: str
+    template_id: str
+    difficulty: int = 1
+    related_concepts: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    source_excerpt: str = ""
+    source_chunk_id: Optional[str] = None
+    options: List[QuestionBankOptionResponse] = Field(default_factory=list)
 
 
 class GenerateLessonQuestionBankRequest(BaseModel):
@@ -288,7 +311,7 @@ class LessonQuestionBankResponse(BaseModel):
     chapter_id: str
     concept_list: List[dict] = Field(default_factory=list)
     total_questions: int
-    questions: List[QuestionBankQuestionResponse] = Field(default_factory=list)
+    questions: List[PublicQuestionBankQuestionResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -307,6 +330,36 @@ class LessonQuestionBankListResponse(BaseModel):
     items: List[LessonQuestionBankSummaryResponse] = Field(default_factory=list)
 
 
+class LessonQuestionGenerationConceptResponse(BaseModel):
+    concept_id: str
+    name: str
+    normalized_name: str
+    concept_type: str
+    keywords: List[str] = Field(default_factory=list)
+    difficulty: Optional[int] = None
+
+
+class LessonQuestionGenerationRelationResponse(BaseModel):
+    source_concept: str
+    target_concept: str
+    relation_type: str
+
+
+class LessonQuestionGenerationDebugResponse(BaseModel):
+    lesson_id: str
+    chapter_id: str
+    target_question_count: int
+    generated_question_count: int
+    can_generate_quiz: bool
+    can_fill_question_bank: bool
+    concept_count: int
+    concepts: List[LessonQuestionGenerationConceptResponse] = Field(default_factory=list)
+    relation_counts: dict = Field(default_factory=dict)
+    missing_relation_types: List[str] = Field(default_factory=list)
+    sample_relations: List[LessonQuestionGenerationRelationResponse] = Field(default_factory=list)
+    sample_questions: List[str] = Field(default_factory=list)
+
+
 class CreateLessonQuizAttemptRequest(BaseModel):
     lesson_id: str = Field(..., min_length=1, description="Lesson identifier")
 
@@ -316,9 +369,14 @@ class LessonQuizAttemptQuestionResponse(BaseModel):
     lesson_id: str
     concept: str
     relation_type: str
+    bloom_level: str = "remember"
     question_text: str
     template_id: str
+    difficulty: int = 1
     related_concepts: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    source_excerpt: str = ""
+    source_chunk_id: Optional[str] = None
     options: List[QuestionBankOptionResponse] = Field(default_factory=list)
 
 
@@ -432,15 +490,31 @@ class AssessmentQuestionItem(BaseModel):
     answer: str
     explanation: str
     difficulty: AssessmentDifficultyEnum
+    question_type: str
     concept: str
+    source_excerpt: str
 
 
 class GenerateAssessmentQuestionsRequest(BaseModel):
     user_id: str = Field(..., description="MongoDB ObjectId as string")
+    lesson_title: Optional[str] = Field(default=None, min_length=1, max_length=300)
     concept: str = Field(..., min_length=2, max_length=200)
     difficulty: AssessmentDifficultyEnum
+    question_type: str = Field(default="short_answer", min_length=2, max_length=100)
     num_questions: int = Field(..., ge=1, le=20)
-    chapter_content: str = Field(..., min_length=50, max_length=50000)
+    chapter_content: Optional[str] = Field(default=None, min_length=50, max_length=50000)
+    retrieved_context: Optional[str] = Field(default=None, min_length=50, max_length=50000)
+
+    @model_validator(mode="after")
+    def validate_context(self):
+        if not (self.chapter_content or self.retrieved_context):
+            raise ValueError("Either chapter_content or retrieved_context is required")
+
+        if not self.retrieved_context and self.chapter_content:
+            self.retrieved_context = self.chapter_content
+        if not self.chapter_content and self.retrieved_context:
+            self.chapter_content = self.retrieved_context
+        return self
 
 
 class GenerateAssessmentQuestionsResponse(BaseModel):

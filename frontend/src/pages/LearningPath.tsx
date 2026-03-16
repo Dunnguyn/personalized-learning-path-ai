@@ -27,6 +27,7 @@ export default function LearningPath() {
   const [generatingPath, setGeneratingPath] = useState(false);
   const [learningPaths, setLearningPaths] = useState<LearningPath[]>([]);
   const [hoveredPathId, setHoveredPathId] = useState<string | null>(null);
+  const [pathNotice, setPathNotice] = useState<string | null>(null);
 
   const buildGoal = (subjectId: string, goalDetail: string) => {
     const subject = SUBJECTS.find((item) => item.id === subjectId);
@@ -127,6 +128,11 @@ export default function LearningPath() {
         goal: goal,
         level: pathForm.level,
       });
+      setPathNotice(
+        result.curriculum_source === 'fallback'
+          ? (result.curriculum_notice || 'AI hiện chưa phản hồi ổn định. Hệ thống đã dùng lộ trình dự phòng.')
+          : null
+      );
 
       // Add new path to the list (keep old paths)
       setLearningPaths([result, ...learningPaths]);
@@ -249,6 +255,13 @@ export default function LearningPath() {
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-[12px] mb-[40px] text-[14px]">
             ✕ {error}
+          </div>
+        )}
+
+        {pathNotice && (
+          <div className="bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-[12px] mb-[24px] text-[14px]">
+            <span className="font-medium">AI chưa sẵn sàng cho lần tạo lộ trình này. </span>
+            {pathNotice}
           </div>
         )}
 

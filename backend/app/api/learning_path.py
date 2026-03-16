@@ -24,11 +24,9 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
 import logging
-import re
 
 from backend.app.services.learning_path_service import (
     generate_learning_path,
-    generate_lesson_mcq_questions,
     calculate_min_correct_required
 )
 from backend.app.api.auth import get_current_user
@@ -47,49 +45,6 @@ logging.basicConfig(level=logging.INFO)
 # ROUTER
 # =========================
 router = APIRouter(prefix="/learning-path", tags=["Learning Path"])
-MIN_CORRECT_TO_PASS = 7
-
-
-def _save_confidence_event(
-    db,
-    user_id: str,
-    path_id: str,
-    lesson_id: str,
-    lesson_status: str,
-    assessment_result: Optional[dict],
-    timestamp: datetime
-) -> None:
-    """Store confidence event for time-series analytics."""
-    if not assessment_result:
-        return
-
-    try:
-        confidence_value = float(assessment_result.get("score_percent", 0.0) or 0.0) / 100.0
-        confidence_value = max(0.0, min(1.0, confidence_value))
-        db.confidence_events.insert_one({
-            "user_id": user_id,
-            "path_id": path_id,
-            "lesson_id": lesson_id,
-            "status": lesson_status,
-            "source": "lesson_assessment",
-            "confidence": round(confidence_value, 4),
-            "assessment_result": {
-                "attempted_questions": int(assessment_result.get("attempted_questions", 0) or 0),
-                "correct_answers": int(assessment_result.get("correct_answers", 0) or 0),
-                "required_questions": int(assessment_result.get("required_questions", 10) or 10),
-                "min_correct_required": int(assessment_result.get("min_correct_required", MIN_CORRECT_TO_PASS) or MIN_CORRECT_TO_PASS),
-                "passed": bool(assessment_result.get("passed", False)),
-                "score_percent": float(assessment_result.get("score_percent", 0.0) or 0.0)
-            },
-            "created_at": timestamp
-        })
-    except Exception as e:
-        logger.warning(f"Failed to persist confidence event: {e}")
-
-
-def _build_legacy_assessment_questions(lesson_title: str, required: int = 10) -> List[dict]:
-    logger.warning("Legacy assessment requested for lesson '%s' but question fallback is disabled", lesson_title)
-    return []
 
 
 def _build_lesson_progress(curriculum: Optional[List[dict]]) -> dict:
@@ -102,292 +57,96 @@ def _build_lesson_progress(curriculum: Optional[List[dict]]) -> dict:
     return progress
 
 
-def _apply_lesson_progress(curriculum: Optional[List[dict]], lesson_progress: dict) -> Optional[List[dict]]:
+def _get_lesson_confidence_lookup(db, user_id: str) -> dict:
+    rows = db.lesson_confidence_progress.find({"user_id": user_id}, {"_id": 0})
+    return {
+        str(row.get("lesson_id")): row
+        for row in rows
+        if row.get("lesson_id")
+    }
+
+
+def _build_assessment_snapshot(assessment: dict, confidence_row: Optional[dict]) -> dict:
+    required = int(
+        assessment.get("required_questions")
+        or (confidence_row or {}).get("total_questions")
+        or 10
+    )
+    attempted = int(
+        (confidence_row or {}).get("total_questions")
+        or assessment.get("attempted_questions", 0)
+        or 0
+    )
+    attempted = min(attempted, required)
+    min_correct_required = int(
+        assessment.get("min_correct_required", calculate_min_correct_required(required)) or
+        calculate_min_correct_required(required)
+    )
+
+    return {
+        "required_questions": required,
+        "attempted_questions": attempted,
+        "completed": bool(assessment.get("completed", False)) or bool((confidence_row or {}).get("is_passed", False)),
+        "generation": int(assessment.get("generation", 0) or 0),
+        "correct_answers": int((confidence_row or {}).get("correct_count", assessment.get("correct_answers", 0)) or 0),
+        "min_correct_required": min_correct_required,
+        "passed": bool((confidence_row or {}).get("is_passed", assessment.get("passed", False))),
+        "score_percent": float((confidence_row or {}).get("score", assessment.get("score_percent", 0.0)) or 0.0),
+        "questions": assessment.get("questions", []) or [],
+        "question_results": assessment.get("question_results", []) or [],
+    }
+
+
+def _build_assessment_result(confidence_row: Optional[dict], assessment: Optional[dict] = None) -> Optional[dict]:
+    if not confidence_row and not assessment:
+        return None
+
+    required = int(
+        (confidence_row or {}).get("total_questions")
+        or (assessment or {}).get("required_questions", 10)
+        or 10
+    )
+    return {
+        "attempted_questions": int((confidence_row or {}).get("total_questions", (assessment or {}).get("attempted_questions", 0)) or 0),
+        "correct_answers": int((confidence_row or {}).get("correct_count", (assessment or {}).get("correct_answers", 0)) or 0),
+        "required_questions": required,
+        "min_correct_required": int((assessment or {}).get("min_correct_required", calculate_min_correct_required(required)) or calculate_min_correct_required(required)),
+        "passed": bool((confidence_row or {}).get("is_passed", (assessment or {}).get("passed", False))),
+        "score_percent": float((confidence_row or {}).get("score", (assessment or {}).get("score_percent", 0.0)) or 0.0),
+        "question_results": (assessment or {}).get("question_results", []) or [],
+    }
+
+
+def _find_lesson_assessment(curriculum: Optional[List[dict]], lesson_id: str) -> dict:
+    for chapter in curriculum or []:
+        for lesson in chapter.get("lessons", []) or []:
+            if lesson.get("lesson_id") == lesson_id:
+                return lesson.get("assessment") or {}
+    return {}
+
+
+def _apply_lesson_progress(
+    curriculum: Optional[List[dict]],
+    lesson_progress: dict,
+    confidence_lookup: Optional[dict] = None
+) -> Optional[List[dict]]:
     if not curriculum:
         return curriculum
 
     for chapter in curriculum:
         for lesson in chapter.get("lessons", []):
             lesson_id = lesson.get("lesson_id")
+            confidence_row = (confidence_lookup or {}).get(str(lesson_id))
+            resolved_status = lesson_progress.get(lesson_id, "not_started") if lesson_id else "not_started"
+            if confidence_row and confidence_row.get("is_passed"):
+                resolved_status = "complete"
+            elif confidence_row and resolved_status == "not_started":
+                resolved_status = "in_progress"
             if lesson_id:
-                lesson["status"] = lesson_progress.get(lesson_id, "not_started")
+                lesson["status"] = resolved_status
             assessment = lesson.get("assessment") or {}
-            required = int(assessment.get("required_questions", 10) or 10)
-            attempted = int(assessment.get("attempted_questions", 0) or 0)
-            if attempted > required:
-                attempted = required
-            questions = assessment.get("questions", [])
-            if not questions:
-                questions = _build_legacy_assessment_questions(lesson.get("title") or "Bai hoc", required)
-            min_correct_required = int(
-                assessment.get("min_correct_required", calculate_min_correct_required(required)) or
-                calculate_min_correct_required(required)
-            )
-            lesson["assessment"] = {
-                "required_questions": required,
-                "attempted_questions": attempted,
-                "completed": bool(assessment.get("completed", False)) or lesson.get("status") == "complete",
-                "generation": int(assessment.get("generation", 0) or 0),
-                "correct_answers": int(assessment.get("correct_answers", 0) or 0),
-                "min_correct_required": min_correct_required,
-                "passed": bool(assessment.get("passed", False)),
-                "score_percent": float(assessment.get("score_percent", 0.0) or 0.0),
-                "questions": questions,
-                "question_results": assessment.get("question_results", []) or []
-            }
+            lesson["assessment"] = _build_assessment_snapshot(assessment, confidence_row)
     return curriculum
-
-
-def _restart_lesson_assessment(
-    curriculum: Optional[List[dict]],
-    lesson_id: str,
-    lesson_status: str,
-    level: str
-) -> tuple[Optional[List[dict]], Optional[dict]]:
-    if not curriculum:
-        return curriculum, None
-
-    updated = []
-    found = False
-
-    for chapter in curriculum:
-        new_chapter = {**chapter, "lessons": []}
-        for lesson in chapter.get("lessons", []):
-            if lesson.get("lesson_id") != lesson_id:
-                new_chapter["lessons"].append(lesson)
-                continue
-
-            found = True
-            lesson_copy = {**lesson}
-            assessment = lesson_copy.get("assessment") or {}
-            required = int(assessment.get("required_questions", 10) or 10)
-            next_generation = int(assessment.get("generation", 0) or 0) + 1
-            new_questions = generate_lesson_mcq_questions(
-                concept=lesson_copy.get("title") or "Bai hoc",
-                level=level,
-                lesson_summary=lesson_copy.get("summary") or "",
-                lesson_resources=lesson_copy.get("resources") or [],
-                num_questions=required,
-                variation_seed=next_generation,
-                chapter_id=chapter.get("chapter_id")
-            )
-            actual_required = len(new_questions)
-            min_correct_required = calculate_min_correct_required(actual_required)
-
-            lesson_copy["status"] = lesson_status
-            lesson_copy["assessment"] = {
-                "required_questions": actual_required,
-                "attempted_questions": 0,
-                "completed": False,
-                "generation": next_generation,
-                "correct_answers": 0,
-                "min_correct_required": min_correct_required,
-                "passed": False,
-                "score_percent": 0.0,
-                "questions": new_questions,
-                "question_results": []
-            }
-            new_chapter["lessons"].append(lesson_copy)
-        updated.append(new_chapter)
-
-    if not found:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Lesson not found in learning path"
-        )
-
-    return updated, {
-        "attempted_questions": 0,
-        "correct_answers": 0,
-        "required_questions": actual_required,
-        "min_correct_required": min_correct_required,
-        "passed": False,
-        "score_percent": 0.0,
-        "question_results": [],
-        "restarted": True
-    }
-
-
-def _normalize_tokens(text: str) -> List[str]:
-    if not text:
-        return []
-    return re.findall(r"[a-zA-Z0-9_]+", text.lower())
-
-
-def _is_answer_correct(user_answer: str, expected_answer: str) -> bool:
-    user_tokens = set(_normalize_tokens(user_answer))
-    expected_tokens = set(_normalize_tokens(expected_answer))
-
-    if not expected_tokens:
-        return bool(user_tokens)
-    if not user_tokens:
-        return False
-
-    stop_words = {
-        "the", "a", "an", "is", "are", "to", "in", "on", "for", "of", "and", "or",
-        "la", "gi", "mot", "nhung", "cac", "trong", "voi", "dua", "theo", "noi", "dung"
-    }
-    user_core = {t for t in user_tokens if t not in stop_words}
-    expected_core = {t for t in expected_tokens if t not in stop_words}
-
-    if not expected_core:
-        expected_core = expected_tokens
-    if not user_core:
-        user_core = user_tokens
-
-    overlap = user_core & expected_core
-    overlap_ratio = len(overlap) / max(len(expected_core), 1)
-
-    expected_text = (expected_answer or "").strip().lower()
-    user_text = (user_answer or "").strip().lower()
-    contains_expected = expected_text and expected_text[:80] in user_text
-
-    return overlap_ratio >= 0.35 or bool(contains_expected)
-
-
-def _is_option_correct(user_answer: str, question: dict) -> bool:
-    selected = (user_answer or "").strip().upper()
-    correct_option = str(question.get("correct_option", "")).strip().upper()
-    if selected and correct_option:
-        return selected == correct_option
-
-    expected_answer = str(question.get("answer", ""))
-    return _is_answer_correct(user_answer, expected_answer)
-
-
-def _grade_lesson_answers(assessment: dict, answered_questions: Optional[List[str]]) -> dict:
-    questions = assessment.get("questions", []) or []
-    required = int(assessment.get("required_questions", 10) or 10)
-    min_correct_required = int(
-        assessment.get("min_correct_required", calculate_min_correct_required(required)) or
-        calculate_min_correct_required(required)
-    )
-    answers = answered_questions or []
-
-    attempted = 0
-    correct = 0
-    question_results = []
-
-    for idx, question in enumerate(questions[:required]):
-        user_answer = answers[idx].strip() if idx < len(answers) and isinstance(answers[idx], str) else ""
-        is_correct = False
-        if user_answer:
-            attempted += 1
-            is_correct = _is_option_correct(user_answer, question)
-        if is_correct:
-            correct += 1
-
-        question_results.append({
-            "question_id": question.get("question_id"),
-            "selected_answer": user_answer,
-            "is_correct": is_correct,
-            "correct_option": str(question.get("correct_option", "")).strip().upper(),
-            "correct_answer": str(question.get("answer", "")),
-            "explanation": str(question.get("explanation", "")),
-        })
-
-    score_percent = round((correct / max(required, 1)) * 100, 2)
-    passed = correct >= min_correct_required and attempted >= required
-
-    return {
-        "required_questions": required,
-        "attempted_questions": min(attempted, required),
-        "correct_answers": correct,
-        "min_correct_required": min_correct_required,
-        "passed": passed,
-        "score_percent": score_percent,
-        "question_results": question_results
-    }
-
-
-def _update_lesson_assessment_progress(
-    curriculum: Optional[List[dict]],
-    lesson_id: str,
-    lesson_status: str,
-    answered_questions: Optional[List[str]]
-) -> tuple[Optional[List[dict]], Optional[dict]]:
-    if not curriculum:
-        return curriculum, None
-
-    updated = []
-    found = False
-    grading_result = None
-
-    for chapter in curriculum:
-        new_chapter = {**chapter, "lessons": []}
-        for lesson in chapter.get("lessons", []):
-            if lesson.get("lesson_id") != lesson_id:
-                new_chapter["lessons"].append(lesson)
-                continue
-
-            found = True
-            lesson_copy = {**lesson}
-            assessment = lesson_copy.get("assessment") or {}
-            required = int(assessment.get("required_questions", 10) or 10)
-            min_correct_required = int(
-                assessment.get("min_correct_required", calculate_min_correct_required(required)) or
-                calculate_min_correct_required(required)
-            )
-            scored = _grade_lesson_answers(assessment, answered_questions)
-            existing_attempted = int(assessment.get("attempted_questions", 0) or 0)
-            if scored["attempted_questions"] < existing_attempted:
-                scored["attempted_questions"] = existing_attempted
-            if scored["attempted_questions"] > required:
-                scored["attempted_questions"] = required
-
-            existing_correct = int(assessment.get("correct_answers", 0) or 0)
-            if scored["correct_answers"] < existing_correct:
-                scored["correct_answers"] = existing_correct
-
-            scored["score_percent"] = round((scored["correct_answers"] / max(required, 1)) * 100, 2)
-            scored["passed"] = scored["correct_answers"] >= min_correct_required and scored["attempted_questions"] >= required
-
-            if lesson_status == "complete" and scored["attempted_questions"] < required:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"You must answer all {required} assessment questions before completing this lesson"
-                )
-
-            if lesson_status == "complete" and not scored["passed"]:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Assessment not passed: {scored['correct_answers']}/{required} correct. Minimum required is {min_correct_required}."
-                )
-
-            visible_question_results = scored.get("question_results", [])
-
-            lesson_copy["status"] = lesson_status
-            lesson_copy["assessment"] = {
-                "required_questions": required,
-                "attempted_questions": scored["attempted_questions"],
-                "completed": lesson_status == "complete",
-                "generation": int(assessment.get("generation", 0) or 0),
-                "correct_answers": scored["correct_answers"],
-                "min_correct_required": min_correct_required,
-                "passed": scored["passed"],
-                "score_percent": scored["score_percent"],
-                "questions": assessment.get("questions", []),
-                "question_results": visible_question_results
-            }
-            grading_result = {
-                "attempted_questions": scored["attempted_questions"],
-                "correct_answers": scored["correct_answers"],
-                "required_questions": required,
-                "min_correct_required": min_correct_required,
-                "passed": scored["passed"],
-                "score_percent": scored["score_percent"],
-                "question_results": visible_question_results
-            }
-            new_chapter["lessons"].append(lesson_copy)
-        updated.append(new_chapter)
-
-    if not found:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Lesson not found in learning path"
-        )
-
-    return updated, grading_result
 
 
 # =========================
@@ -516,6 +275,8 @@ def generate_learning_path_api(
                 "generated_at": datetime.utcnow(),
                 "recommended_path": result.get("recommended_path", []),
                 "curriculum": curriculum or [],
+                "curriculum_source": result.get("curriculum_source", "fallback"),
+                "curriculum_notice": result.get("curriculum_notice"),
                 "lesson_progress": lesson_progress,
                 "message": result.get("message", "Learning path generated successfully")
             })
@@ -535,6 +296,8 @@ def generate_learning_path_api(
             generated_at=datetime.utcnow(),
             recommended_path=result.get("recommended_path", []),
             curriculum=curriculum,
+            curriculum_source=result.get("curriculum_source", "fallback"),
+            curriculum_notice=result.get("curriculum_notice"),
             message=result.get("message", "Learning path generated successfully")
         )
     
@@ -623,6 +386,7 @@ def update_lesson_progress(
     try:
         from backend.app.database.mongo import get_db
         db = get_db()
+        confidence_lookup = _get_lesson_confidence_lookup(db, user_id)
 
         path = db.learning_paths.find_one({
             "path_id": payload.path_id,
@@ -635,50 +399,53 @@ def update_lesson_progress(
                 detail="Learning path not found"
             )
 
-        updated_at = datetime.utcnow()
         if payload.restart_assessment:
-            updated_curriculum, assessment_result = _restart_lesson_assessment(
-                path.get("curriculum"),
-                payload.lesson_id,
-                payload.status,
-                path.get("level", "intermediate")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Embedded assessment restart is deprecated. Use /lesson-quiz/attempt to start a new quiz."
             )
-        else:
-            updated_curriculum, assessment_result = _update_lesson_assessment_progress(
-                path.get("curriculum"),
-                payload.lesson_id,
-                payload.status,
-                payload.answered_questions
+        if payload.answered_questions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Embedded assessment submission is deprecated. Use /lesson-quiz/submit to grade quiz answers."
             )
+
+        lesson_progress = path.get("lesson_progress", {})
+        if payload.lesson_id not in lesson_progress:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Lesson not found in learning path"
+            )
+
+        confidence_row = confidence_lookup.get(payload.lesson_id)
+        if payload.status == "complete" and not (confidence_row or {}).get("is_passed"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Lesson quiz has not been passed yet. Complete the lesson quiz before marking this lesson complete."
+            )
+
+        updated_at = datetime.utcnow()
+        lesson_progress[payload.lesson_id] = payload.status
 
         db.learning_paths.update_one(
             {"_id": path.get("_id")},
             {
                 "$set": {
-                    f"lesson_progress.{payload.lesson_id}": payload.status,
-                    "curriculum": updated_curriculum,
+                    "lesson_progress": lesson_progress,
                     "updated_at": updated_at
                 }
             }
         )
-
-        if not (assessment_result or {}).get("restarted"):
-            _save_confidence_event(
-                db=db,
-                user_id=user_id,
-                path_id=payload.path_id,
-                lesson_id=payload.lesson_id,
-                lesson_status=payload.status,
-                assessment_result=assessment_result,
-                timestamp=updated_at
-            )
 
         return LessonProgressResponse(
             path_id=payload.path_id,
             lesson_id=payload.lesson_id,
             status=payload.status,
             updated_at=updated_at,
-            assessment_result=assessment_result
+            assessment_result=_build_assessment_result(
+                confidence_row=confidence_row,
+                assessment=_find_lesson_assessment(path.get("curriculum"), payload.lesson_id),
+            )
         )
 
     except HTTPException:
@@ -705,6 +472,7 @@ def get_learning_path_detail(
     try:
         from backend.app.database.mongo import get_db
         db = get_db()
+        confidence_lookup = _get_lesson_confidence_lookup(db, user_id)
 
         path = db.learning_paths.find_one(
             {"path_id": path_id, "user_id": user_id}
@@ -719,7 +487,8 @@ def get_learning_path_detail(
         lesson_progress = path.get("lesson_progress", {})
         path["curriculum"] = _apply_lesson_progress(
             path.get("curriculum"),
-            lesson_progress
+            lesson_progress,
+            confidence_lookup
         )
 
         if "_id" in path:

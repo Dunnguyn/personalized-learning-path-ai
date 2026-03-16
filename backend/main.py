@@ -39,13 +39,20 @@ logger = logging.getLogger(__name__)
 # =========================
 def validate_env():
     """Validate required environment variables."""
-    required_vars = ["MONGODB_URI", "SECRET_KEY", "GEMINI_API_KEY"]
+    required_vars = ["MONGODB_URI"]
     missing = [var for var in required_vars if not os.getenv(var)]
-    
+    secret_key = os.getenv("SECRET_KEY")
+
     if missing:
-        logger.warning(f"⚠️  Missing env vars: {', '.join(missing)}")
-    else:
-        logger.info("✅ All required environment variables loaded")
+        raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+    if not secret_key or secret_key == "CHANGE_THIS_SECRET_KEY":
+        raise RuntimeError("SECRET_KEY must be configured with a non-default value")
+
+    optional_missing = [var for var in ["GEMINI_API_KEY"] if not os.getenv(var)]
+    if optional_missing:
+        logger.warning(f"⚠️  Missing optional env vars: {', '.join(optional_missing)}")
+
+    logger.info("✅ Required environment variables loaded")
 
 
 # =========================

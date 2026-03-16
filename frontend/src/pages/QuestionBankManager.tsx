@@ -183,11 +183,15 @@ export default function QuestionBankManager() {
                           <p className="text-[12px] text-[#666] mt-2">
                             Concept: <span className="font-medium">{question.concept}</span> • Relation: {question.relation_type}
                           </p>
-                          <p className="text-[12px] text-[#666] mt-1">Template ID: {question.template_id}</p>
+                          <p className="text-[12px] text-[#666] mt-1">
+                            Template ID: {question.template_id}
+                            {question.bloom_level ? ` • Bloom: ${question.bloom_level}` : ''}
+                            {typeof question.difficulty === 'number' ? ` • Difficulty: ${question.difficulty}` : ''}
+                          </p>
                         </div>
                       </div>
                       <div className="mt-3 rounded-[10px] bg-[#fdf3f7] px-3 py-2 text-[12px] text-[#5b1724]">
-                        Đáp án: {question.answer}
+                        Số lựa chọn: {question.options?.length || 0} • Đáp án được ẩn để tránh lộ đề.
                       </div>
                     </div>
                   ))}

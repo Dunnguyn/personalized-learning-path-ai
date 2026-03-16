@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 import logging
 from bson import ObjectId
 
+from backend.app.database.mongo import get_db
 from backend.app.services.progress_service import (
     update_progress_with_confidence,
     get_user_progress_summary,
@@ -73,29 +74,20 @@ def _get_assessment_confidence(db, user_id: str) -> tuple[float, int]:
     Aggregate lesson assessment score_percent into [0,1] confidence signal.
     Returns (confidence, counted_lessons).
     """
-    paths = list(db.learning_paths.find({"user_id": user_id}, {"curriculum": 1}))
-    if not paths:
+    rows = list(db.lesson_confidence_progress.find({"user_id": user_id}, {"confidence_score": 1}))
+    if not rows:
         return 0.0, 0
 
     total = 0.0
     count = 0
-    for path in paths:
-        for chapter in path.get("curriculum", []) or []:
-            for lesson in chapter.get("lessons", []) or []:
-                assessment = lesson.get("assessment") or {}
-                if "score_percent" not in assessment:
-                    continue
-                try:
-                    score_percent = float(assessment.get("score_percent", 0.0) or 0.0)
-                    score_percent = max(0.0, min(100.0, score_percent))
-                    total += score_percent / 100.0
-                    count += 1
-                except Exception:
-                    continue
+    for row in rows:
+        try:
+            total += max(0.0, min(1.0, float(row.get("confidence_score", 0.0) or 0.0)))
+            count += 1
+        except Exception:
+            continue
 
-    if count == 0:
-        return 0.0, 0
-    return total / count, count
+    return (total / count, count) if count else (0.0, 0)
 
 
 def _average_confidence_events(db, user_id: str, start: datetime, end: datetime = None) -> tuple[float, int]:
@@ -486,3 +478,91 @@ def get_progress_confidence(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not fetch confidence overview"
         )
+
+
+@router.get("/confidence/{lesson_id}", response_model=LessonConfidenceResponse, status_code=status.HTTP_200_OK)
+def get_lesson_confidence_api(
+    lesson_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = str(current_user.get("_id", ""))
+    try:
+        return LessonConfidenceResponse(**get_lesson_confidence(user_id, lesson_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc)
+        ) from exc
+    except Exception as exc:
+        logger.exception(f"Error getting lesson confidence: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not fetch lesson confidence"
+        ) from exc
+
+
+@router.get("/attempt-confidence/{attempt_id}", response_model=AttemptConfidenceResponse, status_code=status.HTTP_200_OK)
+def get_attempt_confidence_api(
+    attempt_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = str(current_user.get("_id", ""))
+    try:
+        return AttemptConfidenceResponse(**get_attempt_confidence(user_id, attempt_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc)
+        ) from exc
+    except Exception as exc:
+        logger.exception(f"Error getting attempt confidence: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not fetch attempt confidence"
+        ) from exc
+
+
+@router.get("/overview/{user_id}", response_model=UserConfidenceOverviewResponse, status_code=status.HTTP_200_OK)
+def get_user_confidence_overview_api(
+    user_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    if str(current_user.get("_id", "")) != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot view another user's confidence overview"
+        )
+
+    try:
+        overview = get_user_confidence_overview(user_id)
+        db = get_db()
+        now = datetime.utcnow()
+        week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+        two_weeks_ago = week_ago - timedelta(days=7)
+        recent_avg, _ = _average_confidence_events(db, user_id, week_ago)
+        prev_avg, _ = _average_confidence_events(db, user_id, two_weeks_ago, week_ago)
+
+        trend = "stable"
+        if recent_avg > prev_avg + 0.02:
+            trend = "improving"
+        elif recent_avg < prev_avg - 0.02:
+            trend = "declining"
+
+        return UserConfidenceOverviewResponse(
+            success=True,
+            user_id=user_id,
+            confidence=float(overview.get("confidence", 0.0) or 0.0),
+            average_mastery=float(overview.get("average_mastery", 0.0) or 0.0),
+            lesson_count=int(overview.get("lesson_count", 0) or 0),
+            passed_lessons=int(overview.get("passed_lessons", 0) or 0),
+            recent_average_confidence=float(overview.get("recent_average_confidence", 0.0) or 0.0),
+            trend=trend,
+            explanation="Confidence được tổng hợp từ các lần nộp quiz theo lesson.",
+            details=overview.get("details", []),
+        )
+    except Exception as exc:
+        logger.exception(f"Error getting user confidence overview: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not fetch user confidence overview"
+        ) from exc

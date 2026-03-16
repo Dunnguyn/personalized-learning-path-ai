@@ -411,28 +411,66 @@ class AITutorService:
 
     def generate_assessment_questions(
         self,
+        lesson_title: str,
         concept: str,
         difficulty: str,
+        question_type: str,
         chapter_content: str,
         num_questions: int
     ) -> List[Dict[str, str]]:
         """
-        Generate assessment questions using deterministic rules only.
+        Generate assessment questions grounded strictly in the provided learning material.
         """
         return self._generate_rule_based_assessment(
+            lesson_title=lesson_title,
             concept=concept,
             difficulty=difficulty,
+            question_type=question_type,
             chapter_content=chapter_content,
             num_questions=num_questions
         )
 
     def _generate_rule_based_assessment(
         self,
+        lesson_title: str,
         concept: str,
         difficulty: str,
+        question_type: str,
         chapter_content: str,
         num_questions: int
     ) -> List[Dict[str, str]]:
+        excerpts = self._extract_assessment_excerpts(chapter_content, concept)
+        lesson_label = lesson_title.strip() if lesson_title else concept
+        normalized_type = (question_type or "short_answer").strip()
+        results: List[Dict[str, str]] = []
+        used_questions = set()
+
+        for index in range(num_questions):
+            excerpt = excerpts[index % len(excerpts)]
+            question = self._build_grounded_question(
+                lesson_title=lesson_label,
+                concept=concept,
+                difficulty=difficulty,
+                question_type=normalized_type,
+                excerpt=excerpt,
+            )
+
+            if question.lower() in used_questions:
+                question = f"{question} (Cau {index + 1})"
+            used_questions.add(question.lower())
+
+            results.append({
+                "question": question,
+                "answer": self._build_short_answer(excerpt),
+                "explanation": self._build_explanation(concept, excerpt),
+                "difficulty": difficulty,
+                "question_type": normalized_type,
+                "concept": concept,
+                "source_excerpt": excerpt,
+            })
+
+        return results
+
         lines = [line.strip() for line in chapter_content.splitlines()]
         candidates = []
 
@@ -480,7 +518,72 @@ class AITutorService:
             })
 
         return results
-    
+
+    def _extract_assessment_excerpts(self, chapter_content: str, concept: str) -> List[str]:
+        normalized = re.sub(r"\s+", " ", chapter_content or "").strip()
+        if not normalized:
+            return [f"Tai lieu chi nhac den {concept}."]
+
+        segments = re.split(r"(?<=[\.\!\?\:])\s+|\n+", chapter_content)
+        cleaned: List[str] = []
+
+        for segment in segments:
+            text = re.sub(r"\s+", " ", segment).strip(" -\t\r\n")
+            if len(text) < 30:
+                continue
+            if text.startswith("#") or text.startswith("```"):
+                continue
+            cleaned.append(text)
+
+        if not cleaned:
+            cleaned = [normalized[:260] + ("..." if len(normalized) > 260 else "")]
+
+        concept_lower = concept.lower().strip()
+        prioritized = [item for item in cleaned if concept_lower and concept_lower in item.lower()]
+        fallback = [item for item in cleaned if item not in prioritized]
+        ordered = prioritized + fallback
+
+        unique: List[str] = []
+        seen = set()
+        for item in ordered:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(item[:280] + ("..." if len(item) > 280 else ""))
+        return unique or [f"Tai lieu chi nhac den {concept}."]
+
+    def _build_grounded_question(
+        self,
+        *,
+        lesson_title: str,
+        concept: str,
+        difficulty: str,
+        question_type: str,
+        excerpt: str,
+    ) -> str:
+        keyword = " ".join(excerpt.split()[:10]).strip(" ,.;:")
+        if difficulty == "easy":
+            return f"Trong bai hoc '{lesson_title}', doan trich nao cho biet thong tin chinh ve {concept}?"
+        if difficulty == "medium":
+            return f"Dua tren doan trich cua bai '{lesson_title}', hay neu y nghia cua '{keyword}' trong concept {concept}."
+        if "multiple" in question_type.lower():
+            return f"Tu doan trich cua bai '{lesson_title}', nhan dinh nao phu hop nhat voi concept {concept}?"
+        return f"Dua tren doan trich cua bai '{lesson_title}', hay phan tich ngan vai tro cua '{keyword}' doi voi concept {concept}."
+
+    @staticmethod
+    def _build_short_answer(excerpt: str) -> str:
+        text = excerpt.strip()
+        if len(text) <= 160:
+            return text
+        cutoff = text[:160].rsplit(" ", 1)[0].strip()
+        return f"{cutoff}..."
+
+    @staticmethod
+    def _build_explanation(concept: str, excerpt: str) -> str:
+        keyword = " ".join(excerpt.split()[:8]).strip(" ,.;:")
+        return f"Cau tra loi bam truc tiep vao doan trich neu ve {concept}: '{keyword}'."
+
     def _get_rag_answer(
         self,
         question: str,

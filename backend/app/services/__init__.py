@@ -23,6 +23,10 @@ Adaptive Learning:
 - confidence_scorer: Confidence scoring algorithms
 - concept_mapper: Concept detection and mapping
 
+Feature Packages:
+- question_generation: Rule-based and LLM-powered question generation flows
+- lesson_quiz: Question bank storage, quiz attempts, and grading
+
 """
 
 __all__ = [
@@ -33,6 +37,8 @@ __all__ = [
     'learning_path_service',
     'question_generator',
     'question_bank_service',
+    'question_generation',
+    'lesson_quiz',
     'resource_service',
     'adaptive_engine',
 ]

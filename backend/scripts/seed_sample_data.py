@@ -79,6 +79,66 @@ def seed_concepts(db, reset: bool) -> None:
             upsert=True,
         )
 
+    knowledge_relations = [
+        {
+            "source_concept": "1",
+            "target_concept": "2",
+            "relation_type": "related_to",
+        },
+        {
+            "source_concept": "2",
+            "target_concept": "3",
+            "relation_type": "used_in",
+        },
+        {
+            "source_concept": "3",
+            "target_concept": "5",
+            "relation_type": "part_of",
+        },
+        {
+            "source_concept": "4",
+            "target_concept": "6",
+            "relation_type": "used_in",
+        },
+        {
+            "source_concept": "4",
+            "target_concept": "6",
+            "relation_type": "part_of",
+        },
+        {
+            "source_concept": "1",
+            "target_concept": "4",
+            "relation_type": "example_of",
+        },
+        {
+            "source_concept": "3",
+            "target_concept": "6",
+            "relation_type": "example_of",
+        },
+        {
+            "source_concept": "5",
+            "target_concept": "6",
+            "relation_type": "related_to",
+        },
+    ]
+
+    if reset:
+        db.knowledge_relations.delete_many(
+            {
+                "$or": [
+                    {"source_concept": {"$in": [str(c["concept_id"]) for c in concepts]}},
+                    {"target_concept": {"$in": [str(c["concept_id"]) for c in concepts]}},
+                ]
+            }
+        )
+
+    for relation in knowledge_relations:
+        db.knowledge_relations.update_one(
+            relation,
+            {"$set": relation},
+            upsert=True,
+        )
+
 
 def seed_resources(db, reset: bool) -> None:
     resources = [

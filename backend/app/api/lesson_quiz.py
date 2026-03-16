@@ -9,22 +9,32 @@ from backend.app.api.schemas import (
     GenerateLessonQuestionBankRequest,
     LessonQuestionBankListResponse,
     LessonQuestionBankResponse,
+    LessonQuestionGenerationDebugResponse,
     LessonQuestionBankSummaryResponse,
     LessonQuizAttemptResponse,
     SubmitLessonQuizRequest,
     SubmitLessonQuizResponse,
 )
-from backend.app.services.question_bank_service import (
+from backend.app.services.lesson_quiz.bank_service import (
     create_lesson_quiz_attempt,
     generate_and_store_questions,
     get_lesson_question_bank,
     list_lesson_question_banks,
     submit_lesson_quiz,
 )
+from backend.app.services.question_generation.generator import debug_lesson_question_generation
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Lesson Quiz"])
+
+
+def _serialize_question_bank(bank) -> LessonQuestionBankResponse:
+    payload = asdict(bank)
+    for question in payload.get("questions", []):
+        question.pop("answer", None)
+        question.pop("correct_option", None)
+    return LessonQuestionBankResponse(**payload)
 
 
 @router.get(
@@ -75,7 +85,7 @@ def get_question_bank(
 
     try:
         bank = get_lesson_question_bank(lesson_id)
-        return LessonQuestionBankResponse(**asdict(bank))
+        return _serialize_question_bank(bank)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -105,7 +115,7 @@ def generate_lesson_question_bank(
 
     try:
         bank = generate_and_store_questions(payload.lesson_id)
-        return LessonQuestionBankResponse(**asdict(bank))
+        return _serialize_question_bank(bank)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -116,6 +126,33 @@ def generate_lesson_question_bank(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not generate lesson question bank",
+        ) from exc
+
+
+@router.get(
+    "/lesson-question-bank/debug/{lesson_id}",
+    response_model=LessonQuestionGenerationDebugResponse,
+    status_code=status.HTTP_200_OK,
+)
+def debug_question_generation(
+    lesson_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    _ = current_user
+
+    try:
+        debug_payload = debug_lesson_question_generation(lesson_id)
+        return LessonQuestionGenerationDebugResponse(**debug_payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        logger.exception("Error debugging lesson question generation: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not debug lesson question generation",
         ) from exc
 
 
@@ -151,6 +188,11 @@ def create_attempt(
 
 @router.post(
     "/lesson-quiz/submit",
+    response_model=SubmitLessonQuizResponse,
+    status_code=status.HTTP_200_OK,
+)
+@router.post(
+    "/quiz/submit",
     response_model=SubmitLessonQuizResponse,
     status_code=status.HTTP_200_OK,
 )

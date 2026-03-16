@@ -11,7 +11,9 @@ import random
 from backend.app.database.mongo import get_db
 from backend.app.services.resource_recommender import recommend_resources_for_concept
 from backend.app.services.progress_service import get_progress
-from backend.app.services.question_generator import generate_questions as generate_template_questions
+from backend.app.services.question_generation.generator import (
+    generate_questions as generate_template_questions,
+)
 from backend.app.services.adaptive_engine import (
     decide_learning_mode,
     filter_resources_by_mode,
@@ -47,6 +49,22 @@ def calculate_min_correct_required(required_questions: int) -> int:
     if required_questions <= 0:
         return 0
     return max(1, min(required_questions, int(required_questions * 0.7 + 0.9999)))
+
+
+def _build_placeholder_assessment(required_questions: int = LESSON_ASSESSMENT_QUESTION_COUNT) -> Dict:
+    min_correct_required = calculate_min_correct_required(required_questions)
+    return {
+        "required_questions": required_questions,
+        "attempted_questions": 0,
+        "completed": False,
+        "generation": 0,
+        "correct_answers": 0,
+        "min_correct_required": min_correct_required,
+        "passed": False,
+        "score_percent": 0.0,
+        "question_results": [],
+        "questions": [],
+    }
 
 
 # =====================================================
@@ -192,6 +210,130 @@ def _difficulty_from_level(level: str) -> str:
         "advanced": "hard"
     }
     return mapping.get(level, "medium")
+
+
+def _slugify_token(text: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9]+", "_", (text or "").strip().lower()).strip("_")
+    return token or uuid.uuid4().hex[:8]
+
+
+def _build_goal_seed_concepts(goal: str, level: str) -> List[Dict]:
+    normalized_goal = (goal or "").strip()
+    lower_goal = normalized_goal.lower()
+
+    tracks: List[tuple[str, List[str]]] = [
+        ("python_backend", [
+            "Gioi thieu Python",
+            "Kieu du lieu va bien",
+            "Cau truc dieu khien",
+            "Ham va module",
+            "Lap trinh huong doi tuong",
+            "HTTP co ban",
+            "REST API",
+            "FastAPI co ban",
+            "Ket noi MongoDB",
+        ]),
+        ("frontend_web", [
+            "Nen tang HTML CSS",
+            "JavaScript co ban",
+            "TypeScript co ban",
+            "React component",
+            "State va props",
+            "Routing frontend",
+            "Goi API",
+            "Quan ly state",
+            "Toi uu giao dien",
+        ]),
+        ("data_python", [
+            "Python cho du lieu",
+            "NumPy co ban",
+            "Pandas co ban",
+            "Lam sach du lieu",
+            "Truc quan du lieu",
+            "Thong ke mo ta",
+            "Feature engineering",
+            "Mo hinh co ban",
+            "Danh gia mo hinh",
+        ]),
+    ]
+
+    matched_concepts: List[str] = []
+    if "python" in lower_goal and "backend" in lower_goal:
+        matched_concepts.extend(dict(tracks)["python_backend"])
+    elif "react" in lower_goal or "frontend" in lower_goal or "web" in lower_goal:
+        matched_concepts.extend(dict(tracks)["frontend_web"])
+    elif "data" in lower_goal or "machine learning" in lower_goal or "phan tich" in lower_goal:
+        matched_concepts.extend(dict(tracks)["data_python"])
+
+    if not matched_concepts:
+        goal_tokens = [token.capitalize() for token in re.findall(r"[a-zA-Z0-9]+", normalized_goal)[:5]]
+        matched_concepts = [
+            f"Tong quan ve {normalized_goal or 'chu de hoc tap'}",
+            f"Khai niem cot loi cua {goal_tokens[0] if goal_tokens else 'chu de'}",
+            f"Thuc hanh co ban",
+            f"Ung dung thuc te",
+            f"Mo rong va tong ket",
+        ]
+
+    level_tail = {
+        "beginner": ["Bai tap nhap mon", "Tong ket co ban"],
+        "intermediate": ["Thuc hanh nang cao", "Du an nho"],
+        "advanced": ["Kien truc he thong", "Toi uu va mo rong"],
+    }.get(level, ["Tong ket va on tap"])
+
+    full_list = matched_concepts + level_tail
+
+    unique: List[Dict] = []
+    seen = set()
+    for index, name in enumerate(full_list, start=1):
+        clean_name = str(name).strip()
+        if not clean_name:
+            continue
+        key = clean_name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append({
+            "concept_id": 900000 + index,
+            "concept_name": clean_name,
+            "difficulty": min(10, max(1, 2 + (index // 2))),
+            "bloom_level": "understand" if index <= 3 else "apply",
+            "mode": "normal",
+            "priority_score": round(max(0.5, 1.0 - (index * 0.03)), 2),
+            "resources": [],
+        })
+
+    return unique[:MAX_RECOMMENDATIONS]
+
+
+def _build_recommended_from_curriculum(curriculum: List[Dict], default_mode: str = "normal") -> List[Dict]:
+    recommended: List[Dict] = []
+    sequence = 1
+
+    for chapter in curriculum or []:
+        for lesson in chapter.get("lessons", []) or []:
+            concept_name = (
+                lesson.get("concept_name")
+                or lesson.get("title")
+                or f"Lesson {sequence}"
+            )
+            resources = [
+                {"title": title}
+                for title in (lesson.get("resources") or [])
+                if isinstance(title, str) and title.strip()
+            ]
+            recommended.append({
+                "concept_id": 950000 + sequence,
+                "concept_name": str(concept_name),
+                "difficulty": min(10, max(1, 2 + (sequence // 2))),
+                "bloom_level": "understand" if sequence <= 3 else "apply",
+                "mode": default_mode,
+                "priority_score": round(max(0.5, 1.0 - (sequence * 0.03)), 2),
+                "resources": resources,
+            })
+            sequence += 1
+
+    return recommended[:MAX_RECOMMENDATIONS]
 
 
 def _relation_answer_text(item: Dict, fallback_concept: str) -> str:
@@ -396,33 +538,45 @@ def _build_curriculum_from_recommended(recommended: List[Dict], level: str) -> L
     for idx in range(0, len(recommended), chunk_size):
         chunk = recommended[idx:idx + chunk_size]
         chapter_id = uuid.uuid4().hex
+        chapter_concepts = []
         lessons = []
         for item in chunk:
+            concept_name = item.get("concept_name") or "Bai hoc"
+            concept_id = item.get("concept_id") or concept_name
             lesson_resources = [r.get("title") for r in item.get("resources", []) if r.get("title")]
+            chapter_concepts.append({
+                "id": str(concept_id),
+                "name": str(concept_name),
+            })
             lessons.append({
                 "lesson_id": uuid.uuid4().hex,
-                "title": item.get("concept_name") or "Bai hoc",
-                "summary": "Hoc va luyen tap cac kien thuc co ban cho muc nay.",
+                "title": concept_name,
+                "summary": f"Hoc va luyen tap noi dung cot loi cua {concept_name} cho muc {level}.",
                 "resources": lesson_resources,
-                "assessment": _build_lesson_assessment(
-                    lesson_title=item.get("concept_name") or "Bai hoc",
-                    level=level,
-                    lesson_summary="Hoc va luyen tap cac kien thuc co ban cho muc nay.",
-                    lesson_resources=lesson_resources,
-                    chapter_id=chapter_id
-                )
+                "concept_id": str(concept_id),
+                "concept_name": str(concept_name),
+                "concept_list": [{"id": str(concept_id), "name": str(concept_name)}],
+                "assessment": _build_placeholder_assessment(),
             })
+        for lesson in lessons:
+            lesson["concept_list"] = [dict(item) for item in chapter_concepts]
         chapters.append({
             "chapter_id": chapter_id,
             "title": f"Chuong {len(chapters) + 1}",
+            "concepts": chapter_concepts,
             "lessons": lessons
         })
     return chapters
 
 
-def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> List[Dict]:
+def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> Dict:
+    fallback_notice = "AI tạm thời chưa sẵn sàng, hệ thống đã dùng lộ trình dự phòng để bạn vẫn có thể bắt đầu học."
     if not (USE_LLM and _curriculum_rag):
-        return _build_curriculum_from_recommended(recommended, level)
+        return {
+            "curriculum": _build_curriculum_from_recommended(recommended, level),
+            "source": "fallback",
+            "notice": fallback_notice,
+        }
 
     try:
         resources = _curriculum_rag.retrieve_context(
@@ -435,42 +589,72 @@ def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> List
         response_text = _curriculum_rag._call_llm_with_retry(prompt)
         json_text = _extract_json_block(response_text or "")
         if not json_text:
-            return _build_curriculum_from_recommended(recommended, level)
+            return {
+                "curriculum": _build_curriculum_from_recommended(recommended, level),
+                "source": "fallback",
+                "notice": "AI không trả về nội dung hợp lệ, hệ thống đã dùng lộ trình dự phòng.",
+            }
 
         data = json.loads(json_text)
         chapters = data.get("chapters") if isinstance(data, dict) else None
         if not chapters or not isinstance(chapters, list):
-            return _build_curriculum_from_recommended(recommended, level)
+            return {
+                "curriculum": _build_curriculum_from_recommended(recommended, level),
+                "source": "fallback",
+                "notice": "AI trả về dữ liệu chưa đúng định dạng, hệ thống đã dùng lộ trình dự phòng.",
+            }
 
         normalized = []
         for chapter in chapters:
             chapter_id = chapter.get("chapter_id") or uuid.uuid4().hex
             title = chapter.get("title") or "Chuong"
+            chapter_concepts = []
             lessons = []
             for lesson in chapter.get("lessons", []):
+                lesson_title = lesson.get("title") or "Bai hoc"
+                concept_id = lesson.get("concept_id") or lesson_title
+                concept_name = lesson.get("concept_name") or lesson_title
+                chapter_concepts.append({
+                    "id": str(concept_id),
+                    "name": str(concept_name),
+                })
                 lessons.append({
                     "lesson_id": lesson.get("lesson_id") or uuid.uuid4().hex,
-                    "title": lesson.get("title") or "Bai hoc",
+                    "title": lesson_title,
                     "summary": lesson.get("summary") or "",
                     "resources": lesson.get("resources") or [],
-                    "assessment": _build_lesson_assessment(
-                        lesson_title=lesson.get("title") or "Bai hoc",
-                        level=level,
-                        lesson_summary=lesson.get("summary") or "",
-                        lesson_resources=lesson.get("resources") or [],
-                        chapter_id=chapter_id
-                    )
+                    "concept_id": str(concept_id),
+                    "concept_name": str(concept_name),
+                    "concept_list": [{"id": str(concept_id), "name": str(concept_name)}],
+                    "assessment": _build_placeholder_assessment(),
                 })
+            for lesson in lessons:
+                lesson["concept_list"] = [dict(item) for item in chapter_concepts]
             if lessons:
                 normalized.append({
                     "chapter_id": chapter_id,
                     "title": title,
+                    "concepts": chapter_concepts,
                     "lessons": lessons
                 })
-        return _add_lesson_ids(normalized) or _build_curriculum_from_recommended(recommended, level)
+        if normalized:
+            return {
+                "curriculum": _add_lesson_ids(normalized),
+                "source": "ai",
+                "notice": None,
+            }
+        return {
+            "curriculum": _build_curriculum_from_recommended(recommended, level),
+            "source": "fallback",
+            "notice": "AI không sinh được danh sách bài học hợp lệ, hệ thống đã dùng lộ trình dự phòng.",
+        }
     except Exception as e:
         logger.warning(f"Curriculum generation failed: {e}")
-        return _build_curriculum_from_recommended(recommended, level)
+        return {
+            "curriculum": _build_curriculum_from_recommended(recommended, level),
+            "source": "fallback",
+            "notice": "AI tạm thời không phản hồi, hệ thống đã dùng lộ trình dự phòng để bạn vẫn có thể tiếp tục.",
+        }
 def generate_learning_path(
     user_id: str,
     goal: str,
@@ -560,6 +744,26 @@ def generate_learning_path(
         }))
         
         logger.debug(f"Fetched {len(all_concepts)} concepts from DB")
+
+        if not all_concepts:
+            logger.warning("No concepts found in DB; using AI-first curriculum generation from goal seeds")
+            seed_recommended = _build_goal_seed_concepts(goal, level)
+            curriculum_result = _generate_curriculum(goal=goal, level=level, recommended=seed_recommended)
+            curriculum = curriculum_result.get("curriculum", [])
+            recommended = _build_recommended_from_curriculum(curriculum) or seed_recommended
+            path_id = str(uuid.uuid4())
+            return {
+                "path_id": path_id,
+                "user_id": user_id,
+                "goal": goal,
+                "level": level,
+                "generated_at": datetime.utcnow(),
+                "recommended_path": recommended,
+                "curriculum": curriculum,
+                "curriculum_source": curriculum_result.get("source", "fallback"),
+                "curriculum_notice": curriculum_result.get("notice"),
+                "message": f"Generated learning path with {len(recommended)} concepts"
+            }
         
         # Build graph: concept_id → Set of prerequisite concept_ids
         prereq_graph: Dict[int, Set[int]] = {}
@@ -672,7 +876,17 @@ def generate_learning_path(
             
             if len(recommended) >= MAX_RECOMMENDATIONS:
                 break
-        
+
+        if not recommended:
+            logger.warning("No eligible concepts found from graph; using AI-first curriculum generation from goal seeds")
+            seed_recommended = _build_goal_seed_concepts(goal, level)
+            curriculum_result = _generate_curriculum(goal=goal, level=level, recommended=seed_recommended)
+            curriculum = curriculum_result.get("curriculum", [])
+            recommended = _build_recommended_from_curriculum(curriculum) or seed_recommended
+        else:
+            curriculum_result = _generate_curriculum(goal=goal, level=level, recommended=recommended)
+            curriculum = curriculum_result.get("curriculum", [])
+
         # 8️⃣ RETURN RESULT
         path_id = str(uuid.uuid4())
         
@@ -680,8 +894,6 @@ def generate_learning_path(
             f"Learning path generated: path_id={path_id}, concepts={len(recommended)}, mode={adaptive_mode.value}"
         )
         
-        curriculum = _generate_curriculum(goal=goal, level=level, recommended=recommended)
-
         return {
             "path_id": path_id,
             "user_id": user_id,
@@ -690,6 +902,8 @@ def generate_learning_path(
             "generated_at": datetime.utcnow(),
             "recommended_path": recommended,
             "curriculum": curriculum,
+            "curriculum_source": curriculum_result.get("source", "fallback"),
+            "curriculum_notice": curriculum_result.get("notice"),
             "message": f"Generated learning path with {len(recommended)} concepts in {adaptive_mode.value} mode"
         }
     

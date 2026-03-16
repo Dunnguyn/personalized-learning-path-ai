@@ -70,8 +70,11 @@ class ApiClient {
 
     // Default error interceptor - handle auth errors
     this.addErrorInterceptor((error) => {
-      if (error instanceof Error && error.message.includes('401')) {
+      const status = Number((error as Error & { status?: number }).status || 0);
+      if (status === 401) {
         localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        localStorage.removeItem('email');
         window.location.href = '/login';
       }
     });

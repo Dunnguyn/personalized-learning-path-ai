@@ -7,15 +7,20 @@ export interface AssessmentQuestion {
   answer: string;
   explanation: string;
   difficulty: AssessmentDifficulty;
+  question_type: string;
   concept: string;
+  source_excerpt: string;
 }
 
 interface GenerateAssessmentRequest {
   user_id: string;
+  lesson_title?: string;
   concept: string;
   difficulty: AssessmentDifficulty;
+  question_type?: string;
   num_questions: number;
-  chapter_content: string;
+  chapter_content?: string;
+  retrieved_context?: string;
 }
 
 interface GenerateAssessmentResponse {

@@ -590,10 +590,12 @@ def generate_assessment_questions(
     Generate assessment questions from chapter content and concept.
     """
     logger.info(
-        "Generate assessment request: user_id=%s, concept=%s, difficulty=%s, num_questions=%s",
+        "Generate assessment request: user_id=%s, lesson_title=%s, concept=%s, difficulty=%s, question_type=%s, num_questions=%s",
         request.user_id,
+        request.lesson_title,
         request.concept,
         request.difficulty.value,
+        request.question_type,
         request.num_questions
     )
 
@@ -606,9 +608,11 @@ def generate_assessment_questions(
             )
 
         questions = ai_tutor.generate_assessment_questions(
+            lesson_title=request.lesson_title or request.concept,
             concept=request.concept,
             difficulty=request.difficulty.value,
-            chapter_content=request.chapter_content,
+            question_type=request.question_type,
+            chapter_content=request.retrieved_context or request.chapter_content or "",
             num_questions=request.num_questions
         )
 

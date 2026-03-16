@@ -1,10 +1,24 @@
 import { apiClient } from '../utils/apiClient';
 import type {
-  ProgressOverview,
-  ConfidenceOverview,
-  ProgressSummary,
   AdaptiveRecommendation,
+  ConfidenceOverview,
+  ProgressOverview,
+  ProgressSummary,
 } from '../types/dashboard';
+import type { AttemptConfidenceResponse, LessonConfidenceResponse } from './learningPathService';
+
+export interface UserConfidenceOverviewApi {
+  success: boolean;
+  user_id: string;
+  confidence: number;
+  average_mastery: number;
+  lesson_count: number;
+  passed_lessons: number;
+  recent_average_confidence: number;
+  trend: string;
+  explanation: string;
+  details: Array<Record<string, unknown>>;
+}
 
 export const dashboardService = {
   /**
@@ -25,6 +39,18 @@ export const dashboardService = {
       ? `/progress/confidence?user_id=${userId}` 
       : '/progress/confidence';
     return apiClient.get(endpoint) as Promise<ConfidenceOverview>;
+  },
+
+  async getUserConfidenceOverview(userId: string): Promise<UserConfidenceOverviewApi> {
+    return apiClient.get(`/progress/overview/${userId}`) as Promise<UserConfidenceOverviewApi>;
+  },
+
+  async getLessonConfidence(lessonId: string): Promise<LessonConfidenceResponse> {
+    return apiClient.get(`/progress/confidence/${lessonId}`) as Promise<LessonConfidenceResponse>;
+  },
+
+  async getAttemptConfidence(attemptId: string): Promise<AttemptConfidenceResponse> {
+    return apiClient.get(`/progress/attempt-confidence/${attemptId}`) as Promise<AttemptConfidenceResponse>;
   },
 
   /**
