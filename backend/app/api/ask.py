@@ -29,8 +29,8 @@ from backend.app.api.schemas import (
     GenerateAssessmentQuestionsResponse
 )
 from backend.app.api.auth import get_current_user
-from backend.app.services.ai_service import AITutorService
-from backend.app.services.progress_service import get_progress
+from backend.app.services.ai_tutor.service import AITutorService
+from backend.app.services.progress_tracking.progress import get_progress
 from backend.app.services.adaptive_engine import adaptive_decision_summary, LearningMode
 from backend.app.database.mongo import get_db
 

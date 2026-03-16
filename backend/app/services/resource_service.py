@@ -33,13 +33,13 @@ from backend.app.services.embedding_service import (
     store_resource,
     semantic_search
 )
-from backend.app.services.resource_importer import (
+from backend.app.services.resource_imports.batch import (
     import_resources,
     import_resource,
     validate_resource
 )
-from backend.app.services.pdf_importer import import_pdf
-from backend.app.services.youtube_importer import import_youtube
+from backend.app.services.resource_imports.pdf import import_pdf
+from backend.app.services.resource_imports.youtube import import_youtube
 from backend.app.api.schemas import (
     ResourceCreate,
     ResourceImportRequest

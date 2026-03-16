@@ -29,12 +29,12 @@ import logging
 from bson import ObjectId
 
 from backend.app.database.mongo import get_db
-from backend.app.services.progress_service import (
+from backend.app.services.progress_tracking.progress import (
     update_progress_with_confidence,
     get_user_progress_summary,
     get_progress
 )
-from backend.app.services.confidence_service import (
+from backend.app.services.progress_tracking.confidence import (
     get_attempt_confidence,
     get_lesson_confidence,
     get_user_confidence_overview,
@@ -312,8 +312,8 @@ def get_progress_overview(
         )
     logger.info(f"Progress overview requested: user={user_id}")
     try:
-        from backend.app.services.progress_service import get_user_progress_summary
-        from backend.app.services.progress_service import get_db
+        from backend.app.services.progress_tracking.progress import get_user_progress_summary
+        from backend.app.services.progress_tracking.progress import get_db
         summary = get_user_progress_summary(user_id=user_id)
         # Overall progress: % completed concepts / total concepts
         total = summary.get("total_concepts_started", 0)
@@ -385,7 +385,7 @@ def get_progress_confidence(
         )
     logger.info(f"Confidence overview requested: user={user_id}")
     try:
-        from backend.app.services.progress_service import get_user_progress_summary, get_db
+        from backend.app.services.progress_tracking.progress import get_user_progress_summary, get_db
         summary = get_user_progress_summary(user_id=user_id)
 
         # Base confidence from concept progress

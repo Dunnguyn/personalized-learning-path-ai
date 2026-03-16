@@ -14,7 +14,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, status
 from pydantic import BaseModel, Field
 
 from backend.app.services.resource_service import import_pdf_service
-from backend.app.services.rag_pipeline import RAGPipeline
+from backend.app.services.ai_tutor.rag import RAGPipeline
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)

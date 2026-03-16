@@ -9,8 +9,8 @@ import re
 import random
 
 from backend.app.database.mongo import get_db
-from backend.app.services.resource_recommender import recommend_resources_for_concept
-from backend.app.services.progress_service import get_progress
+from backend.app.services.learning_path.recommender import recommend_resources_for_concept
+from backend.app.services.progress_tracking.progress import get_progress
 from backend.app.services.question_generation.generator import (
     generate_questions as generate_template_questions,
 )
@@ -20,7 +20,7 @@ from backend.app.services.adaptive_engine import (
     can_unlock_next_concept,
     LearningMode
 )
-from backend.app.services.rag_pipeline import RAGPipeline, USE_LLM
+from backend.app.services.ai_tutor.rag import RAGPipeline, USE_LLM
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)

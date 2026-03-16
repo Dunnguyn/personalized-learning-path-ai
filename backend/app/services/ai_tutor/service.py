@@ -5,11 +5,11 @@ from datetime import datetime
 from functools import lru_cache
 import re
 
-from backend.app.services.rag_pipeline import RAGPipeline
-from backend.app.services.progress_service import update_progress_with_confidence
-from backend.app.services.learning_path_service import generate_learning_path
+from backend.app.services.ai_tutor.rag import RAGPipeline
+from backend.app.services.progress_tracking.progress import update_progress_with_confidence
+from backend.app.services.learning_path.service import generate_learning_path
 from backend.app.services.embedding_service import embed_text, cosine_similarity
-from backend.app.services.confidence_scorer import score_confidence
+from backend.app.services.progress_tracking.confidence_scorer import score_confidence
 from backend.app.services.adaptive_engine import (
     decide_learning_mode,
     filter_resources_by_mode,

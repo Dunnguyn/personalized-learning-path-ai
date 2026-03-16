@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Dict, Iterable, List, Mapping, Optional
 
 from backend.app.database.mongo import get_db
-from backend.app.services.confidence_service import (
+from backend.app.services.progress_tracking.confidence import (
     calculate_confidence_score,
     record_confidence_event,
     upsert_lesson_confidence_progress,

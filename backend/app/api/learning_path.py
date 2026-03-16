@@ -25,7 +25,7 @@ from typing import List, Optional
 from datetime import datetime
 import logging
 
-from backend.app.services.learning_path_service import (
+from backend.app.services.learning_path.service import (
     generate_learning_path,
     calculate_min_correct_required
 )
