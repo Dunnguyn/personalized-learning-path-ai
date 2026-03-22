@@ -28,12 +28,13 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from collections import defaultdict
 
+from bson import ObjectId
+
 from backend.app.database.mongo import get_db
 from backend.app.services.embedding_service import semantic_search, embed_text
 from backend.app.services.concept_mapper import resolve_concept_id
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 # =========================
 # CONFIG
@@ -91,8 +92,9 @@ def _increment_resource_hit(resource_id: str, user_id: Optional[int] = None) -> 
     
     try:
         db = get_db()
+        query_id = ObjectId(resource_id) if ObjectId.is_valid(resource_id) else resource_id
         db.resources.update_one(
-            {"_id": resource_id},
+            {"_id": query_id},
             {
                 "$inc": {"hit_count": 1},
                 "$push": {
@@ -226,7 +228,7 @@ def _search_by_keyword(
         mongo_query = {
             "$or": [
                 {"title": regex_filter},
-                {"content": regex_filter}
+                {"content_summary": regex_filter}
             ]
         }
         
@@ -497,7 +499,7 @@ def search_learning_resources(
                 continue
             
             for doc in all_results[strategy]:
-                doc_id = str(doc.get("_id", ""))
+                doc_id = str(doc.get("_id") or doc.get("resource_id") or "")
                 
                 if doc_id and doc_id in seen_ids:
                     logger.debug(f"Deduped result: {doc_id}")
@@ -523,6 +525,8 @@ def search_learning_resources(
             # Adjust similarity score if available (from semantic search)
             if "similarity_score" in doc:
                 doc["similarity_score"] = min(doc["similarity_score"] * boost, 1.0)
+            elif "score" in doc:
+                doc["score"] = min(doc["score"] * boost, 1.0)
             else:
                 doc["search_score"] = boost
         
@@ -545,6 +549,7 @@ def search_learning_resources(
             merged_results.sort(
                 key=lambda x: (
                     x.get("similarity_score", 0) if "similarity_score" in x else x.get("search_score", 1.0),
+                    x.get("score", 0),
                     x.get("hit_count", 0)
                 ),
                 reverse=True

@@ -22,7 +22,7 @@ All operations include:
 """
 
 from fastapi import APIRouter, HTTPException, status, Depends
-from datetime import datetime
+from datetime import datetime, timezone
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 from bson import ObjectId
@@ -145,7 +145,7 @@ def create_user(user: UserCreate):
             "email": email,
             "password": hashed_password,
             "level": user.level.value if isinstance(user.level, LevelEnum) else user.level,
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
             "is_active": True
         }
         
@@ -263,7 +263,7 @@ def update_user(
         if update_data.learning_goal:
             update_doc["learning_goal"] = update_data.learning_goal
         
-        update_doc["updated_at"] = datetime.utcnow()
+        update_doc["updated_at"] = datetime.now(timezone.utc)
         
         # Update user
         result = db.users.update_one(

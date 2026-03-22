@@ -7,7 +7,6 @@ from datetime import datetime
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 from backend.app.services.embedding_service import semantic_search
 

@@ -17,7 +17,7 @@ All endpoints include:
 """
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import uuid
 
@@ -77,7 +77,7 @@ def _save_ask_history(
             "concept_id": concept_id,
             "concept_name": concept_name,
             "confidence": confidence,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.now(timezone.utc)
         })
         logger.debug(f"Saved ask history: user={user_id}, question='{question[:50]}...'")
     except Exception as e:

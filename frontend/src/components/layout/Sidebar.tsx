@@ -15,7 +15,6 @@ interface NavItem {
 const navItems: NavItem[] = [
   { name: 'Dashboard', path: '/dashboard', icon: iconDashboard },
   { name: 'Learning Path', path: '/learning-path', icon: iconLearningPath },
-  { name: 'Question Bank', path: '/question-banks', icon: iconResources },
   { name: 'Resources', path: '/resources', icon: iconResources },
   { name: 'AI Tutor', path: '/ai-tutor', icon: iconAiTutor },
 ];

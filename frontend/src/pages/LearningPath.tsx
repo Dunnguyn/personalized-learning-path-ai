@@ -63,18 +63,14 @@ export default function LearningPath() {
       setLoading(true);
       setError(null);
 
-      // Get user progress
       const progress = await learningPathService.getUserProgress(user.user_id);
-      
-      // Get concepts
       const allConcepts = await learningPathService.getConcepts();
-      
-      // Combine concepts with progress data
+
       const conceptsWithProgress = allConcepts.map((concept) => {
         const progressData = progress.summary?.concepts?.find(
           (p: any) => p.concept_id === concept.concept_id
         );
-        
+
         return {
           ...concept,
           mastery: progressData?.mastery || 0,
@@ -84,23 +80,32 @@ export default function LearningPath() {
       });
 
       setConcepts(conceptsWithProgress);
-      
-      // Get all learning paths with full details
-      const history = await learningPathService.getLearningPathHistory(user.user_id);
+
+      const history = await learningPathService.getLearningPathHistory();
       if (history && history.length > 0) {
         const pathsWithDetails = await Promise.all(
           history.map(async (path) => {
             try {
-              const detail = await learningPathService.getLearningPathById(path.path_id);
-              const pathData = detail?.path ?? detail;
-              return pathData as LearningPath;
+              return await learningPathService.getLearningPathById(path.path_id);
             } catch (detailError) {
               console.error('Error fetching learning path detail:', detailError);
-              return path as LearningPath;
+              return {
+                path_id: path.path_id,
+                subject_id: path.subject_id,
+                goal: path.goal,
+                level: path.level,
+                generated_at: path.generated_at,
+                recommended_path: [],
+                chapters: [],
+                curriculum: [],
+                message: '',
+              } as LearningPath;
             }
           })
         );
         setLearningPaths(pathsWithDetails);
+      } else {
+        setLearningPaths([]);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error fetching learning path';
@@ -124,25 +129,24 @@ export default function LearningPath() {
 
     try {
       const result = await learningPathService.generateLearningPath({
-        user_id: user.user_id,
-        goal: goal,
+        subject_id: pathForm.subjectId as 'python' | 'cpp' | 'csharp' | 'java' | 'web',
+        goal,
         level: pathForm.level,
       });
       setPathNotice(
         result.curriculum_source === 'fallback'
-          ? (result.curriculum_notice || 'AI hiện chưa phản hồi ổn định. Hệ thống đã dùng lộ trình dự phòng.')
+          ? result.curriculum_notice ||
+              'AI hiện chưa phản hồi ổn định. Hệ thống đã dùng lộ trình dự phòng.'
           : null
       );
 
-      // Add new path to the list (keep old paths)
-      setLearningPaths([result, ...learningPaths]);
-      
-      // Update concepts with new path info
+      setLearningPaths((previous) => [result, ...previous]);
+
       const updatedConcepts = concepts.map((c) => {
         const pathItem = result.recommended_path.find((p) => p.concept_id === c.concept_id);
         return pathItem ? { ...c, ...pathItem } : c;
       });
-      
+
       setConcepts(updatedConcepts);
       setShowCreatePath(false);
       setPathForm({
@@ -159,46 +163,6 @@ export default function LearningPath() {
     }
   };
 
-  const getStatusText = (status?: string) => {
-    switch (status) {
-      case 'complete':
-        return '✓ Hoàn thành';
-      case 'in_progress':
-        return '⟳ Đang học';
-      case 'proficient':
-        return '◆ Thành thạo';
-      case 'not_started':
-        return '◯ Chưa bắt đầu';
-      default:
-        return '◯ Chưa bắt đầu';
-    }
-  };
-  void getStatusText;
-
-  const getDifficultyColor = (difficulty: number) => {
-    if (difficulty === 1) return 'text-green-600';
-    if (difficulty === 2) return 'text-yellow-600';
-    if (difficulty === 3) return 'text-orange-600';
-    return 'text-red-600';
-  };
-  void getDifficultyColor;
-
-  const getDifficultyText = (difficulty: number) => {
-    switch (difficulty) {
-      case 1:
-        return 'Cơ bản';
-      case 2:
-        return 'Trung bình';
-      case 3:
-        return 'Nâng cao';
-      case 4:
-        return 'Chuyên sâu';
-      default:
-        return 'N/A';
-    }
-  };
-  void getDifficultyText;
-
   const getChapterStatus = (lessons: Array<{ status?: string }>) => {
     if (!lessons.length) return 'Chưa bắt đầu';
     if (lessons.every((lesson) => lesson.status === 'complete')) return 'Hoàn thành';
@@ -206,19 +170,18 @@ export default function LearningPath() {
     return 'Chưa bắt đầu';
   };
 
-  const hoveredPath = learningPaths.find(path => path.path_id === hoveredPathId);
+  const hoveredPath = learningPaths.find((path) => path.path_id === hoveredPathId);
 
-  // Calculate statistics from all learning paths
   const calculateStatistics = () => {
     let totalLessons = 0;
     let completedLessons = 0;
     let inProgressLessons = 0;
-    
-    learningPaths.forEach(path => {
+
+    learningPaths.forEach((path) => {
       if (path.curriculum) {
-        path.curriculum.forEach(chapter => {
+        path.curriculum.forEach((chapter) => {
           if (chapter.lessons) {
-            chapter.lessons.forEach(lesson => {
+            chapter.lessons.forEach((lesson) => {
               totalLessons++;
               if (lesson.status === 'complete') {
                 completedLessons++;
@@ -237,7 +200,7 @@ export default function LearningPath() {
       total: totalLessons,
       completed: completedLessons,
       inProgress: inProgressLessons,
-      progress
+      progress,
     };
   };
 
@@ -246,12 +209,10 @@ export default function LearningPath() {
   return (
     <DashboardLayout>
       <div className="max-w-[1190px]">
-        {/* Page Title */}
         <h1 className="text-[25px] font-semibold text-[#8f1025] mb-[30px] mt-[25px]">
           Lộ trình học tập
         </h1>
 
-        {/* Error Alert */}
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-[12px] mb-[40px] text-[14px]">
             ✕ {error}
@@ -265,7 +226,6 @@ export default function LearningPath() {
           </div>
         )}
 
-        {/* Top Actions */}
         <div className="flex gap-4 mb-[40px]">
           <button
             onClick={() => setShowCreatePath(!showCreatePath)}
@@ -291,7 +251,6 @@ export default function LearningPath() {
           </div>
         )}
 
-      {/* Create Path Form */}
         {showCreatePath && !loading && (
           <div className="bg-white border border-[#ce6a86] rounded-[20px] p-8 mb-[40px]">
             <h2 className="text-[18px] font-semibold text-[#8f1025] mb-6">Tạo lộ trình học tập mới</h2>
@@ -333,9 +292,7 @@ export default function LearningPath() {
                 </label>
                 <select
                   value={pathForm.level}
-                  onChange={(e) =>
-                    setPathForm({ ...pathForm, level: e.target.value as any })
-                  }
+                  onChange={(e) => setPathForm({ ...pathForm, level: e.target.value as typeof pathForm.level })}
                   className="w-full px-4 py-2 border border-[#e4b6d0] rounded-[10px] text-[14px] focus:outline-none focus:ring-2 focus:ring-[#8f1025]"
                 >
                   <option value="beginner">Bước đầu</option>
@@ -373,122 +330,113 @@ export default function LearningPath() {
           </div>
         )}
 
-        {/* Main Content */}
         {!loading && (
           <>
-        <div className="grid grid-cols-3 gap-[30px]">
-          {/* Left: Learning Paths Graph */}
-          <div className="col-span-2">
-            <div className="bg-white border border-[#ce6a86] rounded-[20px] p-[30px]">
-              <h2 className="text-[18px] font-semibold text-[#8f1025] mb-6 flex items-center gap-2">
-                <span className="w-[3px] h-[24px] bg-[#8f1025]" />
-                Graph Lộ trình học tập
-              </h2>
+            <div className="grid grid-cols-3 gap-[30px]">
+              <div className="col-span-2">
+                <div className="bg-white border border-[#ce6a86] rounded-[20px] p-[30px]">
+                  <h2 className="text-[18px] font-semibold text-[#8f1025] mb-6 flex items-center gap-2">
+                    <span className="w-[3px] h-[24px] bg-[#8f1025]" />
+                    Graph Lộ trình học tập
+                  </h2>
 
-              {/* Learning Paths List */}
-              {learningPaths.length === 0 ? (
-                <div className="bg-white border border-[#ce6a86] rounded-[12px] p-[20px] text-center text-[13px] text-[#832e44]">
-                  Chưa có lộ trình. Hãy tạo lộ trình mới để hiển thị tại đây.
+                  {learningPaths.length === 0 ? (
+                    <div className="bg-white border border-[#ce6a86] rounded-[12px] p-[20px] text-center text-[13px] text-[#832e44]">
+                      Chưa có lộ trình. Hãy tạo lộ trình mới để hiển thị tại đây.
+                    </div>
+                  ) : (
+                    <div className="space-y-[16px]">
+                      {learningPaths.map((path) => (
+                        <div
+                          key={path.path_id}
+                          onClick={() => navigate(`/learning-path/${path.path_id}`, { state: { path } })}
+                          onMouseEnter={() => setHoveredPathId(path.path_id)}
+                          onMouseLeave={() => setHoveredPathId(null)}
+                          className="rounded-[10px] p-[18px] cursor-pointer transition-all duration-200 bg-[#de8fac] text-white hover:shadow-md relative"
+                        >
+                          <p className="text-[12px] font-medium mb-2">
+                            {path.goal || 'Tên môn học - Mục tiêu'}
+                          </p>
+                          <p className="text-[10px] opacity-90">
+                            Cấp độ: <span className="font-medium">{path.level}</span> • Cập nhật:{' '}
+                            <span className="font-medium">
+                              {new Date(path.generated_at).toLocaleDateString('vi-VN')}
+                            </span>
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div className="space-y-[16px]">
-                  {learningPaths.map((path) => (
-                    <div
-                      key={path.path_id}
-                      onClick={() => navigate(`/learning-path/${path.path_id}`, { state: { path } })}
-                      onMouseEnter={() => setHoveredPathId(path.path_id)}
-                      onMouseLeave={() => setHoveredPathId(null)}
-                      className="rounded-[10px] p-[18px] cursor-pointer transition-all duration-200 bg-[#de8fac] text-white hover:shadow-md relative"
-                    >
-                      <p className="text-[12px] font-medium mb-2">
-                        {path.goal || 'Tên môn học - Mục tiêu'}
-                      </p>
-                      <p className="text-[10px] opacity-90">
-                        Cấp độ: <span className="font-medium">{path.level}</span> • Cập nhật:{' '}
-                        <span className="font-medium">
-                          {new Date(path.generated_at).toLocaleDateString('vi-VN')}
-                        </span>
+              </div>
+
+              <div>
+                <div className="bg-white border border-[#ce6a86] rounded-[20px] p-[30px] sticky top-[100px]">
+                  <h3 className="text-[12px] font-semibold text-[#5b1724] mb-4">
+                    Thông tin chi tiết môn học
+                  </h3>
+
+                  {hoveredPath?.curriculum && hoveredPath.curriculum.length > 0 ? (
+                    <div className="space-y-4">
+                      <div className="mb-4 pb-3 border-b border-[#ce6a86]">
+                        <p className="text-[11px] font-semibold text-[#8f1025]">{hoveredPath.goal}</p>
+                      </div>
+                      {hoveredPath.curriculum.map((chapter, index) => {
+                        const lessons = chapter.lessons || [];
+                        const status = getChapterStatus(lessons);
+                        return (
+                          <div
+                            key={`${chapter.title}-${index}`}
+                            className="border border-[#ce6a86] rounded-[12px] p-4"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-[12px] font-semibold text-[#8f1025]">
+                                  {chapter.title || `Chương ${index + 1}`}
+                                </p>
+                                <p className="text-[10px] text-[#8f1025]/70 mt-1">
+                                  {lessons.length} bài học
+                                </p>
+                              </div>
+                              <span className="text-[10px] px-2 py-0.5 rounded-full border border-[#8f1025] text-[#8f1025]">
+                                {status}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="text-center py-12">
+                      <p className="text-[14px] text-gray-500">
+                        {learningPaths.length > 0
+                          ? 'Di chuột vào lộ trình để xem chi tiết'
+                          : 'Chưa có thông tin chương học.'}
                       </p>
                     </div>
-                  ))}
+                  )}
                 </div>
-              )}
+              </div>
             </div>
-          </div>
 
-          {/* Right: Hover Details */}
-          <div>
-            <div className="bg-white border border-[#ce6a86] rounded-[20px] p-[30px] sticky top-[100px]">
-              <h3 className="text-[12px] font-semibold text-[#5b1724] mb-4">
-                Thông tin chi tiết môn học
-              </h3>
-
-              {hoveredPath?.curriculum && hoveredPath.curriculum.length > 0 ? (
-                <div className="space-y-4">
-                  <div className="mb-4 pb-3 border-b border-[#ce6a86]">
-                    <p className="text-[11px] font-semibold text-[#8f1025]">{hoveredPath.goal}</p>
-                  </div>
-                  {hoveredPath.curriculum.map((chapter, index) => {
-                    const lessons = chapter.lessons || [];
-                    const status = getChapterStatus(lessons);
-                    return (
-                      <div
-                        key={`${chapter.title}-${index}`}
-                        className="border border-[#ce6a86] rounded-[12px] p-4"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-[12px] font-semibold text-[#8f1025]">
-                              {chapter.title || `Chương ${index + 1}`}
-                            </p>
-                            <p className="text-[10px] text-[#8f1025]/70 mt-1">{lessons.length} bài học</p>
-                          </div>
-                          <span className="text-[10px] px-2 py-0.5 rounded-full border border-[#8f1025] text-[#8f1025]">
-                            {status}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-center py-12">
-                  <p className="text-[14px] text-gray-500">
-                    {learningPaths.length > 0 
-                      ? 'Di chuột vào lộ trình để xem chi tiết'
-                      : 'Chưa có thông tin chương học.'}
-                  </p>
-                </div>
-              )}
+            <div className="grid grid-cols-4 gap-[20px] mt-[40px]">
+              <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
+                <p className="text-[12px] text-gray-600 font-medium mb-2">Tổng bài học</p>
+                <p className="text-[28px] font-bold text-[#8f1025]">{stats.total}</p>
+              </div>
+              <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
+                <p className="text-[12px] text-gray-600 font-medium mb-2">Đã hoàn thành</p>
+                <p className="text-[28px] font-bold text-green-600">{stats.completed}</p>
+              </div>
+              <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
+                <p className="text-[12px] text-gray-600 font-medium mb-2">Đang học</p>
+                <p className="text-[28px] font-bold text-blue-600">{stats.inProgress}</p>
+              </div>
+              <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
+                <p className="text-[12px] text-gray-600 font-medium mb-2">Tiến độ</p>
+                <p className="text-[28px] font-bold text-[#8f1025]">{stats.progress}%</p>
+              </div>
             </div>
-          </div>
-        </div>
-
-        {/* Statistics Section */}
-        <div className="grid grid-cols-4 gap-[20px] mt-[40px]">
-          <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
-            <p className="text-[12px] text-gray-600 font-medium mb-2">Tổng bài học</p>
-            <p className="text-[28px] font-bold text-[#8f1025]">{stats.total}</p>
-          </div>
-          <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
-            <p className="text-[12px] text-gray-600 font-medium mb-2">Đã hoàn thành</p>
-            <p className="text-[28px] font-bold text-green-600">
-              {stats.completed}
-            </p>
-          </div>
-          <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
-            <p className="text-[12px] text-gray-600 font-medium mb-2">Đang học</p>
-            <p className="text-[28px] font-bold text-blue-600">
-              {stats.inProgress}
-            </p>
-          </div>
-          <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
-            <p className="text-[12px] text-gray-600 font-medium mb-2">Tiến độ</p>
-            <p className="text-[28px] font-bold text-[#8f1025]">
-              {stats.progress}%
-            </p>
-          </div>
-        </div>
           </>
         )}
       </div>

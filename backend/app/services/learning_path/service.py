@@ -6,20 +6,18 @@ import os
 from functools import lru_cache
 import json
 import re
-import random
+import time
 
 from backend.app.database.mongo import get_db
 from backend.app.services.learning_path.recommender import recommend_resources_for_concept
 from backend.app.services.progress_tracking.progress import get_progress
-from backend.app.services.question_generation.generator import (
-    generate_questions as generate_template_questions,
-)
 from backend.app.services.adaptive_engine import (
     decide_learning_mode,
     filter_resources_by_mode,
     can_unlock_next_concept,
     LearningMode
 )
+import backend.app.services.ai_tutor.rag as rag_service
 from backend.app.services.ai_tutor.rag import RAGPipeline, USE_LLM
 
 logger = logging.getLogger(__name__)
@@ -41,29 +39,23 @@ MAX_CYCLE_DETECTION_DEPTH = 100  # Prevent infinite loops
 logger.info(f"Learning path service initialized: max_recs={MAX_RECOMMENDATIONS}")
 
 _curriculum_rag = RAGPipeline()
-LESSON_ASSESSMENT_QUESTION_COUNT = 10
-MCQ_OPTION_KEYS = ["A", "B", "C", "D"]
+CURRICULUM_MAX_OUTPUT_TOKENS = int(os.getenv("LEARNING_PATH_CURRICULUM_MAX_OUTPUT_TOKENS", "4096"))
+CURRICULUM_PARSE_RETRIES = int(os.getenv("LEARNING_PATH_CURRICULUM_PARSE_RETRIES", "2"))
 
 
-def calculate_min_correct_required(required_questions: int) -> int:
-    if required_questions <= 0:
-        return 0
-    return max(1, min(required_questions, int(required_questions * 0.7 + 0.9999)))
-
-
-def _build_placeholder_assessment(required_questions: int = LESSON_ASSESSMENT_QUESTION_COUNT) -> Dict:
-    min_correct_required = calculate_min_correct_required(required_questions)
+def _get_learning_path_llm_status() -> Dict[str, Optional[object]]:
+    cooldown_active = time.time() < getattr(rag_service, "LLM_COOLDOWN_UNTIL", 0.0)
     return {
-        "required_questions": required_questions,
-        "attempted_questions": 0,
-        "completed": False,
-        "generation": 0,
-        "correct_answers": 0,
-        "min_correct_required": min_correct_required,
-        "passed": False,
-        "score_percent": 0.0,
-        "question_results": [],
-        "questions": [],
+        "provider": "gemini",
+        "enabled": bool(
+            rag_service.USE_LLM
+            and getattr(rag_service, "client", None)
+            and not cooldown_active
+            and not getattr(rag_service, "LLM_DISABLED_REASON", None)
+        ),
+        "cooldown_active": cooldown_active,
+        "reason": getattr(rag_service, "LLM_DISABLED_REASON", None),
+        "model": getattr(rag_service, "PRIMARY_MODEL", None),
     }
 
 
@@ -156,6 +148,10 @@ def _extract_json_block(text: str) -> Optional[str]:
     if not text:
         return None
 
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", text, re.DOTALL | re.IGNORECASE)
+    if fenced_match:
+        return fenced_match.group(1).strip()
+
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         return match.group(0)
@@ -182,6 +178,8 @@ def _build_curriculum_prompt(goal: str, level: str, resources: List[Dict]) -> st
         "You are an AI curriculum designer.\n"
         "Create a step-by-step learning path with chapters and lessons for the given goal.\n"
         "Make it suitable for the learner level and grounded in the provided materials.\n"
+        "Return strictly valid JSON only. Do not wrap JSON in markdown fences.\n"
+        "Every chapter must contain at least 2 lessons when possible.\n"
         "Return ONLY valid JSON in this schema:\n"
         "{\"chapters\":[{\"title\":string,\"lessons\":[{\"title\":string,\"summary\":string,\"resources\":[string]}]}]}\n"
         "No extra commentary.\n\n"
@@ -201,20 +199,6 @@ def _add_lesson_ids(chapters: List[Dict]) -> List[Dict]:
             if not lesson.get("lesson_id"):
                 lesson["lesson_id"] = uuid.uuid4().hex
     return chapters
-
-
-def _difficulty_from_level(level: str) -> str:
-    mapping = {
-        "beginner": "easy",
-        "intermediate": "medium",
-        "advanced": "hard"
-    }
-    return mapping.get(level, "medium")
-
-
-def _slugify_token(text: str) -> str:
-    token = re.sub(r"[^a-zA-Z0-9]+", "_", (text or "").strip().lower()).strip("_")
-    return token or uuid.uuid4().hex[:8]
 
 
 def _build_goal_seed_concepts(goal: str, level: str) -> List[Dict]:
@@ -336,197 +320,27 @@ def _build_recommended_from_curriculum(curriculum: List[Dict], default_mode: str
     return recommended[:MAX_RECOMMENDATIONS]
 
 
-def _relation_answer_text(item: Dict, fallback_concept: str) -> str:
-    concept_name = item.get("concept") or fallback_concept
-    related = item.get("related_concepts") or [concept_name]
-    relation_type = item.get("relation_type", "definition")
+def _call_curriculum_llm(prompt: str) -> Optional[str]:
+    client = getattr(rag_service, "client", None)
+    if not (rag_service.USE_LLM and client):
+        return None
 
-    if relation_type == "prerequisite" and len(related) >= 2:
-        return f"{related[0]} la kien thuc nen tang can nam truoc khi hoc {related[1]}."
-    if relation_type == "used_in" and len(related) >= 2:
-        return f"{related[0]} duoc ap dung truc tiep trong {related[1]}."
-    if relation_type == "part_of" and len(related) >= 2:
-        return f"{related[0]} la mot thanh phan cau thanh cua {related[1]}."
-    if relation_type == "related_to" and len(related) >= 2:
-        return f"{related[0]} co moi lien he truc tiep va ho tro viec hieu {related[1]}."
-    if relation_type == "comparison" and len(related) >= 2:
-        return f"{related[0]} va {related[1]} khac nhau ve vai tro, dac diem hoac cach ap dung."
-    return f"{concept_name} la mot khai niem can duoc hieu ro trong chuong hoc nay."
-
-
-def _relation_distractors(item: Dict, fallback_concept: str) -> List[str]:
-    concept_name = item.get("concept") or fallback_concept
-    related = item.get("related_concepts") or [concept_name]
-    other_name = related[1] if len(related) > 1 else concept_name
-    relation_type = item.get("relation_type", "definition")
-
-    if relation_type == "prerequisite":
-        return [
-            f"{other_name} can hoc truoc ma khong can biet {concept_name}.",
-            f"{concept_name} va {other_name} hoan toan doc lap, khong co thu tu hoc tap.",
-            f"{concept_name} chi la mot vi du phu, khong anh huong den viec hoc {other_name}.",
-        ]
-    if relation_type == "used_in":
-        return [
-            f"{concept_name} khong duoc su dung trong {other_name}.",
-            f"{other_name} chi lien quan den ghi nho ly thuyet, khong can {concept_name}.",
-            f"{concept_name} va {other_name} thuoc hai chu de tach biet, khong giao nhau.",
-        ]
-    if relation_type == "part_of":
-        return [
-            f"{concept_name} khong nam trong cau truc cua {other_name}.",
-            f"{other_name} co the hieu day du ma khong can den {concept_name}.",
-            f"{concept_name} chi la mot vi du ngoai le, khong phai thanh phan cua {other_name}.",
-        ]
-    if relation_type == "related_to":
-        return [
-            f"{concept_name} khong lien quan den viec hieu {other_name}.",
-            f"{concept_name} va {other_name} khong co diem chung trong chuong hoc nay.",
-            f"{other_name} chi thuoc mot chu de khac, khong can xet {concept_name}.",
-        ]
-    if relation_type == "comparison":
-        return [
-            f"{concept_name} va {other_name} hoan toan giong nhau, khong co diem nao can phan biet.",
-            f"{concept_name} va {other_name} khong the dat canh de so sanh.",
-            f"Chi can hoc mot trong hai, vi {concept_name} va {other_name} la mot.",
-        ]
-
-    return [
-        f"{concept_name} khong co lien quan den noi dung cua chuong hoc nay.",
-        f"{concept_name} chi can ghi nho ten goi, khong can hieu quan he voi {other_name}.",
-        f"{concept_name} thuoc mot chu de khac va khong xuat hien trong chuong nay.",
-    ]
-
-
-def _build_chapter_graph_questions(
-    chapter_id: str,
-    fallback_concept: str,
-    difficulty: str,
-    num_questions: int,
-    variation_seed: int
-) -> List[Dict]:
     try:
-        generated = generate_template_questions(
-            chapter_id=chapter_id,
-            num_questions=max(num_questions * 2, num_questions)
-        )
+        if hasattr(client, "models") and hasattr(client.models, "generate_content"):
+            response = client.models.generate_content(
+                model=getattr(rag_service, "PRIMARY_MODEL", None),
+                contents=prompt,
+                config={
+                    "temperature": 0.2,
+                    "max_output_tokens": CURRICULUM_MAX_OUTPUT_TOKENS,
+                    "response_mime_type": "application/json",
+                },
+            )
+            return _curriculum_rag._extract_text_from_response(response)
     except Exception as e:
-        logger.warning(f"QuestionGenerator failed for chapter {chapter_id}: {e}")
-        return []
+        logger.warning(f"Structured curriculum generation failed, falling back to shared retry path: {e}")
 
-    if not generated:
-        return []
-
-    rng = random.Random(f"chapter:{chapter_id}:{difficulty}:{variation_seed}")
-    pool = generated[:]
-    rng.shuffle(pool)
-
-    normalized: List[Dict] = []
-    seen_questions = set()
-
-    for idx, item in enumerate(pool):
-        question_text = str(item.get("question", "")).strip()
-        if not question_text:
-            continue
-        question_key = question_text.lower()
-        if question_key in seen_questions:
-            continue
-        seen_questions.add(question_key)
-
-        correct_text = _relation_answer_text(item, fallback_concept)
-        distractors = _relation_distractors(item, fallback_concept)
-
-        option_payload = [
-            {"is_correct": True, "text": correct_text},
-            {"is_correct": False, "text": distractors[0]},
-            {"is_correct": False, "text": distractors[1]},
-            {"is_correct": False, "text": distractors[2]},
-        ]
-        rng.shuffle(option_payload)
-
-        options = []
-        correct_option = "A"
-        for option_key, payload in zip(MCQ_OPTION_KEYS, option_payload):
-            options.append({"key": option_key, "text": payload["text"]})
-            if payload["is_correct"]:
-                correct_option = option_key
-
-        normalized.append({
-            "question_id": uuid.uuid4().hex,
-            "question": question_text,
-            "answer": correct_text,
-            "explanation": "Cau hoi duoc sinh tu concept va quan he trong knowledge graph cua chuong hoc.",
-            "difficulty": difficulty,
-            "concept": item.get("concept") or fallback_concept,
-            "options": options,
-            "correct_option": correct_option
-        })
-
-        if len(normalized) >= num_questions:
-            break
-
-    return normalized
-
-
-def generate_lesson_mcq_questions(
-    concept: str,
-    level: str,
-    lesson_summary: str,
-    lesson_resources: List[str],
-    num_questions: int = LESSON_ASSESSMENT_QUESTION_COUNT,
-    variation_seed: int = 0,
-    chapter_id: Optional[str] = None
-) -> List[Dict]:
-    difficulty = _difficulty_from_level(level)
-    if not chapter_id:
-        raise ValueError("chapter_id is required for assessment question generation")
-
-    questions = _build_chapter_graph_questions(
-        chapter_id=chapter_id,
-        fallback_concept=concept,
-        difficulty=difficulty,
-        num_questions=num_questions,
-        variation_seed=variation_seed
-    )
-    if not questions:
-        raise ValueError(f"No knowledge-graph questions generated for chapter_id={chapter_id}")
-    return questions
-
-
-def _build_lesson_assessment(
-    lesson_title: str,
-    level: str,
-    lesson_summary: str,
-    lesson_resources: List[str],
-    variation_seed: int = 0,
-    chapter_id: Optional[str] = None
-) -> Dict:
-    concept = lesson_title or "concept"
-
-    questions = generate_lesson_mcq_questions(
-        concept=concept,
-        level=level,
-        lesson_summary=lesson_summary,
-        lesson_resources=lesson_resources,
-        num_questions=LESSON_ASSESSMENT_QUESTION_COUNT,
-        variation_seed=variation_seed,
-        chapter_id=chapter_id
-    )
-    required_questions = len(questions)
-    min_correct_required = calculate_min_correct_required(required_questions)
-
-    return {
-        "required_questions": required_questions,
-        "attempted_questions": 0,
-        "completed": False,
-        "generation": variation_seed,
-        "correct_answers": 0,
-        "min_correct_required": min_correct_required,
-        "passed": False,
-        "score_percent": 0.0,
-        "question_results": [],
-        "questions": questions
-    }
+    return _curriculum_rag._call_llm_with_retry(prompt)
 
 
 def _build_curriculum_from_recommended(recommended: List[Dict], level: str) -> List[Dict]:
@@ -556,7 +370,6 @@ def _build_curriculum_from_recommended(recommended: List[Dict], level: str) -> L
                 "concept_id": str(concept_id),
                 "concept_name": str(concept_name),
                 "concept_list": [{"id": str(concept_id), "name": str(concept_name)}],
-                "assessment": _build_placeholder_assessment(),
             })
         for lesson in lessons:
             lesson["concept_list"] = [dict(item) for item in chapter_concepts]
@@ -570,12 +383,14 @@ def _build_curriculum_from_recommended(recommended: List[Dict], level: str) -> L
 
 
 def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> Dict:
+    llm_status = _get_learning_path_llm_status()
     fallback_notice = "AI tạm thời chưa sẵn sàng, hệ thống đã dùng lộ trình dự phòng để bạn vẫn có thể bắt đầu học."
     if not (USE_LLM and _curriculum_rag):
         return {
             "curriculum": _build_curriculum_from_recommended(recommended, level),
             "source": "fallback",
             "notice": fallback_notice,
+            "llm_status": llm_status,
         }
 
     try:
@@ -586,22 +401,43 @@ def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> Dict
             k=6
         )
         prompt = _build_curriculum_prompt(goal, level, resources)
-        response_text = _curriculum_rag._call_llm_with_retry(prompt)
-        json_text = _extract_json_block(response_text or "")
-        if not json_text:
+        data = None
+        parse_error: Optional[Exception] = None
+
+        for attempt in range(max(1, CURRICULUM_PARSE_RETRIES)):
+            response_text = _call_curriculum_llm(prompt)
+            json_text = _extract_json_block(response_text or "")
+            if not json_text:
+                parse_error = ValueError("No JSON block returned by curriculum model")
+                continue
+            try:
+                data = json.loads(json_text)
+                break
+            except json.JSONDecodeError as e:
+                parse_error = e
+                logger.warning(
+                    "Curriculum JSON parse failed on attempt %s/%s: %s",
+                    attempt + 1,
+                    max(1, CURRICULUM_PARSE_RETRIES),
+                    e,
+                )
+
+        if data is None:
+            logger.warning("Curriculum model returned unusable JSON: %s", parse_error)
             return {
                 "curriculum": _build_curriculum_from_recommended(recommended, level),
                 "source": "fallback",
                 "notice": "AI không trả về nội dung hợp lệ, hệ thống đã dùng lộ trình dự phòng.",
+                "llm_status": _get_learning_path_llm_status(),
             }
 
-        data = json.loads(json_text)
         chapters = data.get("chapters") if isinstance(data, dict) else None
         if not chapters or not isinstance(chapters, list):
             return {
                 "curriculum": _build_curriculum_from_recommended(recommended, level),
                 "source": "fallback",
                 "notice": "AI trả về dữ liệu chưa đúng định dạng, hệ thống đã dùng lộ trình dự phòng.",
+                "llm_status": _get_learning_path_llm_status(),
             }
 
         normalized = []
@@ -626,7 +462,6 @@ def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> Dict
                     "concept_id": str(concept_id),
                     "concept_name": str(concept_name),
                     "concept_list": [{"id": str(concept_id), "name": str(concept_name)}],
-                    "assessment": _build_placeholder_assessment(),
                 })
             for lesson in lessons:
                 lesson["concept_list"] = [dict(item) for item in chapter_concepts]
@@ -642,11 +477,13 @@ def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> Dict
                 "curriculum": _add_lesson_ids(normalized),
                 "source": "ai",
                 "notice": None,
+                "llm_status": _get_learning_path_llm_status(),
             }
         return {
             "curriculum": _build_curriculum_from_recommended(recommended, level),
             "source": "fallback",
             "notice": "AI không sinh được danh sách bài học hợp lệ, hệ thống đã dùng lộ trình dự phòng.",
+            "llm_status": _get_learning_path_llm_status(),
         }
     except Exception as e:
         logger.warning(f"Curriculum generation failed: {e}")
@@ -654,6 +491,7 @@ def _generate_curriculum(goal: str, level: str, recommended: List[Dict]) -> Dict
             "curriculum": _build_curriculum_from_recommended(recommended, level),
             "source": "fallback",
             "notice": "AI tạm thời không phản hồi, hệ thống đã dùng lộ trình dự phòng để bạn vẫn có thể tiếp tục.",
+            "llm_status": _get_learning_path_llm_status(),
         }
 def generate_learning_path(
     user_id: str,
@@ -762,6 +600,7 @@ def generate_learning_path(
                 "curriculum": curriculum,
                 "curriculum_source": curriculum_result.get("source", "fallback"),
                 "curriculum_notice": curriculum_result.get("notice"),
+                "llm_status": curriculum_result.get("llm_status"),
                 "message": f"Generated learning path with {len(recommended)} concepts"
             }
         
@@ -904,6 +743,7 @@ def generate_learning_path(
             "curriculum": curriculum,
             "curriculum_source": curriculum_result.get("source", "fallback"),
             "curriculum_notice": curriculum_result.get("notice"),
+            "llm_status": curriculum_result.get("llm_status"),
             "message": f"Generated learning path with {len(recommended)} concepts in {adaptive_mode.value} mode"
         }
     

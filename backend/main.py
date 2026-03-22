@@ -2,26 +2,40 @@ import os
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+BACKEND_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BACKEND_DIR.parent
+
+# Load project-level env first, then backend/.env for local backend-only overrides.
+load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(BACKEND_DIR / ".env")
+
+# Normalize Mongo env naming so startup validation and DB access stay consistent.
+if not os.getenv("MONGODB_URI") and os.getenv("MONGO_URI"):
+    os.environ["MONGODB_URI"] = os.getenv("MONGO_URI")
+if not os.getenv("MONGO_URI") and os.getenv("MONGODB_URI"):
+    os.environ["MONGO_URI"] = os.getenv("MONGODB_URI")
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
 
 from backend.app.api import (
     auth,
     users,
     resources,
+    subjects,
+    chapters,
+    lessons,
     learning_path,
-    lesson_quiz,
+    learning_paths,
     progress,
     ask,
     recommendations,
     concepts,
-    rag
 )
 
 # =========================
@@ -39,12 +53,11 @@ logger = logging.getLogger(__name__)
 # =========================
 def validate_env():
     """Validate required environment variables."""
-    required_vars = ["MONGODB_URI"]
-    missing = [var for var in required_vars if not os.getenv(var)]
+    mongo_uri = os.getenv("MONGODB_URI") or os.getenv("MONGO_URI")
     secret_key = os.getenv("SECRET_KEY")
 
-    if missing:
-        raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+    if not mongo_uri:
+        raise RuntimeError("Missing required env var: MONGODB_URI or MONGO_URI")
     if not secret_key or secret_key == "CHANGE_THIS_SECRET_KEY":
         raise RuntimeError("SECRET_KEY must be configured with a non-default value")
 
@@ -157,13 +170,15 @@ async def general_exception_handler(request: Request, exc: Exception):
 app.include_router(auth.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(resources.router, prefix="/api")
+app.include_router(subjects.router, prefix="/api")
+app.include_router(chapters.router, prefix="/api")
+app.include_router(lessons.router, prefix="/api")
 app.include_router(learning_path.router, prefix="/api")
-app.include_router(lesson_quiz.router, prefix="/api")
+app.include_router(learning_paths.router, prefix="/api")
 app.include_router(progress.router, prefix="/api")
 app.include_router(ask.router, prefix="/api")
 app.include_router(recommendations.router, prefix="/api")
 app.include_router(concepts.router, prefix="/api")
-app.include_router(rag.router, prefix="/api")
 
 # =========================
 # HEALTH CHECK ENDPOINTS
@@ -176,6 +191,18 @@ def root():
         "status": "running",
         "version": "1.0.0"
     }
+
+
+@app.get("/docs", include_in_schema=False)
+async def docs_redirect():
+    """Redirect the conventional Swagger URL to the API-prefixed docs route."""
+    return RedirectResponse(url="/api/docs", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_redirect():
+    """Redirect the conventional OpenAPI URL to the API-prefixed schema route."""
+    return RedirectResponse(url="/api/openapi.json", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
 @app.get("/api/health")

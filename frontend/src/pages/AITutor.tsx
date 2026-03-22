@@ -7,6 +7,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../utils/apiClient';
 import { SUBJECTS } from '../utils/subjects';
 import { assessmentService, type AssessmentQuestion, type AssessmentDifficulty } from '../services/assessmentService';
+import { learningPathService } from '../services';
 
 interface Message {
   id: string;
@@ -278,15 +279,21 @@ export default function AITutor() {
   const loadConceptInfo = async (conceptId: number) => {
     setConceptLoading(true);
     try {
-      // TODO: Replace with actual API call to fetch concept info
-      const mockConcept: ConceptInfo = {
-        concept_id: conceptId,
-        concept_name: 'Python Basics',
-        description: 'Learn the fundamentals of Python programming',
-        mastery: 0.45,
-        status: 'in_progress',
-      };
-      setCurrentConcept(mockConcept);
+      const [conceptResponse, progressResponse] = await Promise.all([
+        learningPathService.getConceptDetails(conceptId),
+        user ? learningPathService.getConceptProgress(conceptId, user.user_id) : Promise.resolve(null),
+      ]);
+
+      const concept = conceptResponse?.concept ?? conceptResponse ?? {};
+      const progress = progressResponse?.progress ?? {};
+
+      setCurrentConcept({
+        concept_id: Number(concept?.concept_id ?? conceptId),
+        concept_name: String(concept?.concept_name ?? `Concept ${conceptId}`),
+        description: String(concept?.topic ?? concept?.description ?? 'Không có mô tả chi tiết'),
+        mastery: typeof progress?.mastery === 'number' ? progress.mastery : 0,
+        status: String(progress?.status ?? 'not_started'),
+      });
     } catch (err) {
       console.error('Error loading concept:', err);
     } finally {
@@ -877,7 +884,7 @@ export default function AITutor() {
 
               <div className="space-y-3">
                 <div>
-                  <label className="block text-[12px] text-[#8f1025] mb-1">Ten bai hoc</label>
+                  <label className="block text-[12px] text-[#8f1025] mb-1">Tên bài học</label>
                   <input
                     type="text"
                     value={assessmentDraft.lesson_title}
@@ -887,13 +894,13 @@ export default function AITutor() {
                         lesson_title: e.target.value,
                       }))
                     }
-                    placeholder="Vi du: Gioi thieu ve RAG"
+                    placeholder="Ví dụ: Giới thiệu về RAG"
                     className="w-full px-3 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[12px] text-[#8f1025] mb-1">Concept</label>
+                  <label className="block text-[12px] text-[#8f1025] mb-1">Khái niệm</label>
                   <input
                     type="text"
                     value={assessmentDraft.concept}
@@ -921,17 +928,17 @@ export default function AITutor() {
                       }
                       className="w-full px-2 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
                     >
-                      <option value="easy">easy</option>
-                      <option value="medium">medium</option>
-                      <option value="hard">hard</option>
+                      <option value="easy">Dễ</option>
+                      <option value="medium">Trung bình</option>
+                      <option value="hard">Khó</option>
                     </select>
                   </div>
 
                   <div>
-                    <label className="block text-[12px] text-[#8f1025] mb-1">Loai cau hoi</label>
+                    <label className="block text-[12px] text-[#8f1025] mb-1">Loại câu hỏi</label>
                     <input
                       type="text"
-                      aria-label="Loai cau hoi"
+                      aria-label="Loại câu hỏi"
                       value={assessmentDraft.question_type}
                       onChange={(e) =>
                         setAssessmentDraft((prev) => ({
@@ -950,7 +957,7 @@ export default function AITutor() {
                       type="number"
                       min={1}
                       max={20}
-                      aria-label="So cau"
+                      aria-label="Số câu"
                       value={assessmentDraft.num_questions}
                       onChange={(e) =>
                         setAssessmentDraft((prev) => ({

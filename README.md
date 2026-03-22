@@ -2,12 +2,24 @@
 
 He thong ho tro hoc tap ca nhan hoa duoc xay dung voi `FastAPI + MongoDB + React + AI/RAG`.
 
-Muc tieu cua du an:
-- tra loi cau hoi hoc tap theo ngu canh tai lieu
-- sinh lo trinh hoc tap phu hop voi muc tieu va trinh do
-- goi y hoc lieu lien quan cho tung concept
-- theo doi mastery, confidence, va tien do hoc tap
-- tao question bank va quiz theo bai hoc
+## Trang thai hien tai
+
+Backend da duoc smoke-test lai vao ngay `2026-03-22` trong workspace hien tai.
+
+Da xac minh thanh cong:
+- `python -m compileall backend`
+- import app va chay startup `lifespan`
+- `MongoDB ping` thanh cong
+- `GET /` tra ve `200`
+- `GET /api/health` tra ve `200`
+- `GET /api/ready` tra ve `200`
+- `GET /docs` redirect sang `/api/docs`
+- `GET /api/openapi.json` tra ve `200`
+- `pytest tests/test_backend_smoke.py` voi `12` smoke tests: passed
+
+Ghi chu:
+- Hien chua co bo test `pytest` rieng cho backend.
+- ChromaDB co thu gui telemetry ra ngoai; trong moi truong bi chan network se xuat hien warning PostHog, nhung khong chan backend khoi dong.
 
 ## Tong quan kien truc
 
@@ -20,7 +32,9 @@ backend (FastAPI)
     |
     +-- api
     +-- services
+    +-- repositories
     +-- database
+    +-- ai_module
     |
     v
 MongoDB
@@ -28,86 +42,74 @@ MongoDB
 
 ## Cau truc backend hien tai
 
-Backend da duoc sap xep lai theo tung package chuc nang:
-
 ```text
-backend/app/services/
-├── ai_tutor/
-│   ├── rag.py
-│   └── service.py
-├── learning_path/
-│   ├── recommender.py
-│   └── service.py
-├── lesson_quiz/
-│   └── bank_service.py
-├── progress_tracking/
-│   ├── confidence.py
-│   ├── confidence_scorer.py
-│   └── progress.py
-├── question_generation/
-│   ├── bloom.py
-│   ├── generator.py
-│   ├── lesson_content.py
-│   ├── llm_generator.py
-│   ├── pipeline.py
-│   ├── prompt_builder.py
-│   ├── rules.py
-│   ├── templates.py
-│   └── validator.py
-├── resource_imports/
-│   ├── batch.py
-│   ├── pdf.py
-│   ├── youtube.py
-│   └── youtube_summary.py
-├── adaptive_engine.py
-├── concept_mapper.py
-├── embedding_service.py
-├── resource_service.py
-└── search_service.py
+backend/
++-- app/
+|   +-- ai_module/
+|   +-- api/
+|   +-- database/
+|   +-- repositories/
+|   +-- services/
+|   `-- utils/
++-- scripts/
++-- uploads/
+`-- main.py
 ```
 
-## Y nghia tung package
+`backend/app/api/` hien co cac router chinh:
+- `auth.py`
+- `users.py`
+- `subjects.py`
+- `chapters.py`
+- `lessons.py`
+- `resources.py`
+- `learning_path.py`
+- `learning_paths.py`
+- `progress.py`
+- `ask.py`
+- `recommendations.py`
+- `concepts.py`
 
-### `ai_tutor`
-- xu ly hoi dap AI
-- chay RAG retrieval + answer generation
-- dieu phoi confidence, progress, adaptive learning, learning path
+## API dang co
 
-### `learning_path`
-- sinh lo trinh hoc tap
-- tao curriculum theo goal/level
-- goi y hoc lieu cho concept trong learning path
+Tat ca router business duoc mount duoi prefix `/api`.
 
-### `lesson_quiz`
-- tao question bank cho lesson
-- tao quiz attempt
-- cham diem va luu ket qua quiz
+### Health va docs
+- `GET /`
+- `GET /api/health`
+- `GET /api/ready`
+- `GET /api/docs`
+- `GET /api/openapi.json`
+- `GET /docs` -> redirect `/api/docs`
+- `GET /openapi.json` -> redirect `/api/openapi.json`
 
-### `progress_tracking`
-- cap nhat mastery theo progress
-- tinh va luu confidence
-- tong hop overview confidence/progress cho user
-
-### `question_generation`
-- sinh cau hoi rule-based
-- sinh cau hoi lesson-grounded bang LLM
-- prompt, validation, retrieval chunk, template, Bloom taxonomy
-
-### `resource_imports`
-- import hoc lieu thu cong theo lo
-- import PDF
-- import YouTube
-- tao tom tat YouTube fallback
-
-## API chinh
-
-Tat ca router duoc mount duoi prefix `/api`.
-
-### Auth
+### Auth va user
 - `POST /api/auth/signup`
 - `POST /api/auth/login`
+- `POST /api/users/`
+- `GET /api/users/me`
+- `PUT /api/users/{user_id}`
 
-### Ask / AI Tutor
+### Subject, chapter, lesson
+- `POST /api/subjects/`
+- `POST /api/chapters/`
+- `POST /api/lessons/`
+- `POST /api/lessons/{lesson_id}/recommended-chunks`
+- `GET /api/lessons/{lesson_id}/recommended-chunks`
+- `POST /api/lessons/{lesson_id}/generate-questions`
+- `GET /api/lessons/{lesson_id}/questions`
+
+### Learning path
+- `POST /api/learning-path/generate`
+- `GET /api/learning-path/history`
+- `POST /api/learning-path/lesson-progress`
+- `GET /api/learning-path/{path_id}`
+- `POST /api/learning-paths/generate`
+- `GET /api/learning-paths/history`
+- `POST /api/learning-paths/lesson-progress`
+- `GET /api/learning-paths/{path_id}`
+
+### AI tutor va progress
 - `POST /api/ask/`
 - `GET /api/ask/adaptive-status`
 - `POST /api/ask/detect-concepts`
@@ -115,69 +117,27 @@ Tat ca router duoc mount duoi prefix `/api`.
 - `GET /api/ask/history`
 - `DELETE /api/ask/history/{history_id}`
 - `POST /api/ask/generate-assessment`
-
-### Learning Path
-- `POST /api/learning-path/generate`
-- `GET /api/learning-path/history`
-- `POST /api/learning-path/lesson-progress`
-- `GET /api/learning-path/{path_id}`
-
-### Lesson Quiz
-- `GET /api/lesson-question-banks`
-- `GET /api/lesson-question-bank/{lesson_id}`
-- `POST /api/lesson-question-bank/generate`
-- `GET /api/lesson-question-bank/debug/{lesson_id}`
-- `POST /api/lesson-quiz/attempt`
-- `POST /api/lesson-quiz/submit`
-- `POST /api/quiz/submit`
-
-### Progress
 - `POST /api/progress/update`
 - `GET /api/progress/summary`
 - `GET /api/progress/overview`
 - `GET /api/progress/confidence`
-- `GET /api/progress/confidence/{lesson_id}`
-- `GET /api/progress/attempt-confidence/{attempt_id}`
-- `GET /api/progress/overview/{user_id}`
+- `GET /api/progress/concept/{concept_id}`
 
-### Resources
+### Resources va recommendations
 - `GET /api/resources/`
 - `POST /api/resources/`
 - `POST /api/resources/import`
 - `GET /api/resources/search`
 - `POST /api/resources/import-pdf`
 - `POST /api/resources/import-youtube`
+- `GET /api/resources/jobs/{job_id}`
 - `GET /api/resources/pdf/{resource_id}`
-
-### Recommendations
 - `GET /api/recommendations/resources`
 - `GET /api/recommendations/progress`
-
-### Concepts
 - `GET /api/concepts`
 - `GET /api/concepts/{concept_id}`
 
-### RAG Utilities
-- `POST /api/rag/upload-pdf`
-- `POST /api/rag/chat`
-
-## Frontend
-
-Frontend dung:
-- React 18
-- TypeScript
-- Vite
-- React Router
-- Axios
-
-Scripts chinh trong `frontend/package.json`:
-
-```bash
-npm run dev
-npm run build
-npm run type-check
-npm run lint
-```
+Nhieu endpoint trong so nay yeu cau `Bearer token`.
 
 ## Cai dat va chay local
 
@@ -190,10 +150,16 @@ pip install -r requirements.txt
 python -m uvicorn backend.main:app --reload
 ```
 
-Swagger docs:
+Backend docs:
 
 ```text
 http://localhost:8000/api/docs
+```
+
+Health check:
+
+```text
+http://localhost:8000/api/health
 ```
 
 ### Frontend
@@ -212,52 +178,95 @@ http://localhost:5173
 
 ## Bien moi truong quan trong
 
-Can co it nhat:
+Can co toi thieu:
 
 ```env
 MONGODB_URI=mongodb://localhost:27017/learning_path_ai
 SECRET_KEY=your-secret-key
-GEMINI_API_KEY=your-gemini-api-key
-CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 ```
 
-Mot so bien hay dung:
+Nen co them:
 
 ```env
-RAG_MODEL=models/gemini-2.5-flash
-RAG_MAX_CONTEXT_CHARS=2000
-RAG_DIRECT_ANSWER_THRESHOLD=0.80
-LESSON_QUESTION_GENERATION_MODE=hybrid
-LESSON_QUESTION_BANK_SIZE=20
-LESSON_QUIZ_ATTEMPT_SIZE=10
-PROGRESS_ALPHA=0.3
-UPLOAD_DIR=backend/uploads
+GEMINI_API_KEY=your-gemini-api-key
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000
+DB_NAME=learning_path_ai
+VITE_API_URL=http://localhost:8000
+VITE_API_BASE_PATH=/api
+UPLOAD_DIR=./backend/uploads
 ```
 
-## Kiem tra nhanh
+Luu y:
+- Backend hien da ho tro ca `MONGODB_URI` va `MONGO_URI`, nhung nen uu tien dung `MONGODB_URI` de dong bo voi `.env.example`.
+- `SECRET_KEY` khong duoc de gia tri mac dinh `CHANGE_THIS_SECRET_KEY`.
 
-### Backend
+## Kiem tra nhanh backend
+
+### 1. Kiem tra compile
 
 ```bash
 python -m compileall backend
 ```
 
-### Frontend
+### 2. Kiem tra env startup
 
 ```bash
-cd frontend
-cmd /c npm run type-check
+python -c "from backend.main import validate_env; validate_env(); print('env ok')"
 ```
 
-## Luu y
+### 3. Kiem tra MongoDB
 
-- Backend da duoc re-structure theo package chuc nang, nen README cu co the khong con dung.
-- Neu kiem tra import runtime that su, can dam bao da cai cac dependency nhu `passlib`, `python-jose`, `pymongo`, `google-genai`, `pypdf`, `pytube`, `youtube-transcript-api`.
-- Thu muc `backend/uploads` dung de luu file PDF upload.
+```bash
+python -c "from backend.app.database.mongo import get_db; print(get_db().command('ping'))"
+```
 
-## Huong mo rong tiep
+### 4. Kiem tra app bang TestClient
 
-- bo sung test cho tung package chuc nang
-- viet docs rieng cho database collections
-- bo sung so do sequence cho luong `ask -> progress -> adaptive -> learning path`
-- tach them business rules lon trong `learning_path/service.py` va `ai_tutor/service.py` neu muon chia nho hon
+```bash
+python -c "from fastapi.testclient import TestClient; from backend.main import app; c=TestClient(app); print(c.get('/api/health').status_code)"
+```
+
+### 5. Chay smoke test backend bang pytest
+
+```bash
+python -m pytest tests/test_backend_smoke.py
+```
+
+Bo test nay bao phu:
+- startup, health, docs redirect
+- auth gate cho cac route protected
+- users, subjects, chapters, lessons
+- resources, progress, ask
+- learning-path, learning-paths
+- recommendations va concepts
+
+Neu can test day du vong doi startup:
+
+```bash
+@'
+from fastapi.testclient import TestClient
+from backend.main import app
+
+with TestClient(app) as client:
+    print(client.get("/api/ready").json())
+'@ | python -
+```
+
+## Scripts frontend
+
+Trong `frontend/package.json`:
+
+```bash
+npm run dev
+npm run build
+npm run preview
+npm run type-check
+npm run lint
+```
+
+## Ghi chu cho nguoi dev
+
+- README cu khong con dung o mot so phan package/service, vi backend da doi cau truc.
+- Trong workspace hien tai, backend khoi dong duoc sau khi dong bo cach doc `.env` giua `backend/main.py` va `backend/app/database/mongo.py`.
+- Da bo sung smoke suite tai `tests/test_backend_smoke.py` va fixture tai `tests/conftest.py`.
+- Neu muon kiem tra sau hon, buoc tiep theo nen la them test `pytest` cho auth, resources, learning-path va progress.

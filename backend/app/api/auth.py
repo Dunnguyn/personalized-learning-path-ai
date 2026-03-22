@@ -15,7 +15,7 @@ All operations include:
 - Type hints + docstrings
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, EmailStr, Field
 from jose import jwt, JWTError
@@ -47,7 +47,7 @@ pwd_context = CryptContext(
     deprecated="auto"
 )
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -274,8 +274,8 @@ def signup(payload: SignupRequest):
             "password": hashed_password,
             "name": payload.fullName,
             "level": "beginner",
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
         }
         
         # Insert into database

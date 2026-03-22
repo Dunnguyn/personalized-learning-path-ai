@@ -18,7 +18,6 @@ export default function Resources() {
   const [totalResults, setTotalResults] = useState(0);
   const pageSize = 12;
 
-  // Filters
   const [filters, setFilters] = useState({
     level: '',
     source: '',
@@ -26,18 +25,14 @@ export default function Resources() {
 
   const [showAddResource, setShowAddResource] = useState(false);
   const [addResourceType, setAddResourceType] = useState<'pdf' | 'youtube' | 'web'>('web');
-
-  // Loading states
   const [uploadingPDF, setUploadingPDF] = useState(false);
   const [addingResource, setAddingResource] = useState(false);
 
-  // Video player state
   const [playingVideo, setPlayingVideo] = useState<{
     videoId: string;
     title: string;
   } | null>(null);
 
-  // PDF viewer state
   const [viewingPDF, setViewingPDF] = useState<{
     title: string;
     resourceId: string;
@@ -119,7 +114,10 @@ export default function Resources() {
     setError(null);
 
     try {
-      await resourceService.uploadPDF(file, topic, level);
+      const response = await resourceService.uploadPDF(file, topic, level);
+      if (!response.success) {
+        throw new Error(response.error || 'Error uploading PDF');
+      }
       setShowAddResource(false);
       (e.currentTarget as HTMLFormElement).reset();
       await fetchResources();
@@ -148,7 +146,10 @@ export default function Resources() {
     setError(null);
 
     try {
-      await resourceService.addYouTubeResource(url, title, topic, level);
+      const response = await resourceService.addYouTubeResource(url, title, topic, level);
+      if (!response.success) {
+        throw new Error(response.error || 'Error adding YouTube resource');
+      }
       setShowAddResource(false);
       (e.currentTarget as HTMLFormElement).reset();
       await fetchResources();
@@ -165,10 +166,11 @@ export default function Resources() {
     const form = new FormData(e.currentTarget as HTMLFormElement);
     const url = form.get('web_url') as string;
     const title = form.get('title') as string;
+    const content = form.get('content') as string;
     const topic = form.get('topic') as string;
     const level = form.get('level') as any;
 
-    if (!url || !title || !topic) {
+    if (!title || !topic || !content) {
       setError('Please fill in all fields');
       return;
     }
@@ -177,7 +179,16 @@ export default function Resources() {
     setError(null);
 
     try {
-      await resourceService.addWebResource(url, title, topic, level, 0);
+      const response = await resourceService.addWebResource({
+        url,
+        title,
+        content,
+        topic,
+        level,
+      });
+      if (!response.success) {
+        throw new Error(response.error || 'Error adding web resource');
+      }
       setShowAddResource(false);
       (e.currentTarget as HTMLFormElement).reset();
       await fetchResources();
@@ -191,14 +202,11 @@ export default function Resources() {
 
   const totalPages = Math.ceil(totalResults / pageSize);
 
-  // Helper function to extract YouTube video ID
   const extractVideoId = (resource: Resource): string | null => {
-    // Try to get from video_id field first
     if (resource.video_id) {
       return resource.video_id;
     }
 
-    // Try to extract from youtube_url or url
     const url = resource.youtube_url || resource.url;
     if (!url) return null;
 
@@ -218,14 +226,11 @@ export default function Resources() {
     return null;
   };
 
-  // Helper function to get YouTube thumbnail URL
   const getYouTubeThumbnail = (resource: Resource): string | null => {
-    // Try to get from metadata first
     if (resource.video_metadata?.thumbnail_url) {
       return resource.video_metadata.thumbnail_url;
     }
 
-    // Fallback: use extractVideoId helper
     const videoId = extractVideoId(resource);
     if (videoId) {
       return `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
@@ -234,7 +239,6 @@ export default function Resources() {
     return null;
   };
 
-  // Handle click on YouTube thumbnail to play video
   const handlePlayVideo = (resource: Resource) => {
     const videoId = extractVideoId(resource);
     if (videoId) {
@@ -261,21 +265,17 @@ export default function Resources() {
   return (
     <DashboardLayout>
       <div className="max-w-[1190px]">
-        {/* Page Title */}
         <h1 className="text-[25px] font-semibold text-[#8f1025] mb-[30px] mt-[25px]">
           Tài nguyên học tập
         </h1>
 
-        {/* Error Alert */}
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-[12px] mb-[40px] text-[14px]">
             ✕ {error}
           </div>
         )}
 
-        {/* Search & Controls */}
         <div className="mb-[40px] space-y-4">
-          {/* Search Bar */}
           <form onSubmit={handleSearch} className="flex gap-3">
             <input
               type="text"
@@ -292,9 +292,7 @@ export default function Resources() {
             </button>
           </form>
 
-          {/* Filter Bar */}
           <div className="flex flex-wrap gap-3 items-center">
-            {/* Level Filter */}
             <select
               value={filters.level}
               onChange={(e) => handleFilterChange('level', e.target.value)}
@@ -306,7 +304,6 @@ export default function Resources() {
               <option value="advanced">Nâng cao</option>
             </select>
 
-            {/* Source Filter */}
             <select
               value={filters.source}
               onChange={(e) => handleFilterChange('source', e.target.value)}
@@ -318,7 +315,6 @@ export default function Resources() {
               <option value="web">Web</option>
             </select>
 
-            {/* Add Resource Button */}
             <button
               onClick={() => setShowAddResource(!showAddResource)}
               className="bg-white border border-[#8f1025] text-[#8f1025] text-[13px] font-medium px-4 py-2 rounded-[10px] hover:bg-gray-50 transition-colors ml-auto"
@@ -328,7 +324,6 @@ export default function Resources() {
           </div>
         </div>
 
-        {/* Add Resource Form */}
         {showAddResource && (
           <div className="bg-white border border-[#ce6a86] rounded-[20px] p-8 mb-[40px]">
             <div className="flex gap-4 mb-6">
@@ -342,7 +337,7 @@ export default function Resources() {
                       : 'bg-gray-100 text-[#8f1025] hover:bg-gray-200'
                   }`}
                 >
-                  {type === 'web' ? '🌐 Web' : type === 'youtube' ? '▶️ YouTube' : '📄 PDF'}
+                  {type === 'web' ? 'Web' : type === 'youtube' ? 'YouTube' : 'PDF'}
                 </button>
               ))}
             </div>
@@ -359,8 +354,7 @@ export default function Resources() {
                 <input
                   type="url"
                   name="web_url"
-                  placeholder="URL"
-                  required
+                  placeholder="URL (tùy chọn)"
                   className="w-full px-4 py-2 border border-[#e4b6d0] rounded-[10px] text-[13px] focus:outline-none focus:ring-2 focus:ring-[#8f1025]"
                 />
                 <input
@@ -369,6 +363,13 @@ export default function Resources() {
                   placeholder="Chủ đề"
                   required
                   className="w-full px-4 py-2 border border-[#e4b6d0] rounded-[10px] text-[13px] focus:outline-none focus:ring-2 focus:ring-[#8f1025]"
+                />
+                <textarea
+                  name="content"
+                  placeholder="Nội dung tài nguyên hoặc mô tả chi tiết"
+                  required
+                  rows={5}
+                  className="w-full px-4 py-2 border border-[#e4b6d0] rounded-[10px] text-[13px] focus:outline-none focus:ring-2 focus:ring-[#8f1025] resize-y"
                 />
                 <select
                   name="level"
@@ -492,7 +493,6 @@ export default function Resources() {
           </div>
         )}
 
-        {/* Resources Grid */}
         {loading ? (
           <div className="flex items-center justify-center min-h-[400px]">
             <div className="text-center">
@@ -502,8 +502,10 @@ export default function Resources() {
           </div>
         ) : resources.length === 0 ? (
           <div className="bg-white border border-[#ce6a86] rounded-[20px] p-[60px] text-center">
-            <p className="text-[#8f1025] text-[16px]">📭 Không tìm thấy tài nguyên nào</p>
-            <p className="text-gray-500 text-[13px] mt-2">Hãy thử tìm kiếm hoặc thêm tài nguyên mới</p>
+            <p className="text-[#8f1025] text-[16px]">Không tìm thấy tài nguyên nào</p>
+            <p className="text-gray-500 text-[13px] mt-2">
+              Hãy thử tìm kiếm hoặc thêm tài nguyên mới
+            </p>
           </div>
         ) : (
           <>
@@ -513,7 +515,6 @@ export default function Resources() {
                   key={resource.resource_id}
                   className="bg-white border border-[#832e44] rounded-[5px] hover:shadow-lg transition-all overflow-hidden"
                 >
-                  {/* Header */}
                   <div className="p-[13px]">
                     <div className="flex items-start justify-between mb-2">
                       <div className="flex-1">
@@ -534,19 +535,22 @@ export default function Resources() {
                       </span>
                     </div>
 
-                    {/* Source Label */}
                     <p className="text-[12px] text-[#5b1724] mb-3">
-                      Nguồn: {resource.source === 'pdf' ? 'PDF' : resource.source === 'youtube' ? 'Youtube' : 'Link Web'}
+                      Nguồn: {resource.source === 'pdf' ? 'PDF' : resource.source === 'youtube' ? 'YouTube' : 'Link Web'}
                     </p>
+                    {(resource.snippet || resource.content_summary) && (
+                      <p className="text-[12px] text-[#6f2b3b] line-clamp-2">
+                        {resource.snippet || resource.content_summary}
+                      </p>
+                    )}
                   </div>
 
-                  {/* Preview Area */}
                   <div className="bg-[#fafafa] h-[309px] flex items-center justify-center shadow-[0px_0px_4px_0px_rgba(0,0,0,0.25)] mx-[13px] mb-[13px]">
                     {resource.source === 'youtube' ? (
                       (() => {
                         const thumbnailUrl = getYouTubeThumbnail(resource);
                         return thumbnailUrl ? (
-                          <div 
+                          <div
                             className="relative w-full h-full cursor-pointer group"
                             onClick={() => handlePlayVideo(resource)}
                           >
@@ -555,12 +559,11 @@ export default function Resources() {
                               alt={resource.title}
                               className="w-full h-full object-cover"
                               onError={(e) => {
-                                // Fallback if thumbnail fails to load
                                 e.currentTarget.style.display = 'none';
-                                e.currentTarget.parentElement!.innerHTML = '<p class="text-[10px] text-black text-center px-4">Thumbnail clip Youtube</p>';
+                                e.currentTarget.parentElement!.innerHTML =
+                                  '<p class="text-[10px] text-black text-center px-4">Thumbnail clip YouTube</p>';
                               }}
                             />
-                            {/* Play button overlay */}
                             <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-0 group-hover:bg-opacity-30 transition-all">
                               <div className="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center transform group-hover:scale-110 transition-transform opacity-80 group-hover:opacity-100">
                                 <svg className="w-8 h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
@@ -570,18 +573,16 @@ export default function Resources() {
                             </div>
                           </div>
                         ) : (
-                          <p className="text-[10px] text-black text-center px-4">
-                            Thumbnail clip Youtube
-                          </p>
+                          <p className="text-[10px] text-black text-center px-4">Thumbnail clip YouTube</p>
                         );
                       })()
                     ) : resource.source === 'pdf' ? (
-                      <div 
+                      <div
                         className="relative w-full h-full cursor-pointer group"
                         onClick={() => {
                           const resourceId = resource.resource_id || resource._id || resource.id || '';
                           if (!resourceId) {
-                            setError('Khong tim thay ID tai nguyen PDF');
+                            setError('Không tìm thấy ID tài nguyên PDF');
                             return;
                           }
                           setViewingPDF({ title: resource.title, resourceId });
@@ -594,15 +595,15 @@ export default function Resources() {
                             className="w-full h-full object-cover"
                             onError={(e) => {
                               e.currentTarget.style.display = 'none';
-                              e.currentTarget.parentElement!.innerHTML = '<p class="text-[10px] text-gray-600 text-center px-4 flex items-center justify-center h-full">📄 PDF không có preview</p>';
+                              e.currentTarget.parentElement!.innerHTML =
+                                '<p class="text-[10px] text-gray-600 text-center px-4 flex items-center justify-center h-full">PDF không có preview</p>';
                             }}
                           />
                         ) : (
                           <div className="w-full h-full bg-gray-100 flex items-center justify-center text-center px-4">
-                            <p className="text-[10px] text-gray-600">📄 PDF</p>
+                            <p className="text-[10px] text-gray-600">PDF</p>
                           </div>
                         )}
-                        {/* Hover overlay */}
                         <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-all flex items-center justify-center">
                           <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-white rounded-full p-3">
                             <svg className="w-6 h-6 text-[#8f1025]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -620,7 +621,6 @@ export default function Resources() {
               ))}
             </div>
 
-            {/* Pagination */}
             {totalPages > 1 && (
               <div className="flex justify-center gap-2 mb-[40px]">
                 <button
@@ -655,26 +655,23 @@ export default function Resources() {
           </>
         )}
 
-        {/* Stats */}
         {resources.length > 0 && (
           <div className="text-center text-[13px] text-gray-600 mt-[40px]">
-            Hiển thị {(currentPage - 1) * pageSize + 1} đến {Math.min(currentPage * pageSize, totalResults)} trên
-            tổng {totalResults} tài nguyên
+            Hiển thị {(currentPage - 1) * pageSize + 1} đến {Math.min(currentPage * pageSize, totalResults)} trên tổng{' '}
+            {totalResults} tài nguyên
           </div>
         )}
       </div>
 
-      {/* Video Player Modal */}
       {playingVideo && (
-        <div 
+        <div
           className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"
           onClick={() => setPlayingVideo(null)}
         >
-          <div 
+          <div
             className="bg-white rounded-[20px] overflow-hidden max-w-4xl w-full shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
             <div className="bg-[#8f1025] px-6 py-4 flex items-center justify-between">
               <h3 className="text-white font-semibold text-[16px] flex-1 pr-4 line-clamp-1">
                 {playingVideo.title}
@@ -690,8 +687,7 @@ export default function Resources() {
               </button>
             </div>
 
-            {/* Video Player */}
-            <div className="relative w-full" style={{ paddingBottom: '56.25%' /* 16:9 aspect ratio */ }}>
+            <div className="relative w-full" style={{ paddingBottom: '56.25%' }}>
               <iframe
                 className="absolute inset-0 w-full h-full"
                 src={`https://www.youtube.com/embed/${playingVideo.videoId}?autoplay=1`}
@@ -705,8 +701,7 @@ export default function Resources() {
         </div>
       )}
 
-      {/* PDF Viewer Modal */}
-      <PDFViewer 
+      <PDFViewer
         isOpen={!!viewingPDF}
         title={viewingPDF?.title || ''}
         resourceId={viewingPDF?.resourceId || ''}

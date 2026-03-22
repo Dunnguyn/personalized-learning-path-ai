@@ -28,3 +28,70 @@ body {
   width: 100%;
   height: 100vh;
 }
+
+/* React Flow Customization */
+.react-flow {
+  background: white;
+}
+
+.react-flow__controls {
+  box-shadow: 0 0 12px rgba(206, 106, 134, 0.15);
+  border-radius: 8px;
+}
+
+.react-flow__controls-button {
+  border: 1px solid #ce6a86;
+  background-color: white;
+}
+
+.react-flow__controls-button:hover {
+  background-color: #f7dfed;
+}
+
+.react-flow__controls-button svg {
+  fill: #8f1025;
+}
+
+/* Background styling */
+.react-flow__background {
+  background-color: #fafafa;
+}
+
+.react-flow__panel {
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+/* Node styling */
+.react-flow__node {
+  user-select: none;
+}
+
+.react-flow__node-lesson {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  width: auto;
+}
+
+/* Edge styling */
+.react-flow__edges {
+  display: block;
+}
+
+.react-flow__edge-path {
+  stroke: #c85d7c;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+/* Handle styling */
+.react-flow__handle {
+  background-color: #c85d7c;
+  border: 3px solid #ffffff;
+  width: 18px;
+  height: 18px;
+  box-shadow: 0 0 0 1px rgba(143, 16, 37, 0.12);
+}

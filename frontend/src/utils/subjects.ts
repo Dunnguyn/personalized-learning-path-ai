@@ -5,11 +5,9 @@ export type SubjectOption = {
 };
 
 export const SUBJECTS: SubjectOption[] = [
-  { id: 'python', label: 'Lập trình Python', goal: 'Học lập trình Python' },
-  { id: 'cpp', label: 'Lập trình C++', goal: 'Học lập trình C++' },
-  { id: 'csharp', label: 'Lập trình C#', goal: 'Học lập trình C#' },
-  { id: 'java', label: 'Lập trình Java', goal: 'Học lập trình Java' },
-  { id: 'javascript', label: 'Lập trình JavaScript', goal: 'Học lập trình JavaScript' },
-  { id: 'web', label: 'Phát triển Web', goal: 'Học phát triển Web' },
-  { id: 'data', label: 'Khoa học dữ liệu', goal: 'Học khoa học dữ liệu' }
+  { id: 'python', label: 'L\u1eadp tr\u00ecnh Python', goal: 'H\u1ecdc l\u1eadp tr\u00ecnh Python' },
+  { id: 'cpp', label: 'L\u1eadp tr\u00ecnh C++', goal: 'H\u1ecdc l\u1eadp tr\u00ecnh C++' },
+  { id: 'csharp', label: 'L\u1eadp tr\u00ecnh C#', goal: 'H\u1ecdc l\u1eadp tr\u00ecnh C#' },
+  { id: 'java', label: 'L\u1eadp tr\u00ecnh Java', goal: 'H\u1ecdc l\u1eadp tr\u00ecnh Java' },
+  { id: 'web', label: 'Ph\u00e1t tri\u1ec3n Web', goal: 'H\u1ecdc ph\u00e1t tri\u1ec3n Web' }
 ];

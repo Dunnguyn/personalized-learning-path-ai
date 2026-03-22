@@ -10,16 +10,44 @@ class LevelEnum(str, Enum):
     advanced = "advanced"
 
 
+class SubjectIdEnum(str, Enum):
+    python = "python"
+    cpp = "cpp"
+    csharp = "csharp"
+    java = "java"
+    web = "web"
+
+
 class SourceEnum(str, Enum):
     pdf = "pdf"
     youtube = "youtube"
     web = "web"
+    manual = "manual"
+
+
+class ResourceTypeEnum(str, Enum):
+    pdf = "pdf"
+    youtube = "youtube"
+    text = "text"
 
 
 class PedagogyEnum(str, Enum):
     video = "video"
     text = "text"
     quiz = "quiz"
+
+
+class BloomLevelEnum(str, Enum):
+    remember = "remember"
+    understand = "understand"
+    apply = "apply"
+    analyze = "analyze"
+
+
+class LessonQuestionTypeEnum(str, Enum):
+    multiple_choice = "multiple_choice"
+    short_answer = "short_answer"
+    true_false = "true_false"
 
 
 # =========================
@@ -102,10 +130,11 @@ class PrerequisiteCreate(BaseModel):
 class ResourceCreate(BaseModel):
     title: str = Field(..., min_length=3, max_length=500)
     content: str = Field(..., min_length=10)
-    source: SourceEnum
+    source: SourceEnum = SourceEnum.manual
+    type: ResourceTypeEnum = ResourceTypeEnum.text
     topic: str = Field(..., min_length=2, max_length=200)
     level: LevelEnum
-    concept_id: int = Field(..., ge=1)
+    concept_id: Optional[int] = Field(None, ge=1)
     url: Optional[str] = None
 
 
@@ -125,15 +154,18 @@ class ResourceMetadataCreate(BaseModel):
 class ResourceImport(BaseModel):
     title: str = Field(..., min_length=3, max_length=500)
     content: str = Field(..., min_length=10)
-    source: SourceEnum
+    source: SourceEnum = SourceEnum.manual
+    type: ResourceTypeEnum = ResourceTypeEnum.text
+    topic: str = Field(..., min_length=2, max_length=200)
+    level: LevelEnum = LevelEnum.beginner
     url: Optional[str] = None
-    concept_id: int = Field(..., ge=1)
+    concept_id: Optional[int] = Field(None, ge=1)
     pedagogy_type: Optional[PedagogyEnum] = None
     bloom_level: Optional[str] = None
 
 
 class ResourceImportRequest(BaseModel):
-    resources: List[ResourceImport] = Field(..., min_items=1, max_items=1000)
+    resources: List[ResourceImport] = Field(..., min_length=1, max_length=1000)
 
 
 # =========================
@@ -154,7 +186,157 @@ class YouTubeImportRequest(BaseModel):
             "level": "beginner",
             "concept_id": 1
         }
-    })
+    })    
+
+
+class SubjectCreate(BaseModel):
+    title: str = Field(..., min_length=2, max_length=200)
+    slug: Optional[str] = Field(default=None, min_length=2, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    topic: Optional[str] = Field(default=None, max_length=200)
+    level: LevelEnum = LevelEnum.beginner
+    metadata: dict = Field(default_factory=dict)
+
+
+class SubjectResponse(SubjectCreate):
+    subject_id: str
+    created_at: datetime
+
+
+class ChapterCreate(BaseModel):
+    subject_id: str = Field(..., description="MongoDB ObjectId")
+    title: str = Field(..., min_length=2, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    order: int = Field(default=1, ge=1)
+    topic: Optional[str] = Field(default=None, max_length=200)
+    metadata: dict = Field(default_factory=dict)
+
+
+class ChapterResponse(ChapterCreate):
+    chapter_id: str
+    created_at: datetime
+
+
+class LessonCreate(BaseModel):
+    subject_id: str = Field(..., description="MongoDB ObjectId")
+    chapter_id: str = Field(..., description="MongoDB ObjectId")
+    title: str = Field(..., min_length=2, max_length=200)
+    summary: Optional[str] = Field(default=None, max_length=4000)
+    order: int = Field(default=1, ge=1)
+    topic: Optional[str] = Field(default=None, max_length=200)
+    level: LevelEnum = LevelEnum.beginner
+    learning_objectives: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    resource_ids: List[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+
+
+class LessonNodeResponse(LessonCreate):
+    lesson_id: str
+    created_at: datetime
+
+
+class LessonRecommendedChunksRequest(BaseModel):
+    max_chunks: int = Field(default=8, ge=1, le=30)
+    selection_strategy: str = Field(default="local_semantic_lesson_scope_v1", min_length=3, max_length=100)
+    resource_ids: List[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+
+
+class RecommendedChunkItem(BaseModel):
+    chunk_id: str
+    resource_id: str
+    chunk_index: int
+    score: float
+    preview: str
+
+
+class LessonRecommendedChunksResponse(BaseModel):
+    recommendation_id: str
+    subject_id: str
+    chapter_id: str
+    lesson_id: str
+    chunk_ids: List[str]
+    resource_ids: List[str]
+    selection_strategy: str
+    metadata: dict = Field(default_factory=dict)
+    recommended_chunks: List[RecommendedChunkItem] = Field(default_factory=list)
+    created_at: datetime
+
+
+class LessonQuestionGenerationRequest(BaseModel):
+    target_count: int = Field(default=5, ge=1, le=20)
+    question_types: List[LessonQuestionTypeEnum] = Field(
+        default_factory=lambda: [LessonQuestionTypeEnum.multiple_choice]
+    )
+    difficulty: LevelEnum = LevelEnum.beginner
+    bloom_levels: List[BloomLevelEnum] = Field(
+        default_factory=lambda: [BloomLevelEnum.remember, BloomLevelEnum.understand]
+    )
+    overwrite: bool = False
+    metadata: dict = Field(default_factory=dict)
+
+
+class QuestionBankItemResponse(BaseModel):
+    question_id: str
+    subject_id: str
+    chapter_id: str
+    lesson_id: str
+    chunk_ids: List[str]
+    resource_ids: List[str]
+    question_type: LessonQuestionTypeEnum
+    question: str
+    correct_answer: str
+    distractors: List[str] = Field(default_factory=list)
+    explanation: str
+    difficulty: LevelEnum
+    bloom_level: BloomLevelEnum
+    is_ai_generated: bool = True
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    metadata: dict = Field(default_factory=dict)
+    created_at: datetime
+
+
+class LessonQuestionGenerationResponse(BaseModel):
+    lesson_id: str
+    status: str
+    generated_count: int
+    question_ids: List[str] = Field(default_factory=list)
+    chunks_used: List[str] = Field(default_factory=list)
+    insufficient_data: bool = False
+    message: str = ""
+
+
+class LessonQuestionBankResponse(BaseModel):
+    lesson_id: str
+    total: int
+    questions: List[QuestionBankItemResponse]
+
+
+class ResourceIngestionResponse(BaseModel):
+    resource_id: str
+    job_id: Optional[str] = None
+    status: str
+    chunks_count: int
+    processing_time: float
+    duplicate: bool = False
+
+
+class BatchResourceIngestionResponse(BaseModel):
+    total: int
+    submitted: int
+    items: List[ResourceIngestionResponse]
+
+
+class IngestionJobStatusResponse(BaseModel):
+    job_id: str
+    resource_id: str
+    status: str
+    chunks_count: int
+    processing_time: float
+    error: Optional[str] = None
+    resource_status: Optional[str] = None
 
 
 # =========================
@@ -192,43 +374,26 @@ class LearningPathItemResponse(BaseModel):
     resources: list = Field(default_factory=list)
 
 
-class LessonAssessmentQuestionResponse(BaseModel):
-    question_id: str
-    question: str
-    answer: str
-    explanation: str
-    difficulty: str
-    concept: str
-    options: List[dict] = Field(default_factory=list)
-    correct_option: str = "A"
-
-
-class LessonAssessmentResponse(BaseModel):
-    required_questions: int = 10
-    attempted_questions: int = 0
-    completed: bool = False
-    generation: int = 0
-    correct_answers: int = 0
-    min_correct_required: int = 7
-    passed: bool = False
-    score_percent: float = 0.0
-    questions: List[LessonAssessmentQuestionResponse] = Field(default_factory=list)
-    question_results: List[dict] = Field(default_factory=list)
-
-
-class LessonResponse(BaseModel):
+class CurriculumLessonResponse(BaseModel):
     lesson_id: str
     title: str
     summary: str
     resources: list = Field(default_factory=list)
     status: Optional[str] = None
-    assessment: Optional[LessonAssessmentResponse] = None
 
 
-class ChapterResponse(BaseModel):
+class CurriculumChapterResponse(BaseModel):
     chapter_id: Optional[str] = None
     title: str
-    lessons: List[LessonResponse]
+    lessons: List[CurriculumLessonResponse]
+
+
+class LLMStatusResponse(BaseModel):
+    provider: str
+    enabled: bool
+    cooldown_active: bool = False
+    reason: Optional[str] = None
+    model: Optional[str] = None
 
 
 class LearningPathResponse(BaseModel):
@@ -238,18 +403,59 @@ class LearningPathResponse(BaseModel):
     level: LevelEnum
     generated_at: datetime
     recommended_path: List[LearningPathItemResponse]
-    curriculum: Optional[List[ChapterResponse]] = None
+    curriculum: Optional[List[CurriculumChapterResponse]] = None
     curriculum_source: str = "fallback"
     curriculum_notice: Optional[str] = None
+    llm_status: Optional[LLMStatusResponse] = None
     message: str = ""
+
+
+class GeneratedLearningPathLessonResponse(BaseModel):
+    lesson_id: str
+    title: str
+    summary: Optional[str] = None
+    recommended_chunk_ids: List[str] = Field(default_factory=list)
+    status: Optional[str] = None
+
+
+class GeneratedLearningPathChapterResponse(BaseModel):
+    chapter_id: str
+    title: str
+    lessons: List[GeneratedLearningPathLessonResponse]
+
+
+class LearningPathGenerateRequest(BaseModel):
+    subject_id: SubjectIdEnum
+    goal: str = Field(..., min_length=3, max_length=500)
+    level: LevelEnum
+
+
+class GeneratedLearningPathResponse(BaseModel):
+    path_id: str
+    subject_id: SubjectIdEnum
+    goal: str
+    level: LevelEnum
+    generated_at: Optional[datetime] = None
+    chapters: List[GeneratedLearningPathChapterResponse]
+    curriculum_source: str = "fallback"
+    llm_status: Optional[LLMStatusResponse] = None
+    message: str = ""
+
+
+class LearningPathHistoryItemResponse(BaseModel):
+    path_id: str
+    subject_id: SubjectIdEnum
+    goal: str
+    level: LevelEnum
+    generated_at: datetime
+    chapter_count: int = 0
+    lesson_count: int = 0
 
 
 class LessonProgressUpdate(BaseModel):
     path_id: str = Field(..., description="Learning path UUID")
     lesson_id: str = Field(..., description="Lesson identifier")
     status: Literal["not_started", "in_progress", "complete"]
-    answered_questions: Optional[List[str]] = None
-    restart_assessment: bool = False
 
 
 class LessonProgressResponse(BaseModel):
@@ -257,192 +463,6 @@ class LessonProgressResponse(BaseModel):
     lesson_id: str
     status: str
     updated_at: datetime
-    assessment_result: Optional[dict] = None
-
-
-# =========================
-# LESSON QUESTION BANK / QUIZ
-# =========================
-class QuestionBankOptionResponse(BaseModel):
-    key: str
-    text: str
-
-
-class QuestionBankQuestionResponse(BaseModel):
-    question_id: str
-    lesson_id: str
-    concept: str
-    relation_type: str
-    bloom_level: str = "remember"
-    question_text: str
-    answer: str
-    template_id: str
-    difficulty: int = 1
-    related_concepts: List[str] = Field(default_factory=list)
-    keywords: List[str] = Field(default_factory=list)
-    source_excerpt: str = ""
-    source_chunk_id: Optional[str] = None
-    options: List[QuestionBankOptionResponse] = Field(default_factory=list)
-    correct_option: str = "A"
-
-
-class PublicQuestionBankQuestionResponse(BaseModel):
-    question_id: str
-    lesson_id: str
-    concept: str
-    relation_type: str
-    bloom_level: str = "remember"
-    question_text: str
-    template_id: str
-    difficulty: int = 1
-    related_concepts: List[str] = Field(default_factory=list)
-    keywords: List[str] = Field(default_factory=list)
-    source_excerpt: str = ""
-    source_chunk_id: Optional[str] = None
-    options: List[QuestionBankOptionResponse] = Field(default_factory=list)
-
-
-class GenerateLessonQuestionBankRequest(BaseModel):
-    lesson_id: str = Field(..., min_length=1, description="Lesson identifier")
-
-
-class LessonQuestionBankResponse(BaseModel):
-    lesson_id: str
-    chapter_id: str
-    concept_list: List[dict] = Field(default_factory=list)
-    total_questions: int
-    questions: List[PublicQuestionBankQuestionResponse] = Field(default_factory=list)
-    created_at: datetime
-    updated_at: datetime
-
-
-class LessonQuestionBankSummaryResponse(BaseModel):
-    lesson_id: str
-    chapter_id: str
-    concept_list: List[dict] = Field(default_factory=list)
-    total_questions: int
-    created_at: datetime
-    updated_at: datetime
-
-
-class LessonQuestionBankListResponse(BaseModel):
-    total: int
-    items: List[LessonQuestionBankSummaryResponse] = Field(default_factory=list)
-
-
-class LessonQuestionGenerationConceptResponse(BaseModel):
-    concept_id: str
-    name: str
-    normalized_name: str
-    concept_type: str
-    keywords: List[str] = Field(default_factory=list)
-    difficulty: Optional[int] = None
-
-
-class LessonQuestionGenerationRelationResponse(BaseModel):
-    source_concept: str
-    target_concept: str
-    relation_type: str
-
-
-class LessonQuestionGenerationDebugResponse(BaseModel):
-    lesson_id: str
-    chapter_id: str
-    target_question_count: int
-    generated_question_count: int
-    can_generate_quiz: bool
-    can_fill_question_bank: bool
-    concept_count: int
-    concepts: List[LessonQuestionGenerationConceptResponse] = Field(default_factory=list)
-    relation_counts: dict = Field(default_factory=dict)
-    missing_relation_types: List[str] = Field(default_factory=list)
-    sample_relations: List[LessonQuestionGenerationRelationResponse] = Field(default_factory=list)
-    sample_questions: List[str] = Field(default_factory=list)
-
-
-class CreateLessonQuizAttemptRequest(BaseModel):
-    lesson_id: str = Field(..., min_length=1, description="Lesson identifier")
-
-
-class LessonQuizAttemptQuestionResponse(BaseModel):
-    question_id: str
-    lesson_id: str
-    concept: str
-    relation_type: str
-    bloom_level: str = "remember"
-    question_text: str
-    template_id: str
-    difficulty: int = 1
-    related_concepts: List[str] = Field(default_factory=list)
-    keywords: List[str] = Field(default_factory=list)
-    source_excerpt: str = ""
-    source_chunk_id: Optional[str] = None
-    options: List[QuestionBankOptionResponse] = Field(default_factory=list)
-
-
-class LessonQuizAttemptResponse(BaseModel):
-    attempt_id: str
-    user_id: str
-    lesson_id: str
-    attempt_number: int
-    selected_question_ids: List[str] = Field(default_factory=list)
-    pass_threshold_count: int
-    questions: List[LessonQuizAttemptQuestionResponse] = Field(default_factory=list)
-    created_at: datetime
-
-
-class SubmitLessonQuizRequest(BaseModel):
-    attempt_id: str = Field(..., min_length=1, description="Quiz attempt identifier")
-    user_answers: dict = Field(default_factory=dict, description="Mapping question_id -> selected option")
-
-
-class LessonQuizResultItemResponse(BaseModel):
-    question_id: str
-    selected_answer: str
-    correct_option: str
-    is_correct: bool
-    answer: str
-
-
-class SubmitLessonQuizResponse(BaseModel):
-    attempt_id: str
-    lesson_id: str
-    score: float
-    correct_count: int
-    total_questions: int
-    attempt_number: int
-    confidence_score: float
-    pass_threshold_count: int
-    is_passed: bool
-    submitted_at: datetime
-    results: List[LessonQuizResultItemResponse] = Field(default_factory=list)
-    can_retry: bool
-
-
-class AttemptConfidenceResponse(BaseModel):
-    attempt_id: str
-    lesson_id: str
-    confidence_score: float
-    correct_count: int
-    total_questions: int
-    attempt_number: int
-    is_passed: bool
-    score: float
-    submitted_at: Optional[datetime] = None
-
-
-class LessonConfidenceResponse(BaseModel):
-    lesson_id: str
-    confidence_score: float
-    mastery_score: float
-    best_confidence_score: float
-    correct_count: int
-    total_questions: int
-    attempt_number: int
-    is_passed: bool
-    score: float
-    band: str
-    updated_at: Optional[datetime] = None
 
 
 class UserConfidenceOverviewResponse(BaseModel):

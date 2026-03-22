@@ -6,8 +6,10 @@ export interface Resource {
   _id?: string;
   title: string;
   content?: string;
+  content_summary?: string;
   url?: string;
   source: string;
+  type?: string;
   topic: string;
   level: 'beginner' | 'intermediate' | 'advanced';
   concept_id?: number;
@@ -21,6 +23,8 @@ export interface Resource {
     duration?: number;
     channel?: string;
   };
+  score?: number;
+  snippet?: string;
 }
 
 export interface SearchResponse {
@@ -33,6 +37,8 @@ export interface SearchResponse {
 export interface UploadResponse {
   success: boolean;
   resource_id?: string;
+  job_id?: string;
+  status?: string;
   message?: string;
   error?: string;
 }
@@ -40,9 +46,6 @@ export interface UploadResponse {
 const DEFAULT_PAGE_SIZE = 10;
 const PDF_UPLOAD_TIMEOUT = 60000;
 
-/**
- * Wrap a promise with a timeout
- */
 function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
@@ -56,97 +59,109 @@ function withTimeout<T>(
   ]);
 }
 
-/**
- * Transform backend response to standard SearchResponse format
- */
+const normalizeLevel = (value: unknown): Resource['level'] => {
+  if (value === 'intermediate' || value === 'advanced') {
+    return value;
+  }
+  return 'beginner';
+};
+
+const normalizeResource = (resource: any): Resource => {
+  const metadata = resource?.metadata ?? {};
+  const videoMetadata = metadata?.video_metadata ?? resource?.video_metadata ?? {};
+
+  return {
+    ...resource,
+    id: resource?.id ? String(resource.id) : undefined,
+    resource_id: resource?.resource_id
+      ? String(resource.resource_id)
+      : resource?._id
+      ? String(resource._id)
+      : undefined,
+    _id: resource?._id ? String(resource._id) : undefined,
+    title: String(resource?.title ?? 'Tài nguyên'),
+    content: resource?.content ? String(resource.content) : undefined,
+    content_summary: resource?.content_summary ? String(resource.content_summary) : undefined,
+    url: resource?.url ?? metadata?.url,
+    source: String(resource?.source ?? 'manual'),
+    type: resource?.type ? String(resource.type) : undefined,
+    topic: String(resource?.topic ?? ''),
+    level: normalizeLevel(resource?.level ?? metadata?.level),
+    concept_id:
+      typeof resource?.concept_id === 'number'
+        ? resource.concept_id
+        : typeof metadata?.concept_id === 'number'
+        ? metadata.concept_id
+        : undefined,
+    thumbnail: resource?.thumbnail ?? metadata?.thumbnail,
+    pdf_file_path: resource?.pdf_file_path ?? metadata?.pdf_file_path,
+    created_at: resource?.created_at ? String(resource.created_at) : undefined,
+    video_id: resource?.video_id ?? metadata?.video_id,
+    youtube_url: resource?.youtube_url ?? metadata?.youtube_url ?? resource?.url,
+    video_metadata: {
+      thumbnail_url: videoMetadata?.thumbnail_url,
+      duration: videoMetadata?.duration,
+      channel: videoMetadata?.channel,
+    },
+    score: typeof resource?.score === 'number' ? resource.score : undefined,
+    snippet: resource?.snippet ? String(resource.snippet) : undefined,
+  };
+};
+
 function transformToSearchResponse(response: any): SearchResponse {
   if (Array.isArray(response)) {
+    const results = response.map(normalizeResource);
     return {
-      results: response,
-      total: response.length,
+      results,
+      total: results.length,
       page: 1,
       size: DEFAULT_PAGE_SIZE,
     };
   }
 
+  const rawResults =
+    (response as any)?.resources ||
+    (response as any)?.results ||
+    (response as any)?.data ||
+    [];
+
   return {
-    results: (response as any).resources || (response as any).results || (response as any).data || [],
-    total: (response as any).total || 0,
-    page: (response as any).page || 1,
-    size: (response as any).size || DEFAULT_PAGE_SIZE,
+    results: Array.isArray(rawResults) ? rawResults.map(normalizeResource) : [],
+    total: (response as any)?.total || (response as any)?.result_count || 0,
+    page: (response as any)?.page || 1,
+    size: (response as any)?.size || DEFAULT_PAGE_SIZE,
   };
 }
 
-// ==========================================
-// RESOURCE SERVICE
-// ==========================================
-
 export const resourceService = {
-  /**
-   * Search resources by query string
-   * 
-   * @param query - Search query
-   * @param page - Page number (1-indexed)
-   * @param size - Results per page
-   * @returns SearchResponse with results and pagination info
-   */
   async searchResources(
     query: string,
     page: number = 1,
     size: number = DEFAULT_PAGE_SIZE
   ): Promise<SearchResponse> {
-    try {
-      if (!query || query.trim().length === 0) {
-        return {
-          results: [],
-          total: 0,
-          page: 1,
-          size,
-        };
-      }
-
-      const endpoint = `/resources/search?q=${encodeURIComponent(query)}&page=${page}&size=${size}`;
-      const response = await apiClient.get(endpoint);
-      
-      return transformToSearchResponse(response);
-    } catch (error) {
-      console.error('Error searching resources:', error);
-      throw error;
+    if (!query || query.trim().length === 0) {
+      return {
+        results: [],
+        total: 0,
+        page: 1,
+        size,
+      };
     }
+
+    const endpoint = `/resources/search?q=${encodeURIComponent(query)}&page=${page}&size=${size}`;
+    const response = await apiClient.get(endpoint);
+    return transformToSearchResponse(response);
   },
 
-  /**
-   * Get resources by concept ID
-   * 
-   * @param conceptId - Concept ID to filter by
-   * @returns Array of resources for the concept
-   */
   async getResourcesByConceptId(conceptId: number): Promise<Resource[]> {
-    try {
-      if (!conceptId || conceptId <= 0) {
-        console.warn('Invalid concept ID:', conceptId);
-        return [];
-      }
-
-      const response = await apiClient.get(`/resources/?concept_id=${conceptId}`);
-      
-      if (Array.isArray(response)) {
-        return response as Resource[];
-      }
-      
-      return ((response as any).resources || (response as any).results || []) as Resource[];
-    } catch (error) {
-      console.error(`Error fetching resources for concept ${conceptId}:`, error);
+    if (!conceptId || conceptId <= 0) {
       return [];
     }
+
+    const response = await apiClient.get(`/resources?concept_id=${conceptId}`);
+    return transformToSearchResponse(response).results;
   },
 
-  /**
-   * Get all resources with optional filtering
-   * 
-   * @param filters - Filter options (topic, level, source, pagination)
-   * @returns SearchResponse with results and pagination
-   */
   async getAllResources(filters?: {
     topic?: string;
     level?: string;
@@ -154,37 +169,20 @@ export const resourceService = {
     page?: number;
     size?: number;
   }): Promise<SearchResponse> {
-    try {
-      const params = new URLSearchParams();
-      
-      // Add filter parameters
-      if (filters?.topic) params.append('topic', filters.topic);
-      if (filters?.level) params.append('level', filters.level);
-      if (filters?.source) params.append('source', filters.source);
-      if (filters?.page) params.append('page', filters.page.toString());
-      if (filters?.size) params.append('size', filters.size.toString());
+    const params = new URLSearchParams();
 
-      const query = params.toString();
-      const endpoint = query ? `/resources/?${query}` : '/resources/';
-      
-      const response = await apiClient.get(endpoint);
-      
-      return transformToSearchResponse(response);
-    } catch (error) {
-      console.error('Error fetching resources:', error);
-      throw error;
-    }
+    if (filters?.topic) params.append('topic', filters.topic);
+    if (filters?.level) params.append('level', filters.level);
+    if (filters?.source) params.append('source', filters.source);
+    if (filters?.page) params.append('page', filters.page.toString());
+    if (filters?.size) params.append('size', filters.size.toString());
+
+    const query = params.toString();
+    const endpoint = query ? `/resources?${query}` : '/resources';
+    const response = await apiClient.get(endpoint);
+    return transformToSearchResponse(response);
   },
 
-  /**
-   * Upload and import a PDF resource
-   * 
-   * @param file - PDF file object
-   * @param topic - Topic/subject of the resource
-   * @param level - Difficulty level
-   * @param conceptId - Optional concept ID to associate
-   * @returns Upload response with resource info
-   */
   async uploadPDF(
     file: File,
     topic: string,
@@ -192,7 +190,6 @@ export const resourceService = {
     conceptId?: number
   ): Promise<UploadResponse> {
     try {
-      // Validate inputs
       if (!file) {
         throw new Error('File is required');
       }
@@ -201,66 +198,63 @@ export const resourceService = {
         throw new Error('Topic is required');
       }
 
-      if (!level) {
-        throw new Error('Level is required');
-      }
-
-      // Check file size (max 100MB)
       const maxSize = 100 * 1024 * 1024;
       if (file.size > maxSize) {
         throw new Error('File size exceeds 100MB limit');
       }
 
-      // Create FormData
       const formData = new FormData();
       formData.append('file', file);
       formData.append('topic', topic.trim());
       formData.append('level', level);
-      
+
       if (conceptId && conceptId > 0) {
         formData.append('concept_id', conceptId.toString());
       }
 
-      // Use direct fetch with timeout for file upload (FormData not supported by apiClient yet)
       const controller = new AbortController();
-      const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-      
+      const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const apiBasePath = import.meta.env.VITE_API_BASE_PATH || '/api';
+      const normalizedBaseUrl = apiBaseUrl.replace(/\/$/, '');
+      const normalizedBasePath = apiBasePath.startsWith('/') ? apiBasePath : `/${apiBasePath}`;
+
       const response = (await withTimeout(
-        fetch(
-          `${API_BASE_URL}/api/resources/import-pdf`,
-          {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
-            },
-            body: formData,
-            signal: controller.signal,
-          }
-        ),
+        fetch(`${normalizedBaseUrl}${normalizedBasePath}/resources/import-pdf`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+          },
+          body: formData,
+          signal: controller.signal,
+        }),
         PDF_UPLOAD_TIMEOUT,
         'PDF upload timed out. The file may be too large or complex. Please try a smaller file.'
       )) as Response;
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({})) as any;
+        const errorData = (await response.json().catch(() => ({}))) as any;
         throw new Error(
-          errorData.detail || 
-          errorData.message || 
-          `Upload failed: ${response.statusText}`
+          errorData.detail ||
+            errorData.message ||
+            `Upload failed: ${response.statusText}`
         );
       }
 
-      const data = (await response.json()) as { resource_id?: string; id?: string; message?: string };
-      
+      const data = (await response.json()) as {
+        resource_id?: string;
+        job_id?: string;
+        status?: string;
+      };
+
       return {
         success: true,
-        resource_id: data.resource_id || data.id,
-        message: data.message || 'PDF uploaded successfully',
+        resource_id: data.resource_id,
+        job_id: data.job_id,
+        status: data.status,
+        message: 'PDF uploaded successfully',
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error occurred';
-      console.error('Error uploading PDF:', message);
-      
       return {
         success: false,
         error: message,
@@ -268,16 +262,6 @@ export const resourceService = {
     }
   },
 
-  /**
-   * Add a YouTube resource
-   * 
-   * @param url - YouTube URL
-   * @param title - Video title
-   * @param topic - Topic/subject
-   * @param level - Difficulty level
-   * @param conceptId - Optional concept ID
-   * @returns Upload response
-   */
   async addYouTubeResource(
     url: string,
     title: string,
@@ -286,17 +270,8 @@ export const resourceService = {
     conceptId?: number
   ): Promise<UploadResponse> {
     try {
-      // Validate inputs
       if (!url || (!url.includes('youtube.com') && !url.includes('youtu.be'))) {
         throw new Error('Please provide a valid YouTube URL');
-      }
-
-      if (!title || title.trim().length === 0) {
-        throw new Error('Title is required');
-      }
-
-      if (!topic || topic.trim().length === 0) {
-        throw new Error('Topic is required');
       }
 
       const response = (await apiClient.post('/resources/import-youtube', {
@@ -305,17 +280,21 @@ export const resourceService = {
         topic: topic.trim(),
         level,
         concept_id: conceptId && conceptId > 0 ? conceptId : undefined,
-      })) as { resource_id?: string; id?: string; message?: string };
+      })) as {
+        resource_id?: string;
+        job_id?: string;
+        status?: string;
+      };
 
       return {
         success: true,
-        resource_id: response.resource_id || response.id,
-        message: response.message || 'YouTube resource added successfully',
+        resource_id: response.resource_id,
+        job_id: response.job_id,
+        status: response.status,
+        message: 'YouTube resource added successfully',
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to add YouTube resource';
-      console.error('Error adding YouTube resource:', message);
-      
       return {
         success: false,
         error: message,
@@ -323,59 +302,51 @@ export const resourceService = {
     }
   },
 
-  /**
-   * Add a web (link) resource
-   * 
-   * @param url - Web URL
-   * @param title - Resource title
-   * @param topic - Topic/subject
-   * @param level - Difficulty level
-   * @param conceptId - Concept ID (required)
-   * @returns Upload response
-   */
   async addWebResource(
-    url: string,
-    title: string,
-    topic: string,
-    level: 'beginner' | 'intermediate' | 'advanced',
-    conceptId: number
+    data: {
+      title: string;
+      content: string;
+      topic: string;
+      level: 'beginner' | 'intermediate' | 'advanced';
+      url?: string;
+      conceptId?: number;
+    }
   ): Promise<UploadResponse> {
     try {
-      // Validate inputs
-      if (!url || !url.startsWith('http')) {
-        throw new Error('Please provide a valid URL starting with http/https');
-      }
-
-      if (!title || title.trim().length === 0) {
+      if (!data.title.trim()) {
         throw new Error('Title is required');
       }
-
-      if (!topic || topic.trim().length === 0) {
+      if (!data.content.trim() || data.content.trim().length < 10) {
+        throw new Error('Content must be at least 10 characters');
+      }
+      if (!data.topic.trim()) {
         throw new Error('Topic is required');
       }
 
-      if (!conceptId || conceptId <= 0) {
-        throw new Error('Concept ID is required for web resources');
-      }
-
-      const response = (await apiClient.post('/resources/', {
-        title: title.trim(),
-        url: url.trim(),
+      const response = (await apiClient.post('/resources', {
+        title: data.title.trim(),
+        content: data.content.trim(),
         source: 'web',
-        topic: topic.trim(),
-        level,
-        concept_id: conceptId,
-      })) as { resource_id?: string; id?: string; message?: string };
+        type: 'text',
+        topic: data.topic.trim(),
+        level: data.level,
+        url: data.url?.trim() || undefined,
+        concept_id: data.conceptId && data.conceptId > 0 ? data.conceptId : undefined,
+      })) as {
+        resource_id?: string;
+        job_id?: string;
+        status?: string;
+      };
 
       return {
         success: true,
-        resource_id: response.resource_id || response.id,
-        message: response.message || 'Web resource added successfully',
+        resource_id: response.resource_id,
+        job_id: response.job_id,
+        status: response.status,
+        message: 'Web resource added successfully',
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to add web resource';
-      console.error('Error adding web resource:', message);
-      
       return {
         success: false,
         error: message,
@@ -383,47 +354,24 @@ export const resourceService = {
     }
   },
 
-  /**
-   * Delete a resource by ID
-   * 
-   * @param resourceId - Resource ID to delete
-   * @returns Success status
-   */
-  async deleteResource(resourceId: string): Promise<{ success: boolean; error?: string }> {
-    try {
-      if (!resourceId) {
-        throw new Error('Resource ID is required');
-      }
-
-      await apiClient.delete(`/resources/${resourceId}`);
-      
-      return { success: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to delete resource';
-      console.error('Error deleting resource:', message);
-      
-      return {
-        success: false,
-        error: message,
-      };
-    }
+  async deleteResource(_resourceId: string): Promise<{ success: boolean; error?: string }> {
+    return {
+      success: false,
+      error: 'Delete resource endpoint is not available in the current backend.',
+    };
   },
 
-  /**
-   * Get resource details by ID
-   * 
-   * @param resourceId - Resource ID
-   * @returns Resource details or null
-   */
   async getResourceById(resourceId: string): Promise<Resource | null> {
     try {
       if (!resourceId) {
         throw new Error('Resource ID is required');
       }
 
-      const response = (await apiClient.get(`/resources/${resourceId}`)) as Resource | null;
-      
-      return response || null;
+      const response = await this.getAllResources({ page: 1, size: 100 });
+      return (
+        response.results.find((item) => item.resource_id === resourceId || item._id === resourceId) ||
+        null
+      );
     } catch (error) {
       console.error(`Error fetching resource ${resourceId}:`, error);
       return null;

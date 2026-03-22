@@ -1,5 +1,9 @@
 import { apiClient } from '../utils/apiClient';
 
+export type LearningLevel = 'beginner' | 'intermediate' | 'advanced';
+export type LearningPathSubjectId = 'python' | 'cpp' | 'csharp' | 'java' | 'web';
+export type LessonStatus = 'not_started' | 'in_progress' | 'complete';
+
 export interface ConceptNode {
   concept_id: number;
   concept_name: string;
@@ -7,274 +11,197 @@ export interface ConceptNode {
   bloom_level?: string;
   mode: string;
   priority_score: number;
-  resources: any[];
+  resources: Array<{ title?: string; url?: string; source?: string }>;
+}
+
+export interface LearningPathLesson {
+  lesson_id: string;
+  title: string;
+  summary: string;
+  resources: string[];
+  status: LessonStatus;
+  recommended_chunk_ids?: string[];
+}
+
+export interface LearningPathChapter {
+  chapter_id: string;
+  title: string;
+  lessons: LearningPathLesson[];
 }
 
 export interface LearningPath {
   path_id: string;
-  user_id: string;
+  user_id?: string;
+  subject_id?: LearningPathSubjectId;
   goal: string;
-  level: 'beginner' | 'intermediate' | 'advanced';
+  level: LearningLevel;
   generated_at: string;
   recommended_path: ConceptNode[];
+  chapters: LearningPathChapter[];
+  curriculum: LearningPathChapter[];
   curriculum_source?: 'ai' | 'fallback' | string;
   curriculum_notice?: string | null;
-  curriculum?: Array<{
-    title: string;
-    lessons: Array<{
-      lesson_id: string;
-      title: string;
-      summary: string;
-      resources: string[];
-      status?: 'not_started' | 'in_progress' | 'complete';
-      assessment?: {
-        required_questions: number;
-        attempted_questions: number;
-        completed: boolean;
-        correct_answers: number;
-        min_correct_required: number;
-        passed: boolean;
-        score_percent: number;
-        question_results: Array<{
-          question_id: string;
-          selected_answer: string;
-          is_correct: boolean;
-          correct_option: 'A' | 'B' | 'C' | 'D' | '';
-          correct_answer: string;
-          explanation: string;
-        }>;
-        questions: Array<{
-          question_id: string;
-          question: string;
-          answer: string;
-          explanation: string;
-          difficulty: 'easy' | 'medium' | 'hard';
-          concept: string;
-          options: Array<{
-            key: 'A' | 'B' | 'C' | 'D';
-            text: string;
-          }>;
-          correct_option: 'A' | 'B' | 'C' | 'D';
-        }>;
-      };
-    }>;
-  }>;
+  llm_status?: {
+    provider: string;
+    enabled: boolean;
+    cooldown_active?: boolean;
+    reason?: string | null;
+    model?: string | null;
+  } | null;
   message: string;
 }
 
 export interface LearningPathHistory {
   path_id: string;
-  user_id: string;
+  subject_id?: LearningPathSubjectId;
   goal: string;
-  level: string;
+  level: LearningLevel;
   generated_at: string;
+  chapter_count?: number;
+  lesson_count?: number;
 }
 
 export interface LessonProgressApiResponse {
   path_id: string;
   lesson_id: string;
-  status: 'not_started' | 'in_progress' | 'complete';
+  status: LessonStatus;
   updated_at: string;
-  assessment_result?: {
-    attempted_questions: number;
-    correct_answers: number;
-    required_questions: number;
-    min_correct_required: number;
-    passed: boolean;
-    score_percent: number;
-    restarted?: boolean;
-    question_results: Array<{
-      question_id: string;
-      selected_answer: string;
-      is_correct: boolean;
-      correct_option: 'A' | 'B' | 'C' | 'D' | '';
-      correct_answer: string;
-      explanation: string;
-    }>;
+}
+
+const DEFAULT_GENERATED_AT = () => new Date().toISOString();
+
+const normalizeLessonStatus = (value: unknown): LessonStatus => {
+  if (value === 'complete' || value === 'in_progress') {
+    return value;
+  }
+  return 'not_started';
+};
+
+const normalizeLesson = (lesson: any): LearningPathLesson => ({
+  lesson_id: String(lesson?.lesson_id ?? ''),
+  title: String(lesson?.title ?? 'Bài học'),
+  summary: String(lesson?.summary ?? ''),
+  resources: Array.isArray(lesson?.resources)
+    ? lesson.resources
+        .filter((item: unknown): item is string => typeof item === 'string')
+        .map((item: string) => item.trim())
+        .filter(Boolean)
+    : [],
+  status: normalizeLessonStatus(lesson?.status),
+  recommended_chunk_ids: Array.isArray(lesson?.recommended_chunk_ids)
+    ? lesson.recommended_chunk_ids.map((item: unknown) => String(item))
+    : [],
+});
+
+const normalizeChapter = (chapter: any): LearningPathChapter => ({
+  chapter_id: String(chapter?.chapter_id ?? ''),
+  title: String(chapter?.title ?? 'Chương học'),
+  lessons: Array.isArray(chapter?.lessons) ? chapter.lessons.map(normalizeLesson) : [],
+});
+
+const deriveRecommendedPathFromChapters = (chapters: LearningPathChapter[]): ConceptNode[] => {
+  const concepts: ConceptNode[] = [];
+  let index = 1;
+
+  chapters.forEach((chapter) => {
+    chapter.lessons.forEach((lesson) => {
+      concepts.push({
+        concept_id: 900000 + index,
+        concept_name: lesson.title,
+        difficulty: Math.min(4, 1 + Math.floor((index - 1) / 2)),
+        bloom_level: index <= 2 ? 'understand' : 'apply',
+        mode: 'normal',
+        priority_score: Math.max(0.5, 1 - index * 0.03),
+        resources: lesson.resources.map((title) => ({ title })),
+      });
+      index += 1;
+    });
+  });
+
+  return concepts;
+};
+
+export const normalizeLearningPath = (payload: any): LearningPath => {
+  const source = payload?.path ?? payload ?? {};
+  const chapters = Array.isArray(source?.chapters)
+    ? source.chapters.map(normalizeChapter)
+    : Array.isArray(source?.curriculum)
+    ? source.curriculum.map(normalizeChapter)
+    : [];
+
+  const recommendedPath = Array.isArray(source?.recommended_path)
+    ? (source.recommended_path as ConceptNode[])
+    : deriveRecommendedPathFromChapters(chapters);
+
+  return {
+    path_id: String(source?.path_id ?? ''),
+    user_id: source?.user_id ? String(source.user_id) : undefined,
+    subject_id: source?.subject_id as LearningPathSubjectId | undefined,
+    goal: String(source?.goal ?? ''),
+    level: (source?.level ?? 'beginner') as LearningLevel,
+    generated_at: String(source?.generated_at ?? source?.created_at ?? DEFAULT_GENERATED_AT()),
+    recommended_path: recommendedPath,
+    chapters,
+    curriculum: chapters,
+    curriculum_source: source?.curriculum_source,
+    curriculum_notice: source?.curriculum_notice ?? null,
+    llm_status: source?.llm_status ?? null,
+    message: String(source?.message ?? ''),
   };
-}
+};
 
-export interface QuizOption {
-  key: 'A' | 'B' | 'C' | 'D';
-  text: string;
-}
-
-export interface LessonQuizQuestion {
-  question_id: string;
-  lesson_id: string;
-  concept: string;
-  relation_type: string;
-  question_text: string;
-  template_id: string;
-  related_concepts: string[];
-  options: QuizOption[];
-}
-
-export interface LessonQuizAttemptResponse {
-  attempt_id: string;
-  user_id: string;
-  lesson_id: string;
-  attempt_number: number;
-  selected_question_ids: string[];
-  pass_threshold_count: number;
-  questions: LessonQuizQuestion[];
-  created_at: string;
-}
-
-export interface LessonQuizSubmitResponse {
-  attempt_id: string;
-  lesson_id: string;
-  score: number;
-  correct_count: number;
-  total_questions: number;
-  attempt_number: number;
-  confidence_score: number;
-  pass_threshold_count: number;
-  is_passed: boolean;
-  submitted_at: string;
-  results: Array<{
-    question_id: string;
-    selected_answer: string;
-    correct_option: 'A' | 'B' | 'C' | 'D' | '';
-    is_correct: boolean;
-    answer: string;
-  }>;
-  can_retry: boolean;
-}
-
-export interface LessonQuestionBankSummary {
-  lesson_id: string;
-  chapter_id: string;
-  concept_list: Array<{ id?: string; name?: string }>;
-  total_questions: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface LessonQuestionBankDetail extends LessonQuestionBankSummary {
-  questions: Array<{
-    question_id: string;
-    lesson_id: string;
-    concept: string;
-    relation_type: string;
-    bloom_level?: string;
-    question_text: string;
-    template_id: string;
-    difficulty?: number;
-    related_concepts: string[];
-    options: QuizOption[];
-  }>;
-}
-
-export interface LessonConfidenceResponse {
-  lesson_id: string;
-  confidence_score: number;
-  mastery_score: number;
-  best_confidence_score: number;
-  correct_count: number;
-  total_questions: number;
-  attempt_number: number;
-  is_passed: boolean;
-  score: number;
-  band: 'low' | 'medium' | 'high' | string;
-  updated_at?: string;
-}
-
-export interface AttemptConfidenceResponse {
-  attempt_id: string;
-  lesson_id: string;
-  confidence_score: number;
-  correct_count: number;
-  total_questions: number;
-  attempt_number: number;
-  is_passed: boolean;
-  score: number;
-  submitted_at?: string;
-}
+const normalizeHistoryItem = (item: any): LearningPathHistory => ({
+  path_id: String(item?.path_id ?? ''),
+  subject_id: item?.subject_id as LearningPathSubjectId | undefined,
+  goal: String(item?.goal ?? ''),
+  level: (item?.level ?? 'beginner') as LearningLevel,
+  generated_at: String(item?.generated_at ?? item?.created_at ?? DEFAULT_GENERATED_AT()),
+  chapter_count: typeof item?.chapter_count === 'number' ? item.chapter_count : undefined,
+  lesson_count: typeof item?.lesson_count === 'number' ? item.lesson_count : undefined,
+});
 
 export const learningPathService = {
-  /**
-   * Generate a new personalized learning path
-   */
   async generateLearningPath(data: {
-    user_id: string;
+    user_id?: string;
+    subject_id: LearningPathSubjectId;
     goal: string;
-    level: 'beginner' | 'intermediate' | 'advanced';
+    level: LearningLevel;
   }): Promise<LearningPath> {
-    return apiClient.post('/learning-path/generate', data) as Promise<LearningPath>;
+    const response = await apiClient.post('/learning-paths/generate', {
+      subject_id: data.subject_id,
+      goal: data.goal,
+      level: data.level,
+    });
+    return normalizeLearningPath(response);
   },
 
-  /**
-   * Get learning path history for user
-   */
-  async getLearningPathHistory(userId?: string): Promise<LearningPathHistory[]> {
-    const endpoint = userId ? `/learning-path/history?user_id=${userId}` : '/learning-path/history';
-    const response = await apiClient.get(endpoint) as { paths?: LearningPathHistory[] };
-    return response.paths || [];
+  async getLearningPathHistory(): Promise<LearningPathHistory[]> {
+    const response = (await apiClient.get('/learning-paths/history')) as unknown;
+    if (Array.isArray(response)) {
+      return response.map(normalizeHistoryItem);
+    }
+    if (Array.isArray((response as { paths?: any[] })?.paths)) {
+      return ((response as { paths?: any[] }).paths || []).map(normalizeHistoryItem);
+    }
+    return [];
   },
 
-  /**
-   * Get learning path detail by path id
-   */
-  async getLearningPathById(pathId: string): Promise<any> {
-    return apiClient.get(`/learning-path/${pathId}`);
+  async getLearningPathById(pathId: string): Promise<LearningPath> {
+    const response = await apiClient.get(`/learning-paths/${pathId}`);
+    return normalizeLearningPath(response);
   },
 
-  /**
-   * Update lesson progress status
-   */
   async updateLessonProgress(data: {
     path_id: string;
     lesson_id: string;
-    status: 'not_started' | 'in_progress' | 'complete';
+    status: LessonStatus;
   }): Promise<LessonProgressApiResponse> {
-    return apiClient.post('/learning-path/lesson-progress', data) as Promise<LessonProgressApiResponse>;
+    return apiClient.post('/learning-paths/lesson-progress', data) as Promise<LessonProgressApiResponse>;
   },
 
-  async generateLessonQuestionBank(lessonId: string): Promise<any> {
-    return apiClient.post('/lesson-question-bank/generate', {
-      lesson_id: lessonId,
-    }) as Promise<LessonQuestionBankDetail>;
-  },
-
-  async getLessonQuestionBank(lessonId: string): Promise<LessonQuestionBankDetail> {
-    return apiClient.get(`/lesson-question-bank/${lessonId}`) as Promise<LessonQuestionBankDetail>;
-  },
-
-  async listLessonQuestionBanks(limit = 50): Promise<{ total: number; items: LessonQuestionBankSummary[] }> {
-    return apiClient.get(`/lesson-question-banks?limit=${limit}`) as Promise<{ total: number; items: LessonQuestionBankSummary[] }>;
-  },
-
-  async createLessonQuizAttempt(lessonId: string): Promise<LessonQuizAttemptResponse> {
-    return apiClient.post('/lesson-quiz/attempt', {
-      lesson_id: lessonId,
-    }) as Promise<LessonQuizAttemptResponse>;
-  },
-
-  async submitLessonQuiz(
-    attemptId: string,
-    userAnswers: Record<string, string>
-  ): Promise<LessonQuizSubmitResponse> {
-    return apiClient.post('/lesson-quiz/submit', {
-      attempt_id: attemptId,
-      user_answers: userAnswers,
-    }) as Promise<LessonQuizSubmitResponse>;
-  },
-
-  async getLessonConfidence(lessonId: string): Promise<LessonConfidenceResponse> {
-    return apiClient.get(`/progress/confidence/${lessonId}`) as Promise<LessonConfidenceResponse>;
-  },
-
-  async getAttemptConfidence(attemptId: string): Promise<AttemptConfidenceResponse> {
-    return apiClient.get(`/progress/attempt-confidence/${attemptId}`) as Promise<AttemptConfidenceResponse>;
-  },
-
-  /**
-   * Get all concepts for graph display
-   */
   async getConcepts(): Promise<any[]> {
     try {
-      const response = await apiClient.get('/concepts') as { concepts?: any[] };
+      const response = (await apiClient.get('/concepts')) as { concepts?: any[] };
       return response.concepts || [];
     } catch (error) {
       console.error('Error fetching concepts:', error);
@@ -282,23 +209,20 @@ export const learningPathService = {
     }
   },
 
-  /**
-   * Get concept details by ID
-   */
   async getConceptDetails(conceptId: number): Promise<any> {
     return apiClient.get(`/concepts/${conceptId}`);
   },
 
-  /**
-   * Get user's current learning progress
-   */
-  async getUserProgress(userId: string): Promise<any> {
-    return apiClient.get(`/progress/summary?user_id=${userId}`);
+  async getUserProgress(userId?: string): Promise<any> {
+    const endpoint = userId ? `/progress/summary?user_id=${userId}` : '/progress/summary';
+    return apiClient.get(endpoint);
   },
 
-  /**
-   * Update progress for a concept
-   */
+  async getConceptProgress(conceptId: number, userId?: string): Promise<any> {
+    const query = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
+    return apiClient.get(`/progress/concept/${conceptId}${query}`);
+  },
+
   async updateConceptProgress(data: {
     user_id: string;
     concept_id: number;
@@ -309,12 +233,9 @@ export const learningPathService = {
     return apiClient.post('/progress/update', data);
   },
 
-  /**
-   * Get resources for a specific concept
-   */
   async getConceptResources(conceptId: number): Promise<any[]> {
     try {
-      const response = await apiClient.get(`/resources?concept_id=${conceptId}`) as { resources?: any[] };
+      const response = (await apiClient.get(`/resources?concept_id=${conceptId}`)) as { resources?: any[] };
       return response.resources || [];
     } catch (error) {
       console.error('Error fetching concept resources:', error);
