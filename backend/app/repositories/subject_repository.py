@@ -44,3 +44,35 @@ class SubjectRepository:
 
     def list(self) -> List[Dict[str, Any]]:
         return list(self.collection.find().sort("created_at", -1))
+
+    def list_paginated(
+        self,
+        *,
+        page: int = 1,
+        size: int = 20,
+        q: Optional[str] = None,
+        topic: Optional[str] = None,
+        level: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        query: Dict[str, Any] = {}
+        if q:
+            query["$or"] = [
+                {"title": {"$regex": q, "$options": "i"}},
+                {"slug": {"$regex": q, "$options": "i"}},
+                {"description": {"$regex": q, "$options": "i"}},
+            ]
+        if topic:
+            query["topic"] = {"$regex": topic, "$options": "i"}
+        if level:
+            query["level"] = level
+
+        total = self.collection.count_documents(query)
+        skip = max(page - 1, 0) * size
+        items = list(self.collection.find(query).sort("created_at", -1).skip(skip).limit(size))
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "size": size,
+            "pages": (total + size - 1) // size if size else 0,
+        }

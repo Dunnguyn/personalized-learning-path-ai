@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from backend.app.api.auth import get_current_user
 from backend.app.api.schemas import (
     GeneratedLearningPathResponse,
+    LearningPathDeleteResponse,
     LearningPathHistoryItemResponse,
     LearningPathGenerateRequest,
     LessonProgressResponse,
@@ -127,4 +128,21 @@ def get_learning_path(path_id: str, current_user=Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not load learning path.",
+        ) from exc
+
+
+@router.delete("/{path_id}", response_model=LearningPathDeleteResponse, status_code=status.HTTP_200_OK)
+def delete_learning_path(path_id: str, current_user=Depends(get_current_user)):
+    """Delete a stored learning path and generated artifacts owned by the current user."""
+    user_id = str(current_user.get("_id", ""))
+    try:
+        result = learning_path_service.delete_learning_path(path_id=path_id, user_id=user_id)
+        return LearningPathDeleteResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to delete learning path %s: %s", path_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not delete learning path.",
         ) from exc

@@ -21,15 +21,21 @@ class LessonQuestionLLMClient:
         self.provider = LESSON_QA_PROVIDER
         self.model = LESSON_QA_MODEL
         self.client = self._init_client()
+        self.last_error: str | None = None
 
     def is_available(self) -> bool:
         return self.client is not None
 
+    def get_last_error(self) -> str | None:
+        return self.last_error
+
     def generate(self, prompt: str) -> str:
         """Generate JSON text from the configured LLM with simple retry."""
         if not self.client:
+            self.last_error = "Lesson question LLM is not available."
             return ""
 
+        self.last_error = None
         for attempt in range(1, LESSON_QA_MAX_RETRIES + 1):
             try:
                 if self.provider == "gemini":
@@ -45,14 +51,18 @@ class LessonQuestionLLMClient:
                     text = getattr(response, "text", None)
                     if text:
                         return str(text).strip()
+                self.last_error = "Lesson question LLM returned an empty response."
                 return ""
             except Exception as exc:  # pragma: no cover - external dependency
+                self.last_error = str(exc)
                 logger.warning(
                     "Lesson question LLM request failed on attempt %s/%s: %s",
                     attempt,
                     LESSON_QA_MAX_RETRIES,
                     exc,
                 )
+                if self._is_quota_error(exc):
+                    break
                 time.sleep(min(attempt, 3))
         return ""
 
@@ -71,3 +81,13 @@ class LessonQuestionLLMClient:
 
         logger.warning("Unsupported lesson question provider: %s", self.provider)
         return None
+
+    @staticmethod
+    def _is_quota_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            "resource_exhausted" in message
+            or "quota exceeded" in message
+            or "rate limit" in message
+            or "429" in message
+        )

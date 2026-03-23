@@ -254,7 +254,7 @@ export default function AITutor() {
           setMessages([]);
           addMessage(
             'assistant',
-            `Xin chào! Tôi sẽ giúp bạn học: "${goalParam}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
+            `Xin ch?o! T?i s? gi?p b?n h?c: "${goalParam}". H?y ??t b?t k? c?u h?i n?o v? ch? ?? n?y.`,
             null
           );
         }
@@ -290,7 +290,7 @@ export default function AITutor() {
       setCurrentConcept({
         concept_id: Number(concept?.concept_id ?? conceptId),
         concept_name: String(concept?.concept_name ?? `Concept ${conceptId}`),
-        description: String(concept?.topic ?? concept?.description ?? 'Không có mô tả chi tiết'),
+        description: String(concept?.topic ?? concept?.description ?? 'Kh?ng c? m? t? chi ti?t'),
         mastery: typeof progress?.mastery === 'number' ? progress.mastery : 0,
         status: String(progress?.status ?? 'not_started'),
       });
@@ -321,7 +321,7 @@ export default function AITutor() {
   };
 
   const handleDeleteHistoryItem = async (historyId: string) => {
-    if (!confirm('Bạn có chắc chắn muốn xóa câu hỏi này khỏi lịch sử?')) {
+    if (!confirm('B?n c? ch?c ch?n mu?n x?a c?u h?i n?y kh?i l?ch s??')) {
       return;
     }
 
@@ -330,11 +330,11 @@ export default function AITutor() {
       if (response.success) {
         setHistory(history.filter((item) => item._id !== historyId));
       } else {
-        setError('Không thể xóa mục lịch sử');
+        setError('Kh?ng th? x?a m?c l?ch s?');
       }
     } catch (err) {
       console.error('Error deleting history:', err);
-      setError('Lỗi khi xóa mục lịch sử');
+      setError('L?i khi x?a m?c l?ch s?');
     }
   };
 
@@ -366,7 +366,7 @@ export default function AITutor() {
   const handleStartChat = () => {
     const nextGoal = buildGoal(subjectId, goalDetail);
     if (!nextGoal) {
-      setError('Vui lòng chọn môn học');
+      setError('Vui l?ng ch?n m?n h?c');
       return;
     }
     setGoal(nextGoal);
@@ -380,7 +380,7 @@ export default function AITutor() {
         setMessages([]);
         addMessage(
           'assistant',
-          `Xin chào! Tôi sẽ giúp bạn học: "${nextGoal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
+          `Xin ch?o! T?i s? gi?p b?n h?c: "${nextGoal}". H?y ??t b?t k? c?u h?i n?o v? ch? ?? n?y.`,
           null
         );
       }
@@ -388,7 +388,7 @@ export default function AITutor() {
       setMessages([]);
       addMessage(
         'assistant',
-        `Xin chào! Tôi sẽ giúp bạn học: "${nextGoal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
+        `Xin ch?o! T?i s? gi?p b?n h?c: "${nextGoal}". H?y ??t b?t k? c?u h?i n?o v? ch? ?? n?y.`,
         null
       );
     }
@@ -398,7 +398,7 @@ export default function AITutor() {
   const handleClearSubjectHistory = () => {
     if (!user) return;
 
-    if (!confirm('Bạn có chắc chắn muốn xóa lịch sử của môn học này?')) {
+    if (!confirm('B?n c? ch?c ch?n mu?n x?a l?ch s? c?a m?n h?c n?y?')) {
       return;
     }
 
@@ -409,7 +409,7 @@ export default function AITutor() {
     if (goal) {
       addMessage(
         'assistant',
-        `Xin chào! Tôi sẽ giúp bạn học: "${goal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
+        `Xin ch?o! T?i s? gi?p b?n h?c: "${goal}". H?y ??t b?t k? c?u h?i n?o v? ch? ?? n?y.`,
         null
       );
     }
@@ -471,17 +471,17 @@ export default function AITutor() {
       };
       
       if (data.success) {
-        addMessage('assistant', data.answer?.answer_text || 'Xin lỗi, tôi không thể trả lời câu hỏi này lúc này.', {
+        addMessage('assistant', data.answer?.answer_text || 'Xin l?i, t?i kh?ng th? tr? l?i c?u h?i n?y l?c n?y.', {
           answer: data.answer,
           conceptDetected: data.concept_detected,
           learning_path: data.learning_path,
           adaptive_info: data.adaptive_info,
         });
       } else {
-        throw new Error(data.error || 'Không nhận được phản hồi từ server');
+        throw new Error(data.error || 'Kh?ng nh?n ???c ph?n h?i t? server');
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Đã xảy ra lỗi không xác định';
+      const errorMessage = err instanceof Error ? err.message : '?? x?y ra l?i kh?ng x?c ??nh';
       setError(errorMessage);
       console.error('Error sending message:', err);
     } finally {
@@ -498,17 +498,17 @@ export default function AITutor() {
     setAssessmentQuestions([]);
 
     if (!assessmentDraft.concept.trim()) {
-      setAssessmentError('Vui lòng nhập concept');
+      setAssessmentError('Vui l?ng nh?p concept');
       return;
     }
 
     if (!assessmentDraft.chapter_content.trim() || assessmentDraft.chapter_content.trim().length < 50) {
-      setAssessmentError('Nội dung chương học cần ít nhất 50 ký tự');
+      setAssessmentError('N?i dung ch??ng h?c c?n ?t nh?t 50 k? t?');
       return;
     }
 
     if (assessmentDraft.num_questions < 1 || assessmentDraft.num_questions > 20) {
-      setAssessmentError('Số câu hỏi phải từ 1 đến 20');
+      setAssessmentError('S? c?u h?i ph?i t? 1 ??n 20');
       return;
     }
 
@@ -527,12 +527,12 @@ export default function AITutor() {
       });
 
       if (!response.success) {
-        throw new Error('Không thể tạo câu hỏi kiểm tra');
+        throw new Error('Kh?ng th? t?o c?u h?i ki?m tra');
       }
 
       setAssessmentQuestions(response.questions || []);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Đã xảy ra lỗi khi tạo câu hỏi';
+      const message = err instanceof Error ? err.message : '?? x?y ra l?i khi t?o c?u h?i';
       setAssessmentError(message);
     } finally {
       setAssessmentLoading(false);
@@ -558,23 +558,24 @@ export default function AITutor() {
   if (showGoalInput) {
     return (
       <DashboardLayout>
-        <div className="max-w-[1190px] mx-auto">
-          <h1 className="text-[25px] font-semibold text-secondary mb-8 mt-[25px]">AI Tutor</h1>
+        <div className="page-shell-narrow">
+          <p className="page-kicker">Tr? gi?ng AI</p>
+          <h1 className="page-title">Tr? gi?ng AI</h1>
           
-          <div className="flex items-center gap-2 mb-[40px]">
-            <div className="w-[3px] h-[28px] bg-[#8f1025] rounded-[5px]" />
-            <h2 className="text-[18px] font-medium text-[#8f1025]">Bắt đầu phiên học tập</h2>
+          <div className="mb-[40px] flex items-center gap-2">
+            <div className="h-[28px] w-[3px] rounded-[5px] bg-[#8c3451]" />
+            <h2 className="page-section-title text-[18px]">B?t ??u phi?n h?c t?p</h2>
           </div>
 
-          <div className="bg-white border border-[#ce6a86] rounded-[20px] p-8 max-w-[600px]">
+          <div className="soft-panel max-w-[720px] p-8">
             <div className="mb-6">
-              <label className="block text-[16px] font-medium text-[#8f1025] mb-3">
-                Mục tiêu học tập của bạn là gì?
+              <label className="mb-3 block text-[16px] font-medium text-[#514942]">
+                M?c ti?u h?c t?p c?a b?n l? g??
               </label>
               <select
                 value={subjectId}
                 onChange={(e) => setSubjectId(e.target.value)}
-                className="w-full px-4 py-3 border border-[#ce6a86] rounded-[10px] focus:outline-none focus:border-[#8f1025] text-[14px]"
+                className="theme-input rounded-[18px]"
               >
                 {SUBJECTS.map((subject) => (
                   <option key={subject.id} value={subject.id}>
@@ -585,31 +586,36 @@ export default function AITutor() {
             </div>
 
             <div className="mb-6">
-              <label className="block text-[16px] font-medium text-[#8f1025] mb-3">
-                Mục tiêu chi tiết (tùy chọn)
+              <label className="mb-3 block text-[16px] font-medium text-[#514942]">
+                M?c ti?u chi ti?t (t?y ch?n)
               </label>
               <input
                 type="text"
                 value={goalDetail}
                 onChange={(e) => setGoalDetail(e.target.value)}
-                placeholder="VD: backend, OOP, cấu trúc dữ liệu..."
-                className="w-full px-4 py-3 border border-[#ce6a86] rounded-[10px] focus:outline-none focus:border-[#8f1025] text-[14px]"
-                onKeyPress={(e) => e.key === 'Enter' && handleStartChat()}
+                placeholder="VD: backend, OOP, c?u tr?c d? li?u..."
+                className="theme-input rounded-[18px]"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleStartChat();
+                  }
+                }}
               />
             </div>
 
             <div className="mb-6">
-              <label className="block text-[16px] font-medium text-[#8f1025] mb-3">
-                Trình độ hiện tại
+              <label className="mb-3 block text-[16px] font-medium text-[#514942]">
+                Tr?nh ?? hi?n t?i
               </label>
               <select
                 value={level}
                 onChange={(e) => setLevel(e.target.value as 'beginner' | 'intermediate' | 'advanced')}
-                className="w-full px-4 py-3 border border-[#ce6a86] rounded-[10px] focus:outline-none focus:border-[#8f1025] text-[14px]"
+                className="theme-input rounded-[18px]"
               >
-                <option value="beginner">Người mới bắt đầu</option>
-                <option value="intermediate">Trung cấp</option>
-                <option value="advanced">Nâng cao</option>
+                <option value="beginner">Ng??i m?i b?t ??u</option>
+                <option value="intermediate">Trung c?p</option>
+                <option value="advanced">N?ng cao</option>
               </select>
             </div>
 
@@ -621,9 +627,9 @@ export default function AITutor() {
 
             <button
               onClick={handleStartChat}
-              className="w-full bg-[#8f1025] text-white py-3 rounded-[10px] font-medium hover:bg-[#7a0e20] transition-colors text-[16px]"
+              className="theme-button w-full justify-center text-[16px]"
             >
-              Bắt đầu
+              B?t ??u
             </button>
           </div>
         </div>
@@ -633,21 +639,24 @@ export default function AITutor() {
 
   return (
     <DashboardLayout>
-      <div className="max-w-[1190px] mx-auto h-[calc(100vh-120px)] flex flex-col">
-        <div className="flex items-center justify-between mb-6 mt-[25px]">
-          <h1 className="text-[25px] font-semibold text-secondary">AI Tutor</h1>
-          <div className="flex gap-3">
+      <div className="page-shell flex min-h-[calc(100vh-140px)] flex-col pb-6">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="page-kicker mb-2">Tr? gi?ng AI</p>
+            <h1 className="page-title mb-0">Tr? gi?ng AI</h1>
+          </div>
+          <div className="flex flex-wrap gap-3">
             <button
               onClick={handleClearSubjectHistory}
-              className="px-4 py-2 text-[14px] bg-red-50 text-red-700 rounded-[10px] hover:bg-red-100 transition-colors"
+              className="theme-button-secondary border-red-200 bg-white/90 text-red-700"
             >
-              🗑️ Xóa lịch sử môn
+              ??? X?a l?ch s? m?n
             </button>
             <button
               onClick={() => setShowHistory(!showHistory)}
-              className="px-4 py-2 text-[14px] bg-gray-200 text-[#333] rounded-[10px] hover:bg-gray-300 transition-colors"
+              className="theme-button-secondary"
             >
-              📋 Lịch sử ({history.length})
+              ?? L?ch s? ({history.length})
             </button>
             <button
               onClick={() => {
@@ -655,60 +664,57 @@ export default function AITutor() {
                 setMessages([]);
                 setGoal('');
               }}
-              className="px-4 py-2 text-[14px] bg-[#8f1025] text-white rounded-[10px] hover:bg-[#7a0e20] transition-colors"
+              className="theme-button"
             >
-              Phiên mới
+              Phi?n m?i
             </button>
           </div>
         </div>
 
         {/* History Modal */}
         {showHistory && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
-            <div className="bg-white rounded-[20px] w-[500px] max-h-[80vh] flex flex-col border border-[#ce6a86] shadow-lg">
-              <div className="flex items-center justify-between p-6 border-b border-[#ce6a86]">
-                <h2 className="text-[20px] font-semibold text-[#8f1025]">Lịch sử câu hỏi</h2>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
+            <div className="white-panel flex max-h-[80vh] w-full max-w-[560px] flex-col overflow-hidden">
+              <div className="flex items-center justify-between border-b border-[#8c3451]/10 p-6">
+                <h2 className="text-[22px] font-medium tracking-[-0.03em] text-[#8c3451]">L?ch s? c?u h?i</h2>
                 <button
                   onClick={() => setShowHistory(false)}
-                  className="text-[24px] text-[#8f1025] hover:text-[#7a0e20]"
+                  className="text-[24px] text-[#8c3451]"
                 >
-                  ×
+                  ?
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              <div className="scroll-soft flex-1 overflow-y-auto p-4 space-y-3">
                 {historyLoading ? (
                   <div className="flex items-center justify-center py-8">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#8f1025]" />
+                    <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-[#8c3451]" />
                   </div>
                 ) : history.length === 0 ? (
                   <div className="text-center py-8 text-[#666]">
-                    <p>Chưa có câu hỏi nào</p>
+                    <p>Ch?a c? c?u h?i n?o</p>
                   </div>
                 ) : (
                   history.map((item) => (
-                    <div
-                      key={item._id}
-                      className="p-3 bg-gray-50 rounded-[10px] border border-[#ce6a86] hover:bg-gray-100 transition-colors group"
-                    >
+                    <div key={item._id} className="metric-card group p-3">
                       <div className="flex justify-between items-start gap-2">
                         <div className="flex-1 cursor-pointer" onClick={() => handleLoadFromHistory(item)}>
-                          <p className="text-[13px] font-medium text-[#8f1025] mb-1 line-clamp-2">
+                           <p className="mb-1 line-clamp-2 text-[13px] font-medium text-[#8c3451]">
                             {item.question}
                           </p>
-                          <p className="text-[11px] text-[#666] mb-1">
-                            Mục tiêu: {item.goal}
+                           <p className="mb-1 text-[11px] text-[#666]">
+                            M?c ti?u: {item.goal}
                           </p>
                           <p className="text-[10px] text-[#999]">
                             {new Date(item.timestamp).toLocaleString('vi-VN')}
                           </p>
                         </div>
-                        <button
-                          onClick={() => handleDeleteHistoryItem(item._id)}
-                          className="px-2 py-1 text-[11px] bg-red-100 text-red-600 rounded-[5px] opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap"
-                        >
-                          Xóa
-                        </button>
+                         <button
+                           onClick={() => handleDeleteHistoryItem(item._id)}
+                           className="rounded-full bg-red-100 px-2 py-1 text-[11px] whitespace-nowrap text-red-600 opacity-0 transition-opacity group-hover:opacity-100"
+                         >
+                            X?a
+                         </button>
                       </div>
                     </div>
                   ))
@@ -718,16 +724,16 @@ export default function AITutor() {
           </div>
         )}
 
-        <div className="flex gap-6 flex-1 min-h-0">
+        <div className="flex min-h-0 flex-1 flex-col gap-6 xl:flex-row">
           {/* Main Chat Area */}
-          <div className="flex-1 flex flex-col bg-white border border-[#ce6a86] rounded-[20px] overflow-hidden">
+          <div className="white-panel flex min-h-[540px] flex-1 flex-col overflow-hidden">
             {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+            <div className="scroll-soft flex-1 overflow-y-auto p-6 space-y-4">
               {messages.length === 0 ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="text-center">
-                    <div className="text-[50px] mb-4">💡</div>
-                    <p className="text-[#8f1025] text-[16px]">Hãy bắt đầu bằng cách đặt một câu hỏi</p>
+                    <div className="text-[50px] mb-4">??</div>
+                    <p className="text-[#8c3451] text-[16px]">H?y b?t ??u b?ng c?ch ??t m?t c?u h?i</p>
                   </div>
                 </div>
               ) : (
@@ -738,10 +744,10 @@ export default function AITutor() {
                       className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                     >
                       <div
-                        className={`max-w-[70%] rounded-[15px] p-4 ${
+                        className={`max-w-[88%] rounded-[24px] p-4 sm:max-w-[70%] ${
                           message.role === 'user'
-                            ? 'bg-[#8f1025] text-white rounded-br-none'
-                            : 'bg-gray-100 text-[#333] rounded-bl-none'
+                            ? 'rounded-br-[10px] bg-[#8c3451] text-white'
+                            : 'rounded-bl-[10px] bg-[#fdf0f5] text-[#5f3040]'
                         }`}
                       >
                         {(() => {
@@ -768,8 +774,8 @@ export default function AITutor() {
                           <div className="mt-5 pt-4 border-t-2 border-gray-200">
                             {message.answer.sources && message.answer.sources.length > 0 && (
                               <div className="mb-4">
-                                <p className="text-[13px] font-bold mb-3 text-[#8f1025] flex items-center gap-1.5">
-                                  <span>📚</span> Nguồn tài liệu
+                                <p className="text-[13px] font-bold mb-3 text-[#8c3451] flex items-center gap-1.5">
+                                  <span>??</span> Ngu?n t?i li?u
                                 </p>
                                 <div className="space-y-2">
                                   {message.answer.sources.map((source, idx) => (
@@ -777,7 +783,7 @@ export default function AITutor() {
                                       key={idx}
                                       className="flex items-start gap-2 p-2.5 bg-[#fef3f4] border border-[#f5d5dd] rounded-lg hover:bg-[#fedde2] transition-colors"
                                     >
-                                      <span className="text-[11px] font-bold text-[#8f1025] min-w-[18px] text-center">{idx + 1}</span>
+                                      <span className="text-[11px] font-bold text-[#8c3451] min-w-[18px] text-center">{idx + 1}</span>
                                       <div className="flex-1">
                                         {source.url ? (
                                           <a
@@ -800,7 +806,7 @@ export default function AITutor() {
 
                             {message.answer.confidence && (
                               <div className="flex items-center gap-2 p-2.5 bg-[#eef9ff] border border-[#b8e0f6] rounded-lg">
-                                <span className="text-[13px] font-semibold text-[#0066cc]">⭐ Độ tin cậy:</span>
+                                <span className="text-[13px] font-semibold text-[#0066cc]">? ?? tin c?y:</span>
                                 <div className="flex-1 bg-white border border-[#d0e8ff] rounded-full h-2 overflow-hidden">
                                   <div
                                     className="h-full bg-gradient-to-r from-[#0066cc] to-[#003d99]"
@@ -818,10 +824,10 @@ export default function AITutor() {
                         {/* Concept Detected */}
                         {message.role === 'assistant' && message.conceptDetected && (
                           <div className="mt-3 p-2 bg-white bg-opacity-20 rounded-[10px]">
-                            <p className="text-[12px] font-semibold mb-1">📌 Khái niệm được phát hiện:</p>
+                            <p className="text-[12px] font-semibold mb-1">?? Kh?i ni?m ???c ph?t hi?n:</p>
                             <p className="text-[13px]">{message.conceptDetected.concept_name}</p>
                             <p className="text-[11px] opacity-80 mt-1">
-                              Độ phù hợp: {Math.round(message.conceptDetected.score * 100)}%
+                              ?? ph? h?p: {Math.round(message.conceptDetected.score * 100)}%
                             </p>
                           </div>
                         )}
@@ -829,7 +835,7 @@ export default function AITutor() {
                         {/* Learning Recommendations */}
                         {message.role === 'assistant' && message.learning_path && message.learning_path.length > 0 && (
                           <div className="mt-3 p-2 bg-white bg-opacity-20 rounded-[10px]">
-                            <p className="text-[12px] font-semibold mb-2">🎯 Khái niệm tiếp theo:</p>
+                            <p className="text-[12px] font-semibold mb-2">?? Kh?i ni?m ti?p theo:</p>
                             <div className="space-y-1">
                               {message.learning_path.slice(0, 3).map((concept, idx) => (
                                 <div key={idx} className="text-[12px]">
@@ -848,43 +854,48 @@ export default function AITutor() {
             </div>
 
             {error && (
-              <div className="px-6 py-3 bg-red-50 border-t border-red-200 text-red-700 text-[13px]">
-                ⚠️ {error}
+              <div className="border-t border-red-200 bg-red-50 px-6 py-3 text-[13px] text-red-700">
+                ?? {error}
               </div>
             )}
 
             {/* Input Area */}
-            <div className="border-t border-[#ce6a86] p-4 bg-gray-50">
+            <div className="border-t border-[#8c3451]/10 bg-[#fff6fa] p-4">
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && !loading && handleSendMessage()}
-                  placeholder="Nhập câu hỏi của bạn..."
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !loading) {
+                      e.preventDefault();
+                      handleSendMessage();
+                    }
+                  }}
+                  placeholder="Nh?p c?u h?i c?a b?n..."
                   disabled={loading}
-                  className="flex-1 px-4 py-3 border border-[#ce6a86] rounded-[10px] focus:outline-none focus:border-[#8f1025] disabled:bg-gray-100 text-[14px]"
+                  className="theme-input flex-1 rounded-[18px] disabled:bg-gray-100"
                 />
                 <button
                   onClick={handleSendMessage}
                   disabled={loading || !input.trim()}
-                  className="px-6 py-3 bg-[#8f1025] text-white rounded-[10px] hover:bg-[#7a0e20] disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium text-[14px]"
+                  className="theme-button disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {loading ? '...' : 'Gửi'}
+                  {loading ? '...' : 'G?i'}
                 </button>
               </div>
             </div>
           </div>
 
           {/* Right Sidebar - Learning Context */}
-          <div className="w-[300px] flex flex-col gap-4">
+          <div className="flex w-full flex-col gap-4 xl:sticky xl:top-4 xl:w-[320px] xl:self-start">
             {/* Assessment Generator Card */}
-            <div className="bg-white border border-[#ce6a86] rounded-[20px] p-5">
-              <h3 className="text-[14px] font-semibold text-[#8f1025] mb-3">📝 Tạo câu hỏi kiểm tra</h3>
+            <div className="soft-panel p-5">
+              <h3 className="mb-3 text-[16px] font-medium text-[#8c3451]">?? T?o c?u h?i ki?m tra</h3>
 
               <div className="space-y-3">
                 <div>
-                  <label className="block text-[12px] text-[#8f1025] mb-1">Tên bài học</label>
+                  <label className="block text-[12px] text-[#8c3451] mb-1">T?n b?i h?c</label>
                   <input
                     type="text"
                     value={assessmentDraft.lesson_title}
@@ -894,13 +905,13 @@ export default function AITutor() {
                         lesson_title: e.target.value,
                       }))
                     }
-                    placeholder="Ví dụ: Giới thiệu về RAG"
-                    className="w-full px-3 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
+                    placeholder="V? d?: Gi?i thi?u v? RAG"
+                    className="theme-input rounded-[14px] px-3 py-2 text-[12px]"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[12px] text-[#8f1025] mb-1">Khái niệm</label>
+                  <label className="block text-[12px] text-[#8c3451] mb-1">Kh?i ni?m</label>
                   <input
                     type="text"
                     value={assessmentDraft.concept}
@@ -910,14 +921,14 @@ export default function AITutor() {
                         concept: e.target.value,
                       }))
                     }
-                    placeholder="Ví dụ: RAG Pipeline"
-                    className="w-full px-3 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
+                    placeholder="V? d?: RAG Pipeline"
+                    className="theme-input rounded-[14px] px-3 py-2 text-[12px]"
                   />
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="block text-[12px] text-[#8f1025] mb-1">Độ khó</label>
+                    <label className="block text-[12px] text-[#8c3451] mb-1">?? kh?</label>
                     <select
                       value={assessmentDraft.difficulty}
                       onChange={(e) =>
@@ -926,19 +937,19 @@ export default function AITutor() {
                           difficulty: e.target.value as AssessmentDifficulty,
                         }))
                       }
-                      className="w-full px-2 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
+                       className="theme-input rounded-[14px] px-2 py-2 text-[12px]"
                     >
-                      <option value="easy">Dễ</option>
-                      <option value="medium">Trung bình</option>
-                      <option value="hard">Khó</option>
+                      <option value="easy">D?</option>
+                      <option value="medium">Trung b?nh</option>
+                      <option value="hard">Kh?</option>
                     </select>
                   </div>
 
                   <div>
-                    <label className="block text-[12px] text-[#8f1025] mb-1">Loại câu hỏi</label>
+                    <label className="block text-[12px] text-[#8c3451] mb-1">Lo?i c?u h?i</label>
                     <input
                       type="text"
-                      aria-label="Loại câu hỏi"
+                      aria-label="Lo?i c?u h?i"
                       value={assessmentDraft.question_type}
                       onChange={(e) =>
                         setAssessmentDraft((prev) => ({
@@ -946,18 +957,18 @@ export default function AITutor() {
                           question_type: e.target.value,
                         }))
                       }
-                      placeholder="short_answer"
-                      className="w-full px-2 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
+                      placeholder="V? d?: short_answer"
+                       className="theme-input rounded-[14px] px-2 py-2 text-[12px]"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[12px] text-[#8f1025] mb-1">Số câu</label>
+                    <label className="block text-[12px] text-[#8c3451] mb-1">S? c?u</label>
                     <input
                       type="number"
                       min={1}
                       max={20}
-                      aria-label="Số câu"
+                      aria-label="S? c?u"
                       value={assessmentDraft.num_questions}
                       onChange={(e) =>
                         setAssessmentDraft((prev) => ({
@@ -965,13 +976,13 @@ export default function AITutor() {
                           num_questions: Number(e.target.value) || 1,
                         }))
                       }
-                      className="w-full px-2 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025]"
+                       className="theme-input rounded-[14px] px-2 py-2 text-[12px]"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-[12px] text-[#8f1025] mb-1">Nội dung chương học</label>
+                  <label className="block text-[12px] text-[#8c3451] mb-1">N?i dung ch??ng h?c</label>
                   <textarea
                     value={assessmentDraft.chapter_content}
                     onChange={(e) =>
@@ -981,8 +992,8 @@ export default function AITutor() {
                       }))
                     }
                     rows={6}
-                    placeholder="Dán nội dung chương học vào đây..."
-                    className="w-full px-3 py-2 border border-[#ce6a86] rounded-[8px] text-[12px] focus:outline-none focus:border-[#8f1025] resize-y"
+                    placeholder="D?n n?i dung ch??ng h?c v?o ??y..."
+                     className="theme-input min-h-[132px] resize-y rounded-[14px] px-3 py-2 text-[12px]"
                   />
                 </div>
 
@@ -995,15 +1006,15 @@ export default function AITutor() {
                 <button
                   onClick={handleGenerateAssessment}
                   disabled={assessmentLoading}
-                  className="w-full px-3 py-2 bg-[#8f1025] text-white rounded-[8px] text-[12px] font-medium hover:bg-[#7a0e20] disabled:opacity-50"
+                   className="theme-button w-full rounded-[14px] py-2 text-[12px] disabled:opacity-50"
                 >
-                  {assessmentLoading ? 'Đang tạo...' : 'Tạo câu hỏi'}
+                  {assessmentLoading ? '?ang t?o...' : 'T?o c?u h?i'}
                 </button>
               </div>
 
               {assessmentQuestions.length > 0 && (
                 <div className="mt-4 border-t border-[#f2c9d4] pt-3">
-                  <p className="text-[12px] font-semibold text-[#8f1025] mb-2">Kết quả JSON</p>
+                  <p className="text-[12px] font-semibold text-[#8c3451] mb-2">D? li?u c?u h?i</p>
                   <div className="max-h-[260px] overflow-y-auto border border-[#f2d5dd] rounded-[10px] bg-[#fff9fb] p-2">
                     <pre className="text-[11px] text-[#333] whitespace-pre-wrap break-words">
                       {JSON.stringify(assessmentQuestions, null, 2)}
@@ -1014,31 +1025,31 @@ export default function AITutor() {
             </div>
 
             {/* Goal Card */}
-            <div className="bg-white border border-[#ce6a86] rounded-[20px] p-5">
-              <h3 className="text-[14px] font-semibold text-[#8f1025] mb-3">📚 Mục tiêu</h3>
+            <div className="metric-card p-5">
+              <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">?? M?c ti?u</h3>
               <p className="text-[13px] text-[#333] line-clamp-3">{goal}</p>
-              <p className="text-[12px] text-[#8f1025] mt-3 font-medium">Trình độ: {
-                level === 'beginner' ? 'Người mới' :
-                level === 'intermediate' ? 'Trung cấp' : 'Nâng cao'
+              <p className="text-[12px] text-[#8c3451] mt-3 font-medium">Tr?nh ??: {
+                level === 'beginner' ? 'Ng??i m?i' :
+                level === 'intermediate' ? 'Trung c?p' : 'N?ng cao'
               }</p>
             </div>
 
             {/* Current Concept Card */}
             {currentConcept && (
-              <div className="bg-white border border-[#ce6a86] rounded-[20px] p-5">
-                <h3 className="text-[14px] font-semibold text-[#8f1025] mb-3">🎯 Khái niệm hiện tại</h3>
+              <div className="metric-card p-5">
+                <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">?? Kh?i ni?m hi?n t?i</h3>
                 {conceptLoading ? (
-                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-[#8f1025]" />
+                  <div className="h-6 w-6 animate-spin rounded-full border-b-2 border-[#8c3451]" />
                 ) : (
                   <>
                     <p className="text-[13px] font-medium text-[#333] mb-2">{currentConcept.concept_name}</p>
                     <p className="text-[12px] text-[#666] mb-3">{currentConcept.description}</p>
                     
                     <div className="mb-3">
-                      <p className="text-[12px] font-medium text-[#8f1025] mb-1">Độ thành thạo</p>
+                      <p className="text-[12px] font-medium text-[#8c3451] mb-1">?? th?nh th?o</p>
                       <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
                         <div
-                          className="h-full bg-[#8f1025] transition-all"
+                          className="h-full bg-[#8c3451] transition-all"
                           style={{ width: `${currentConcept.mastery * 100}%` }}
                         />
                       </div>
@@ -1052,8 +1063,8 @@ export default function AITutor() {
                            color: currentConcept.status === 'complete' ? '#1a6b2f' :
                                   currentConcept.status === 'in_progress' ? '#a67c2f' : '#666'
                          }}>
-                      {currentConcept.status === 'complete' ? 'Hoàn thành' :
-                       currentConcept.status === 'in_progress' ? 'Đang học' : 'Chưa bắt đầu'}
+                      {currentConcept.status === 'complete' ? 'Ho?n th?nh' :
+                       currentConcept.status === 'in_progress' ? '?ang h?c' : 'Ch?a b?t ??u'}
                     </div>
                   </>
                 )}
@@ -1061,30 +1072,30 @@ export default function AITutor() {
             )}
 
             {/* Learning Tips Card */}
-            <div className="bg-white border border-[#ce6a86] rounded-[20px] p-5">
-              <h3 className="text-[14px] font-semibold text-[#8f1025] mb-3">💡 Mẹo học tập</h3>
+            <div className="metric-card p-5">
+              <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">?? M?o h?c t?p</h3>
               <ul className="text-[12px] text-[#666] space-y-2">
-                <li>✓ Hỏi các câu hỏi chi tiết</li>
-                <li>✓ Kiểm tra nguồn tài liệu</li>
-                <li>✓ Luyện tập các khái niệm</li>
-                <li>✓ Xem tài nguyên được đề xuất</li>
+                <li>? H?i c?c c?u h?i chi ti?t</li>
+                <li>? Ki?m tra ngu?n t?i li?u</li>
+                <li>? Luy?n t?p c?c kh?i ni?m</li>
+                <li>? Xem t?i nguy?n ???c ?? xu?t</li>
               </ul>
             </div>
 
             {/* Quick Actions */}
-            <div className="bg-white border border-[#ce6a86] rounded-[20px] p-5">
-              <h3 className="text-[14px] font-semibold text-[#8f1025] mb-3">⚡ Hành động nhanh</h3>
+            <div className="metric-card p-5">
+              <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">? H?nh ??ng nhanh</h3>
               <button
                 onClick={() => navigate('/resources')}
-                className="w-full text-[12px] px-3 py-2 mb-2 bg-gray-50 hover:bg-gray-100 border border-[#ce6a86] text-[#8f1025] rounded-[8px] transition-colors"
+                className="theme-button-secondary mb-2 w-full rounded-[14px] py-2 text-[12px]"
               >
-                Xem tài nguyên
+                Xem t?i nguy?n
               </button>
               <button
                 onClick={() => navigate('/learning-path')}
-                className="w-full text-[12px] px-3 py-2 bg-gray-50 hover:bg-gray-100 border border-[#ce6a86] text-[#8f1025] rounded-[8px] transition-colors"
+                className="theme-button-secondary w-full rounded-[14px] py-2 text-[12px]"
               >
-                Lộ trình học
+                L? tr?nh h?c
               </button>
             </div>
           </div>

@@ -76,6 +76,10 @@ class ResourceRepository:
         object_ids = [self._to_object_id(item) for item in resource_ids]
         return list(self.collection.find({"_id": {"$in": object_ids}}))
 
+    def delete(self, resource_id: str | ObjectId) -> int:
+        result = self.collection.delete_one({"_id": self._to_object_id(resource_id)})
+        return result.deleted_count
+
     def find_duplicate(
         self,
         *,

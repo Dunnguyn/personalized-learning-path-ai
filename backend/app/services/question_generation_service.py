@@ -162,8 +162,8 @@ class LessonScopedQuestionGenerationService:
     ) -> Dict[str, Any]:
         context = self.lesson_structure_service.get_lesson_context(lesson_id)
         recommendation = self._resolve_recommendation(lesson_id, context)
-        if not self.llm_client.is_available():
-            raise RuntimeError("Lesson question LLM is not available.")
+        existing_questions = self.question_repository.list_by_lesson(lesson_id)
+        existing_count = len(existing_questions)
 
         recommendation, chunk_ids, chunks = self._load_generation_scope(
             lesson_id=lesson_id,
@@ -202,7 +202,12 @@ class LessonScopedQuestionGenerationService:
                 )
 
         if validation is None:
-            raise RuntimeError("Question generation did not return a validation payload.")
+            return self._build_existing_or_insufficient_response(
+                lesson_id=lesson_id,
+                chunk_ids=chunk_ids,
+                existing_count=existing_count,
+                default_message="Không thể nhận phản hồi hợp lệ từ dịch vụ tạo câu hỏi.",
+            )
         if validation.status == "insufficient_context":
             return {
                 "lesson_id": lesson_id,
@@ -211,6 +216,8 @@ class LessonScopedQuestionGenerationService:
                 "question_ids": [],
                 "chunks_used": chunk_ids,
                 "insufficient_data": True,
+                "reused_existing": False,
+                "existing_count": existing_count,
                 "message": validation.message,
             }
         if validation.status != "ok":
@@ -236,11 +243,18 @@ class LessonScopedQuestionGenerationService:
                 bloom_levels=bloom_levels,
             )
             if not fallback_questions:
-                raise RuntimeError(f"Question generation failed validation: {validation.errors}")
+                return self._build_existing_or_insufficient_response(
+                    lesson_id=lesson_id,
+                    chunk_ids=chunk_ids,
+                    existing_count=existing_count,
+                    default_message="Hệ thống tạm thời chưa tạo được câu hỏi tự động từ nội dung bài học hiện tại.",
+                )
             validation_message = validation.message or "LLM output invalid."
             validation = self._build_validation_from_fallback(
                 questions=fallback_questions,
-                message=f"Used local fallback generation because remote LLM was unavailable or returned invalid JSON. {validation_message}",
+                message=self._build_llm_fallback_message(
+                    f"Đã dùng chế độ tạo câu hỏi cục bộ vì dịch vụ AI chưa phản hồi đúng định dạng. {validation_message}"
+                ),
             )
 
         if overwrite:
@@ -294,6 +308,8 @@ class LessonScopedQuestionGenerationService:
             "question_ids": inserted_ids,
             "chunks_used": chunk_ids,
             "insufficient_data": False,
+            "reused_existing": False,
+            "existing_count": existing_count,
             "message": validation.message,
         }
 
@@ -543,13 +559,65 @@ class LessonScopedQuestionGenerationService:
         *,
         questions: List[ValidatedLessonQuestion],
         message: str,
+        status: str = "ok",
     ):
         return type("FallbackValidationPayload", (), {
-            "status": "ok",
+            "status": status,
             "message": message,
             "questions": questions,
             "errors": [],
         })()
+
+    def _build_existing_or_insufficient_response(
+        self,
+        *,
+        lesson_id: str,
+        chunk_ids: List[str],
+        existing_count: int,
+        default_message: str,
+    ) -> Dict[str, Any]:
+        if existing_count > 0:
+            return {
+                "lesson_id": lesson_id,
+                "status": "reused_existing",
+                "generated_count": 0,
+                "question_ids": [],
+                "chunks_used": chunk_ids,
+                "insufficient_data": False,
+                "reused_existing": True,
+                "existing_count": existing_count,
+                "message": self._build_llm_fallback_message(
+                    f"{default_message} Hệ thống đang dùng lại {existing_count} câu hỏi đã tạo trước đó cho bài học này."
+                ),
+            }
+        return {
+            "lesson_id": lesson_id,
+            "status": "insufficient_context",
+            "generated_count": 0,
+            "question_ids": [],
+            "chunks_used": chunk_ids,
+            "insufficient_data": True,
+            "reused_existing": False,
+            "existing_count": 0,
+            "message": self._build_llm_fallback_message(default_message),
+        }
+
+    def _build_llm_fallback_message(self, default_message: str) -> str:
+        raw_error = (self.llm_client.get_last_error() or "").lower()
+        if not raw_error:
+            return default_message
+        if "resource_exhausted" in raw_error or "quota exceeded" in raw_error or "429" in raw_error:
+            return (
+                "Dịch vụ AI đang vượt giới hạn quota tạm thời. "
+                "Hệ thống đã chuyển sang phương án dự phòng cục bộ nếu có thể. "
+                "Bạn có thể thử lại sau ít phút nếu muốn có bộ câu hỏi AI đầy đủ hơn."
+            )
+        if "not available" in raw_error:
+            return (
+                "Dịch vụ AI tạo câu hỏi hiện chưa sẵn sàng. "
+                "Hệ thống sẽ dùng dữ liệu cục bộ khi có thể."
+            )
+        return default_message
 
     @staticmethod
     def _select_excerpt(*, content: str, strict_keywords: List[str], broad_keywords: List[str]) -> str:

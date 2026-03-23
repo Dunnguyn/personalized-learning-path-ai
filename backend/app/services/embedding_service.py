@@ -12,6 +12,8 @@ from backend.app.repositories import ResourceChunkRepository, ResourceRepository
 from backend.app.services.chunk_service import build_chunk_documents, clean_text, split_into_chunks
 
 _embedding_service = EmbeddingService()
+# Backward-compatible public alias used by existing service imports.
+embedding_service = _embedding_service
 _retrieval_service = SemanticRetrievalService()
 _resource_repository = ResourceRepository()
 _chunk_repository = ResourceChunkRepository()

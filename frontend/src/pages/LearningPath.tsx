@@ -1,114 +1,126 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
-import { learningPathService } from '../services/learningPathService';
+import {
+  learningPathService,
+  type LearningLevel,
+  type LearningPath,
+  type LearningPathSubjectId,
+} from '../services/learningPathService';
 import { SUBJECTS } from '../utils/subjects';
-import type { ConceptNode, LearningPath } from '../services/learningPathService';
 
-interface ConceptWithProgress extends ConceptNode {
-  mastery?: number;
-  status?: 'not_started' | 'in_progress' | 'proficient' | 'complete';
-  prerequisites?: number[];
-}
+const CARD_THEMES = ['pastel-pink', 'pastel-yellow', 'pastel-purple', 'pastel-mint'] as const;
 
 export default function LearningPath() {
   const { user } = useAuth();
+  const location = useLocation();
   const navigate = useNavigate();
-  const [concepts, setConcepts] = useState<ConceptWithProgress[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [showCreatePath, setShowCreatePath] = useState(false);
-  const [pathForm, setPathForm] = useState({
-    subjectId: SUBJECTS[0]?.id ?? '',
-    goalDetail: '',
-    level: 'beginner' as const,
-  });
   const [generatingPath, setGeneratingPath] = useState(false);
   const [learningPaths, setLearningPaths] = useState<LearningPath[]>([]);
   const [hoveredPathId, setHoveredPathId] = useState<string | null>(null);
-  const [pathNotice, setPathNotice] = useState<string | null>(null);
-
-  const buildGoal = (subjectId: string, goalDetail: string) => {
-    const subject = SUBJECTS.find((item) => item.id === subjectId);
-    const baseGoal = subject?.goal ?? '';
-    const detail = goalDetail.trim();
-
-    if (!baseGoal && !detail) {
-      return '';
-    }
-
-    if (!baseGoal) {
-      return detail;
-    }
-
-    if (!detail) {
-      return baseGoal;
-    }
-
-    return `${baseGoal} - ${detail}`;
-  };
+  const [pendingDeletePath, setPendingDeletePath] = useState<LearningPath | null>(null);
+  const [deletingPathId, setDeletingPathId] = useState<string | null>(null);
+  const [pathForm, setPathForm] = useState({
+    subjectId: SUBJECTS[0]?.id ?? '',
+    goalDetail: '',
+    level: 'beginner' as LearningLevel,
+  });
 
   useEffect(() => {
     if (!user) {
       navigate('/login');
       return;
     }
-    fetchLearningPath();
-  }, [user, navigate]);
+    void fetchLearningPaths();
+  }, [navigate, user]);
 
-  const fetchLearningPath = async () => {
-    if (!user) return;
+  useEffect(() => {
+    const state = location.state as { notice?: string } | null;
+    if (!state?.notice) {
+      return;
+    }
+
+    setNotice(state.notice);
+    navigate(location.pathname, { replace: true, state: {} });
+  }, [location.pathname, location.state, navigate]);
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setNotice(null);
+    }, 4500);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
+
+  const buildGoal = (subjectId: string, goalDetail: string) => {
+    const subject = SUBJECTS.find((item) => item.id === subjectId);
+    const baseGoal = subject?.goal?.trim() ?? '';
+    const detail = goalDetail.trim();
+
+    if (!baseGoal && !detail) {
+      return '';
+    }
+    if (!baseGoal) {
+      return detail;
+    }
+    if (!detail) {
+      return baseGoal;
+    }
+    return `${baseGoal} - ${detail}`;
+  };
+
+  const fetchLearningPaths = async () => {
+    if (!user) {
+      return;
+    }
+
     try {
       setLoading(true);
       setError(null);
 
-      const progress = await learningPathService.getUserProgress(user.user_id);
-      const allConcepts = await learningPathService.getConcepts();
-
-      const conceptsWithProgress = allConcepts.map((concept) => {
-        const progressData = progress.summary?.concepts?.find(
-          (p: any) => p.concept_id === concept.concept_id
-        );
-
-        return {
-          ...concept,
-          mastery: progressData?.mastery || 0,
-          status: progressData?.status || 'not_started',
-          prerequisites: concept.prerequisites || [],
-        };
-      });
-
-      setConcepts(conceptsWithProgress);
-
       const history = await learningPathService.getLearningPathHistory();
-      if (history && history.length > 0) {
-        const pathsWithDetails = await Promise.all(
-          history.map(async (path) => {
-            try {
-              return await learningPathService.getLearningPathById(path.path_id);
-            } catch (detailError) {
-              console.error('Error fetching learning path detail:', detailError);
-              return {
-                path_id: path.path_id,
-                subject_id: path.subject_id,
-                goal: path.goal,
-                level: path.level,
-                generated_at: path.generated_at,
-                recommended_path: [],
-                chapters: [],
-                curriculum: [],
-                message: '',
-              } as LearningPath;
-            }
-          })
-        );
-        setLearningPaths(pathsWithDetails);
-      } else {
+      if (!history.length) {
         setLearningPaths([]);
+        setHoveredPathId(null);
+        return;
       }
+
+      const pathsWithDetails = await Promise.all(
+        history.map(async (path) => {
+          try {
+            return await learningPathService.getLearningPathById(path.path_id);
+          } catch (detailError) {
+            console.error('Error fetching learning path detail:', detailError);
+            return {
+              path_id: path.path_id,
+              subject_id: path.subject_id,
+              goal: path.goal,
+              level: path.level,
+              generated_at: path.generated_at,
+              recommended_path: [],
+              chapters: [],
+              curriculum: [],
+              message: '',
+            } as LearningPath;
+          }
+        }),
+      );
+
+      setLearningPaths(pathsWithDetails);
+      setHoveredPathId((current) => current ?? pathsWithDetails[0]?.path_id ?? null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error fetching learning path';
+      const message = err instanceof Error ? err.message : 'Không thể tải lộ trình học';
       setError(message);
       console.error('Error fetching learning path:', err);
     } finally {
@@ -116,46 +128,46 @@ export default function LearningPath() {
     }
   };
 
-  const handleGeneratePath = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const goal = buildGoal(pathForm.subjectId, pathForm.goalDetail);
-    if (!user || !goal) {
-      setError('Vui lòng chọn môn học');
+  const handleGeneratePath = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (!user) {
       return;
     }
 
-    setGeneratingPath(true);
-    setError(null);
+    const goal = buildGoal(pathForm.subjectId, pathForm.goalDetail);
+    if (!goal) {
+      setError('Vui lòng chọn môn học hoặc nhập mục tiêu chi tiết.');
+      return;
+    }
 
     try {
+      setGeneratingPath(true);
+      setError(null);
+      setNotice(null);
+
       const result = await learningPathService.generateLearningPath({
-        subject_id: pathForm.subjectId as 'python' | 'cpp' | 'csharp' | 'java' | 'web',
+        subject_id: pathForm.subjectId as LearningPathSubjectId,
         goal,
         level: pathForm.level,
       });
-      setPathNotice(
-        result.curriculum_source === 'fallback'
-          ? result.curriculum_notice ||
-              'AI hiện chưa phản hồi ổn định. Hệ thống đã dùng lộ trình dự phòng.'
-          : null
-      );
 
       setLearningPaths((previous) => [result, ...previous]);
-
-      const updatedConcepts = concepts.map((c) => {
-        const pathItem = result.recommended_path.find((p) => p.concept_id === c.concept_id);
-        return pathItem ? { ...c, ...pathItem } : c;
-      });
-
-      setConcepts(updatedConcepts);
+      setHoveredPathId(result.path_id);
       setShowCreatePath(false);
       setPathForm({
         subjectId: SUBJECTS[0]?.id ?? '',
         goalDetail: '',
         level: 'beginner',
       });
+      setNotice(
+        result.curriculum_source === 'fallback'
+          ? result.curriculum_notice ||
+              'AI chưa sẵn sàng cho lần tạo này. Hệ thống đã dùng lộ trình dự phòng để bạn tiếp tục học.'
+          : 'Đã tạo lộ trình học mới thành công.',
+      );
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error generating learning path';
+      const message = err instanceof Error ? err.message : 'Không thể tạo lộ trình học';
       setError(message);
       console.error('Error generating path:', err);
     } finally {
@@ -163,106 +175,138 @@ export default function LearningPath() {
     }
   };
 
+  const handleConfirmDeletePath = async () => {
+    if (!pendingDeletePath) {
+      return;
+    }
+
+    try {
+      setDeletingPathId(pendingDeletePath.path_id);
+      setError(null);
+      setNotice(null);
+
+      await learningPathService.deleteLearningPath(pendingDeletePath.path_id);
+
+      setLearningPaths((previous) => {
+        const next = previous.filter((path) => path.path_id !== pendingDeletePath.path_id);
+        setHoveredPathId((current) => {
+          if (current !== pendingDeletePath.path_id) {
+            return current;
+          }
+          return next[0]?.path_id ?? null;
+        });
+        return next;
+      });
+
+      setPendingDeletePath(null);
+      setNotice('Đã xóa lộ trình học và dữ liệu được sinh riêng cho lộ trình này.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Không thể xóa lộ trình học';
+      setError(message);
+    } finally {
+      setDeletingPathId(null);
+    }
+  };
+
+  const activePath = useMemo(() => {
+    return learningPaths.find((path) => path.path_id === hoveredPathId) ?? learningPaths[0] ?? null;
+  }, [hoveredPathId, learningPaths]);
+
+  const stats = useMemo(() => {
+    let total = 0;
+    let completed = 0;
+    let inProgress = 0;
+
+    learningPaths.forEach((path) => {
+      (path.curriculum || []).forEach((chapter) => {
+        (chapter.lessons || []).forEach((lesson) => {
+          total += 1;
+          if (lesson.status === 'complete') {
+            completed += 1;
+          } else if (lesson.status === 'in_progress') {
+            inProgress += 1;
+          }
+        });
+      });
+    });
+
+    return {
+      total,
+      completed,
+      inProgress,
+      progress: total > 0 ? Math.round((completed / total) * 100) : 0,
+    };
+  }, [learningPaths]);
+
   const getChapterStatus = (lessons: Array<{ status?: string }>) => {
-    if (!lessons.length) return 'Chưa bắt đầu';
-    if (lessons.every((lesson) => lesson.status === 'complete')) return 'Hoàn thành';
-    if (lessons.some((lesson) => lesson.status === 'in_progress')) return 'Đang học';
+    if (!lessons.length) {
+      return 'Chưa bắt đầu';
+    }
+    if (lessons.every((lesson) => lesson.status === 'complete')) {
+      return 'Hoàn thành';
+    }
+    if (lessons.some((lesson) => lesson.status === 'in_progress')) {
+      return 'Đang học';
+    }
     return 'Chưa bắt đầu';
   };
 
-  const hoveredPath = learningPaths.find((path) => path.path_id === hoveredPathId);
-
-  const calculateStatistics = () => {
-    let totalLessons = 0;
-    let completedLessons = 0;
-    let inProgressLessons = 0;
-
-    learningPaths.forEach((path) => {
-      if (path.curriculum) {
-        path.curriculum.forEach((chapter) => {
-          if (chapter.lessons) {
-            chapter.lessons.forEach((lesson) => {
-              totalLessons++;
-              if (lesson.status === 'complete') {
-                completedLessons++;
-              } else if (lesson.status === 'in_progress') {
-                inProgressLessons++;
-              }
-            });
-          }
-        });
-      }
-    });
-
-    const progress = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0;
-
-    return {
-      total: totalLessons,
-      completed: completedLessons,
-      inProgress: inProgressLessons,
-      progress,
-    };
-  };
-
-  const stats = calculateStatistics();
-
   return (
     <DashboardLayout>
-      <div className="max-w-[1190px]">
-        <h1 className="text-[25px] font-semibold text-[#8f1025] mb-[30px] mt-[25px]">
-          Lộ trình học tập
-        </h1>
+      <div className="page-shell pb-6">
+        <p className="page-kicker">Lộ trình học tập</p>
+        <h1 className="page-title">Lộ trình học tập</h1>
 
         {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-[12px] mb-[40px] text-[14px]">
-            ✕ {error}
+          <div className="white-panel mb-6 border border-red-200 px-4 py-3 text-[14px] text-red-700">{error}</div>
+        )}
+
+        {notice && (
+          <div className="white-panel mb-6 flex items-start justify-between gap-4 border border-[#ead7df] bg-[#fff7fb] px-4 py-3 text-[14px] text-[#8c3451]">
+            <p>{notice}</p>
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              className="shrink-0 rounded-full border border-[#8c3451]/10 bg-white/70 px-3 py-1 text-[12px] font-medium text-[#8c3451] transition hover:bg-white"
+            >
+              Đóng
+            </button>
           </div>
         )}
 
-        {pathNotice && (
-          <div className="bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-[12px] mb-[24px] text-[14px]">
-            <span className="font-medium">AI chưa sẵn sàng cho lần tạo lộ trình này. </span>
-            {pathNotice}
-          </div>
-        )}
-
-        <div className="flex gap-4 mb-[40px]">
-          <button
-            onClick={() => setShowCreatePath(!showCreatePath)}
-            className="bg-[#8f1025] text-white text-[14px] font-medium px-6 py-2 rounded-[12px] hover:bg-[#7a0e20] transition-colors duration-200"
-          >
+        <div className="mb-10 flex flex-wrap gap-4">
+          <button type="button" onClick={() => setShowCreatePath((value) => !value)} className="theme-button">
             + Tạo lộ trình mới
           </button>
           <button
-            onClick={fetchLearningPath}
+            type="button"
+            onClick={() => void fetchLearningPaths()}
             disabled={loading}
-            className="bg-white border border-[#ce6a86] text-[#8f1025] text-[14px] font-medium px-6 py-2 rounded-[12px] hover:bg-gray-50 disabled:opacity-50 transition-colors duration-200"
+            className="theme-button-secondary disabled:opacity-50"
           >
             {loading ? 'Đang tải...' : 'Làm mới'}
           </button>
         </div>
 
         {loading && (
-          <div className="flex items-center justify-center min-h-[400px]">
+          <div className="flex min-h-[400px] items-center justify-center">
             <div className="text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#8f1025] mx-auto mb-4"></div>
-              <p className="text-[#8f1025]">Đang tải lộ trình học tập...</p>
+              <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-b-2 border-[#8c3451]" />
+              <p className="text-[#8c3451]">Đang tải lộ trình học tập...</p>
             </div>
           </div>
         )}
 
         {showCreatePath && !loading && (
-          <div className="bg-white border border-[#ce6a86] rounded-[20px] p-8 mb-[40px]">
-            <h2 className="text-[18px] font-semibold text-[#8f1025] mb-6">Tạo lộ trình học tập mới</h2>
-            <form onSubmit={handleGeneratePath} className="space-y-5">
+          <div className="soft-panel mb-10 p-8">
+            <h2 className="page-section-title mb-6 text-[26px]">Tạo lộ trình học tập mới</h2>
+            <form onSubmit={handleGeneratePath} className="grid gap-5 md:grid-cols-2">
               <div>
-                <label className="block text-[14px] font-medium text-[#8f1025] mb-2">
-                  Môn học
-                </label>
+                <label className="mb-2 block text-[14px] font-medium text-[#514942]">Môn học</label>
                 <select
                   value={pathForm.subjectId}
-                  onChange={(e) => setPathForm({ ...pathForm, subjectId: e.target.value })}
-                  className="w-full px-4 py-2 border border-[#e4b6d0] rounded-[10px] text-[14px] focus:outline-none focus:ring-2 focus:ring-[#8f1025]"
+                  onChange={(event) => setPathForm((previous) => ({ ...previous, subjectId: event.target.value }))}
+                  className="theme-input rounded-[18px]"
                   required
                 >
                   {SUBJECTS.map((subject) => (
@@ -274,26 +318,29 @@ export default function LearningPath() {
               </div>
 
               <div>
-                <label className="block text-[14px] font-medium text-[#8f1025] mb-2">
+                <label className="mb-2 block text-[14px] font-medium text-[#514942]">
                   Mục tiêu chi tiết (tùy chọn)
                 </label>
                 <input
                   type="text"
                   value={pathForm.goalDetail}
-                  onChange={(e) => setPathForm({ ...pathForm, goalDetail: e.target.value })}
+                  onChange={(event) => setPathForm((previous) => ({ ...previous, goalDetail: event.target.value }))}
                   placeholder="VD: backend, OOP, cấu trúc dữ liệu..."
-                  className="w-full px-4 py-2 border border-[#e4b6d0] rounded-[10px] text-[14px] focus:outline-none focus:ring-2 focus:ring-[#8f1025]"
+                  className="theme-input rounded-[18px]"
                 />
               </div>
 
               <div>
-                <label className="block text-[14px] font-medium text-[#8f1025] mb-2">
-                  Cấp độ
-                </label>
+                <label className="mb-2 block text-[14px] font-medium text-[#514942]">Cấp độ</label>
                 <select
                   value={pathForm.level}
-                  onChange={(e) => setPathForm({ ...pathForm, level: e.target.value as typeof pathForm.level })}
-                  className="w-full px-4 py-2 border border-[#e4b6d0] rounded-[10px] text-[14px] focus:outline-none focus:ring-2 focus:ring-[#8f1025]"
+                  onChange={(event) =>
+                    setPathForm((previous) => ({
+                      ...previous,
+                      level: event.target.value as LearningLevel,
+                    }))
+                  }
+                  className="theme-input rounded-[18px]"
                 >
                   <option value="beginner">Bước đầu</option>
                   <option value="intermediate">Trung bình</option>
@@ -301,18 +348,8 @@ export default function LearningPath() {
                 </select>
               </div>
 
-              {error && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-[10px] text-[13px]">
-                  {error}
-                </div>
-              )}
-
-              <div className="flex gap-3">
-                <button
-                  type="submit"
-                  disabled={generatingPath}
-                  className="bg-[#8f1025] text-white text-[14px] font-medium px-6 py-2 rounded-[10px] hover:bg-[#7a0e20] disabled:opacity-50 transition-colors"
-                >
+              <div className="flex gap-3 md:col-span-2">
+                <button type="submit" disabled={generatingPath} className="theme-button disabled:opacity-60">
                   {generatingPath ? 'Đang tạo...' : 'Tạo lộ trình'}
                 </button>
                 <button
@@ -321,7 +358,7 @@ export default function LearningPath() {
                     setShowCreatePath(false);
                     setError(null);
                   }}
-                  className="bg-gray-100 text-[#8f1025] text-[14px] font-medium px-6 py-2 rounded-[10px] hover:bg-gray-200 transition-colors"
+                  className="theme-button-secondary"
                 >
                   Hủy
                 </button>
@@ -332,32 +369,53 @@ export default function LearningPath() {
 
         {!loading && (
           <>
-            <div className="grid grid-cols-3 gap-[30px]">
-              <div className="col-span-2">
-                <div className="bg-white border border-[#ce6a86] rounded-[20px] p-[30px]">
-                  <h2 className="text-[18px] font-semibold text-[#8f1025] mb-6 flex items-center gap-2">
-                    <span className="w-[3px] h-[24px] bg-[#8f1025]" />
-                    Graph Lộ trình học tập
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+              <div>
+                <div className="soft-panel p-[30px]">
+                  <h2 className="mb-6 flex items-center gap-2 text-[18px] font-medium text-[#8c3451]">
+                    <span className="h-[24px] w-[3px] rounded-full bg-[#8c3451]" />
+                    Sơ đồ lộ trình học tập
                   </h2>
 
                   {learningPaths.length === 0 ? (
-                    <div className="bg-white border border-[#ce6a86] rounded-[12px] p-[20px] text-center text-[13px] text-[#832e44]">
+                    <div className="white-panel p-5 text-center text-[13px] text-[#5b544d]">
                       Chưa có lộ trình. Hãy tạo lộ trình mới để hiển thị tại đây.
                     </div>
                   ) : (
-                    <div className="space-y-[16px]">
-                      {learningPaths.map((path) => (
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {learningPaths.map((path, index) => (
                         <div
                           key={path.path_id}
+                          role="button"
+                          tabIndex={0}
                           onClick={() => navigate(`/learning-path/${path.path_id}`, { state: { path } })}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              navigate(`/learning-path/${path.path_id}`, { state: { path } });
+                            }
+                          }}
                           onMouseEnter={() => setHoveredPathId(path.path_id)}
-                          onMouseLeave={() => setHoveredPathId(null)}
-                          className="rounded-[10px] p-[18px] cursor-pointer transition-all duration-200 bg-[#de8fac] text-white hover:shadow-md relative"
+                          onFocus={() => setHoveredPathId(path.path_id)}
+                          className={`pastel-card min-h-[116px] cursor-pointer p-[18px] text-left text-[#5f3040] transition-all duration-200 hover:-translate-y-0.5 ${
+                            CARD_THEMES[index % CARD_THEMES.length]
+                          }`}
                         >
-                          <p className="text-[12px] font-medium mb-2">
-                            {path.goal || 'Tên môn học - Mục tiêu'}
-                          </p>
-                          <p className="text-[10px] opacity-90">
+                          <div className="mb-3 flex items-start justify-between gap-3">
+                            <p className="text-[13px] font-medium">{path.goal || 'Tên môn học - Mục tiêu'}</p>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setPendingDeletePath(path);
+                              }}
+                              disabled={deletingPathId === path.path_id}
+                              className="rounded-full border border-[#8c3451]/15 bg-white/80 px-3 py-1 text-[11px] font-medium text-[#8c3451] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {deletingPathId === path.path_id ? 'Đang xóa...' : 'Xóa'}
+                            </button>
+                          </div>
+                          <p className="text-[11px] opacity-80">
                             Cấp độ: <span className="font-medium">{path.level}</span> • Cập nhật:{' '}
                             <span className="font-medium">
                               {new Date(path.generated_at).toLocaleDateString('vi-VN')}
@@ -371,34 +429,29 @@ export default function LearningPath() {
               </div>
 
               <div>
-                <div className="bg-white border border-[#ce6a86] rounded-[20px] p-[30px] sticky top-[100px]">
-                  <h3 className="text-[12px] font-semibold text-[#5b1724] mb-4">
-                    Thông tin chi tiết môn học
-                  </h3>
+                <div className="soft-panel sticky top-[24px] p-[30px]">
+                  <h3 className="mb-4 text-[14px] font-medium text-[#8c3451]">Thông tin chi tiết môn học</h3>
 
-                  {hoveredPath?.curriculum && hoveredPath.curriculum.length > 0 ? (
+                  {activePath?.curriculum && activePath.curriculum.length > 0 ? (
                     <div className="space-y-4">
-                      <div className="mb-4 pb-3 border-b border-[#ce6a86]">
-                        <p className="text-[11px] font-semibold text-[#8f1025]">{hoveredPath.goal}</p>
+                      <div className="mb-4 border-b border-[#8c3451]/10 pb-3">
+                        <p className="text-[14px] font-semibold text-[#8c3451]">{activePath.goal}</p>
                       </div>
-                      {hoveredPath.curriculum.map((chapter, index) => {
+
+                      {activePath.curriculum.map((chapter, index) => {
                         const lessons = chapter.lessons || [];
                         const status = getChapterStatus(lessons);
+
                         return (
-                          <div
-                            key={`${chapter.title}-${index}`}
-                            className="border border-[#ce6a86] rounded-[12px] p-4"
-                          >
+                          <div key={`${chapter.chapter_id}-${index}`} className="metric-card p-4">
                             <div className="flex items-start justify-between gap-3">
                               <div>
-                                <p className="text-[12px] font-semibold text-[#8f1025]">
+                                <p className="text-[13px] font-semibold text-[#8c3451]">
                                   {chapter.title || `Chương ${index + 1}`}
                                 </p>
-                                <p className="text-[10px] text-[#8f1025]/70 mt-1">
-                                  {lessons.length} bài học
-                                </p>
+                                <p className="mt-1 text-[11px] text-[#66615b]">{lessons.length} bài học</p>
                               </div>
-                              <span className="text-[10px] px-2 py-0.5 rounded-full border border-[#8f1025] text-[#8f1025]">
+                              <span className="rounded-full border border-[#8c3451]/10 bg-white px-2 py-1 text-[10px] text-[#8c3451]">
                                 {status}
                               </span>
                             </div>
@@ -407,8 +460,8 @@ export default function LearningPath() {
                       })}
                     </div>
                   ) : (
-                    <div className="text-center py-12">
-                      <p className="text-[14px] text-gray-500">
+                    <div className="py-12 text-center">
+                      <p className="text-[14px] text-[#6d6660]">
                         {learningPaths.length > 0
                           ? 'Di chuột vào lộ trình để xem chi tiết'
                           : 'Chưa có thông tin chương học.'}
@@ -419,27 +472,69 @@ export default function LearningPath() {
               </div>
             </div>
 
-            <div className="grid grid-cols-4 gap-[20px] mt-[40px]">
-              <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
-                <p className="text-[12px] text-gray-600 font-medium mb-2">Tổng bài học</p>
-                <p className="text-[28px] font-bold text-[#8f1025]">{stats.total}</p>
+            <div className="mt-10 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+              <div className="metric-card bg-[#fff7fb] p-6 text-center">
+                <p className="mb-2 text-[12px] font-medium text-[#66615b]">Tổng bài học</p>
+                <p className="text-[28px] font-bold text-[#8c3451]">{stats.total}</p>
               </div>
-              <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
-                <p className="text-[12px] text-gray-600 font-medium mb-2">Đã hoàn thành</p>
-                <p className="text-[28px] font-bold text-green-600">{stats.completed}</p>
+              <div className="metric-card bg-[#fff7fb] p-6 text-center">
+                <p className="mb-2 text-[12px] font-medium text-[#66615b]">Đã hoàn thành</p>
+                <p className="text-[28px] font-bold text-[#8c3451]">{stats.completed}</p>
               </div>
-              <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
-                <p className="text-[12px] text-gray-600 font-medium mb-2">Đang học</p>
-                <p className="text-[28px] font-bold text-blue-600">{stats.inProgress}</p>
+              <div className="metric-card bg-[#fff7fb] p-6 text-center">
+                <p className="mb-2 text-[12px] font-medium text-[#66615b]">Đang học</p>
+                <p className="text-[28px] font-bold text-[#8c3451]">{stats.inProgress}</p>
               </div>
-              <div className="bg-white border border-[#ce6a86] rounded-[16px] p-[24px] text-center">
-                <p className="text-[12px] text-gray-600 font-medium mb-2">Tiến độ</p>
-                <p className="text-[28px] font-bold text-[#8f1025]">{stats.progress}%</p>
+              <div className="metric-card bg-[#fff7fb] p-6 text-center">
+                <p className="mb-2 text-[12px] font-medium text-[#66615b]">Tiến độ</p>
+                <p className="text-[28px] font-bold text-[#8c3451]">{stats.progress}%</p>
               </div>
             </div>
           </>
         )}
       </div>
+
+      {pendingDeletePath && (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-[#2a1522]/20 px-4 py-6 backdrop-blur-sm"
+          onClick={() => {
+            if (!deletingPathId) {
+              setPendingDeletePath(null);
+            }
+          }}
+        >
+          <div
+            className="white-panel ui-pop-in w-full max-w-[480px] rounded-[28px] p-7 shadow-[0_28px_80px_rgba(140,52,81,0.16)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="page-kicker mb-2">Xóa lộ trình</p>
+            <h3 className="text-[28px] font-semibold tracking-[-0.04em] text-[#141217]">Bạn có chắc muốn xóa?</h3>
+            <p className="mt-4 text-[15px] leading-7 text-[#5f5853]">
+              Lộ trình <span className="font-semibold text-[#8c3451]">{pendingDeletePath.goal}</span> sẽ bị xóa cùng
+              các chương, bài học và câu hỏi được sinh riêng cho lộ trình này.
+            </p>
+
+            <div className="mt-8 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setPendingDeletePath(null)}
+                disabled={Boolean(deletingPathId)}
+                className="theme-button-secondary"
+              >
+                Giữ lại
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmDeletePath()}
+                disabled={Boolean(deletingPathId)}
+                className="theme-button disabled:opacity-60"
+              >
+                {deletingPathId ? 'Đang xóa...' : 'Xóa lộ trình'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardLayout>
   );
 }

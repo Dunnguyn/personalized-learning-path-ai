@@ -16,7 +16,9 @@ from backend.app.ai_module import CurriculumLLMClient
 from backend.app.repositories import (
     ChapterRepository,
     LearningPathRepository,
+    LessonRecommendedChunkRepository,
     LessonRepository,
+    QuestionBankRepository,
     SubjectRepository,
 )
 from backend.app.services.lesson_chunk_service import lesson_chunk_service
@@ -39,6 +41,8 @@ class HybridLearningPathService:
         self.chapter_repository = ChapterRepository()
         self.lesson_repository = LessonRepository()
         self.learning_path_repository = LearningPathRepository()
+        self.lesson_recommended_chunk_repository = LessonRecommendedChunkRepository()
+        self.question_repository = QuestionBankRepository()
         self.lesson_chunk_service = lesson_chunk_service
         self.llm_client = CurriculumLLMClient()
         self.max_chunks_per_lesson = int(os.getenv("LEARNING_PATH_MAX_CHUNKS_PER_LESSON", "8"))
@@ -256,6 +260,55 @@ class HybridLearningPathService:
         )
         serialized = [self._serialize_learning_path(item) for item in documents[:limit]]
         return serialized
+
+    def delete_learning_path(self, *, path_id: str, user_id: str) -> Dict[str, Any]:
+        """Delete a stored learning path and generated lesson/chapter artifacts owned by the user."""
+        normalized_path_id = (path_id or "").strip()
+        if not normalized_path_id:
+            raise ValueError("path_id is required")
+
+        document = self.learning_path_repository.get_by_path_id(normalized_path_id)
+        if not document or str(document.get("user_id") or "") != str(user_id):
+            raise ValueError("Learning path not found.")
+
+        lesson_ids = {
+            lesson.get("lesson_id")
+            for chapter in document.get("chapters", [])
+            for lesson in chapter.get("lessons", [])
+            if lesson.get("lesson_id")
+        }
+        chapter_ids = {
+            chapter.get("chapter_id")
+            for chapter in document.get("chapters", [])
+            if chapter.get("chapter_id")
+        }
+
+        generated_lessons = self.lesson_repository.list_by_learning_path(normalized_path_id)
+        lesson_ids.update(str(item["_id"]) for item in generated_lessons if item.get("_id"))
+
+        generated_chapters = self.chapter_repository.list_by_learning_path(normalized_path_id)
+        chapter_ids.update(str(item["_id"]) for item in generated_chapters if item.get("_id"))
+
+        lesson_id_list = sorted(lesson_ids)
+        chapter_id_list = sorted(chapter_ids)
+
+        removed_recommendations = self.lesson_recommended_chunk_repository.delete_by_lesson_ids(lesson_id_list)
+        removed_questions = self.question_repository.delete_by_lesson_ids(lesson_id_list)
+        removed_lessons = self.lesson_repository.delete_many(lesson_id_list)
+        removed_chapters = self.chapter_repository.delete_many(chapter_id_list)
+        deleted_paths = self.learning_path_repository.delete_by_path_id(normalized_path_id, user_id=user_id)
+
+        if deleted_paths == 0:
+            raise ValueError("Learning path not found.")
+
+        return {
+            "path_id": normalized_path_id,
+            "deleted": True,
+            "removed_lessons": removed_lessons,
+            "removed_chapters": removed_chapters,
+            "removed_recommendations": removed_recommendations,
+            "removed_questions": removed_questions,
+        }
 
     def update_lesson_progress(
         self,

@@ -159,6 +159,7 @@ def create_user(user: UserCreate):
             name=doc["name"],
             email=doc["email"],
             level=doc["level"],
+            learning_goal=doc.get("learning_goal"),
             created_at=doc["created_at"]
         )
     
@@ -204,6 +205,7 @@ def get_current_user_profile(current_user: dict = Depends(get_current_user)):
             name=current_user["name"],
             email=current_user["email"],
             level=current_user.get("level", "beginner"),
+            learning_goal=current_user.get("learning_goal"),
             created_at=current_user["created_at"]
         )
     except Exception as e:

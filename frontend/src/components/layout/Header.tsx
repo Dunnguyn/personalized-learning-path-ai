@@ -1,61 +1,71 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import iconUser from '../../assets/account.png';
-import iconSearch from '../../assets/search.png';
 
 export default function Header() {
   const [searchQuery, setSearchQuery] = useState('');
   const { user } = useAuth();
   const navigate = useNavigate();
-  
-  const userName = user?.name || "Guest User";
 
-  const handleSearch = async (e: React.FormEvent) => {
+  const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     const query = searchQuery.trim();
     if (!query) return;
-
     navigate(`/resources?q=${encodeURIComponent(query)}`);
   };
 
   return (
-    <div className="fixed left-[250px] top-0 right-0 h-[80.5px] bg-accent border-b-[0.5px] border-[rgba(203,107,134,0.5)] flex items-center px-8 gap-6 z-10">
-      {/* Search Bar */}
-      <form onSubmit={handleSearch} className="flex-1 max-w-[380px] ml-[180px]">
-        <div className="relative flex items-center">
-          <input
-            type="text"
-            placeholder="Tìm kiếm học liệu"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full h-[35px] pl-5 pr-12 rounded-[20px] bg-[rgba(222,143,172,0.5)] text-[#8f1025] text-[15px] placeholder-[#8f1025]/70 focus:outline-none focus:ring-2 focus:ring-[#ce6a86] transition-all"
-          />
+    <header className="app-toolbar">
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2">
+          <span className="window-dot bg-[#ff6d5f]" />
+          <span className="window-dot bg-[#ffbe2f]" />
+          <span className="window-dot bg-[#28c840]" />
+        </div>
+        <div className="hidden items-center gap-3 text-[#6f5b63] md:flex">
+          <span className="text-[16px] font-medium">^</span>
+          <span className="text-[18px]">&lt;</span>
+        </div>
+      </div>
+
+      <form onSubmit={handleSearch} className="mx-6 flex-1">
+        <div className="browser-pill mx-auto flex w-full max-w-[560px] items-center justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[#8c3451] text-[12px] font-semibold text-white">
+              /
+            </span>
+            <input
+              type="text"
+              placeholder="your.education"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full min-w-0 bg-transparent text-[13px] text-[#17151a] outline-none placeholder:text-[#17151a]"
+            />
+            <span className="text-[13px] font-semibold text-[#876f79]">o</span>
+          </div>
           <button
             type="submit"
-            className="absolute right-0 w-[35px] h-[35px] rounded-[20px] bg-[rgba(222,143,172,0.5)] flex items-center justify-center hover:bg-[rgba(222,143,172,0.7)] transition-all"
+            className="ml-4 flex h-8 w-8 items-center justify-center rounded-full bg-[#8c3451]/10 text-[12px] font-semibold text-[#8c3451] transition-colors hover:bg-[#8c3451]/15"
           >
-            <img
-              alt="Search"
-              className="w-[18px] h-[18px] object-cover"
-              src={iconSearch}
-            />
+            ...
           </button>
         </div>
       </form>
 
-      {/* User Info */}
-      <div className="flex items-center gap-4 ml-auto">
-        <div className="flex flex-col items-end">
-          <p className="text-[10px] text-secondary italic leading-tight">Xin chào,</p>
-          <p className="text-[13px] text-secondary font-medium leading-tight mt-0.5">{userName}</p>
+      <div className="flex items-center gap-3 text-[#17151a]">
+        <button className="flex h-10 w-10 items-center justify-center rounded-full bg-white/78 text-[16px] text-[#8c3451] shadow-[0_8px_18px_rgba(137,78,99,0.08)] transition-transform hover:-translate-y-0.5">
+          ↺
+        </button>
+        <button className="flex h-10 w-10 items-center justify-center rounded-full bg-white/78 text-[16px] text-[#8c3451] shadow-[0_8px_18px_rgba(137,78,99,0.08)] transition-transform hover:-translate-y-0.5">
+          ↗
+        </button>
+        <button className="flex h-10 w-10 items-center justify-center rounded-full bg-white/78 text-[18px] text-[#8c3451] shadow-[0_8px_18px_rgba(137,78,99,0.08)] transition-transform hover:-translate-y-0.5">
+          +
+        </button>
+        <div className="hidden rounded-full bg-white/78 px-5 py-2.5 text-[12px] font-medium text-[#6f5b63] shadow-[0_8px_18px_rgba(137,78,99,0.08)] lg:block">
+          {user?.name || 'Khách'}
         </div>
-        <img
-          alt="User Avatar"
-          className="w-[50px] h-[50px] rounded-full object-cover border-2 border-transparent hover:border-[#ce6a86] transition-all cursor-pointer"
-          src={iconUser}
-        />
       </div>
-    </div>
+    </header>
   );
 }

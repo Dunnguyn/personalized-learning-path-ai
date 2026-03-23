@@ -57,10 +57,10 @@ export default function Signup() {
   };
 
   return (
-    <div className="bg-[#fafafa] relative w-full h-screen flex items-center justify-center">
-      <div className="bg-[#f7dfed] h-[800px] rounded-[30px] w-[1253px] relative shadow-lg overflow-hidden flex">
+    <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#fbe7ef_0%,#f6d7e4_100%)] p-6">
+      <div className="relative flex min-h-[800px] w-full max-w-[1253px] overflow-hidden rounded-[36px] border border-white/70 bg-[#fff9fd]/95 shadow-[0_28px_80px_rgba(114,62,83,0.16)]">
         {/* Left Side - Form */}
-        <div className="w-[682px] flex flex-col items-center justify-center p-12">
+        <div className="flex w-[682px] flex-col items-center justify-center bg-[linear-gradient(180deg,#fff7fb_0%,#fce7f0_100%)] p-12">
           {/* Logo */}
           <div className="w-[100px] h-[100px] rounded-full mb-8 overflow-hidden">
             <img 
@@ -82,8 +82,8 @@ export default function Signup() {
           </h1>
 
           {/* Subtitle */}
-          <p className="text-[15px] text-[#832e44] text-center mb-12">
-            Tạo tài khoản của bạn để bắt đầu!
+          <p className="mb-12 text-center text-[15px] text-[#832e44]">
+            Tạo tài khoản để bắt đầu học theo lộ trình cá nhân hóa
           </p>
 
           {/* Form */}
@@ -138,7 +138,7 @@ export default function Signup() {
             <div className="flex justify-center pt-4">
               <button
                 type="submit"
-                className="h-[30px] px-6 bg-[#5b1724] text-[#cc8597] text-[12px] font-semibold rounded-[10px] hover:bg-[#6d1f2e] transition-colors duration-200"
+                className="h-[38px] w-full rounded-[14px] bg-[#5b1724] px-6 text-[13px] font-semibold text-[#f7d5e0] transition-colors duration-200 hover:bg-[#6d1f2e]"
               >
                 Tiếp theo
               </button>
@@ -158,12 +158,13 @@ export default function Signup() {
         </div>
 
         {/* Right Side - Illustration */}
-        <div className="w-[571px] h-full overflow-hidden">
+        <div className="relative h-full w-[571px] overflow-hidden">
           <img 
             alt="Learning illustration" 
             className="w-full h-full object-cover" 
             src={illustrationLearning} 
           />
+          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(140,52,81,0.08)_0%,rgba(255,255,255,0)_45%,rgba(140,52,81,0.14)_100%)]" />
         </div>
       </div>
     </div>

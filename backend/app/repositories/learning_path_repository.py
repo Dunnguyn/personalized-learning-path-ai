@@ -32,3 +32,10 @@ class LearningPathRepository:
 
     def get_by_path_id(self, path_id: str) -> Optional[Dict[str, Any]]:
         return self.collection.find_one({"path_id": path_id})
+
+    def delete_by_path_id(self, path_id: str, *, user_id: Optional[str] = None) -> int:
+        query: Dict[str, Any] = {"path_id": path_id}
+        if user_id is not None:
+            query["user_id"] = user_id
+        result = self.collection.delete_one(query)
+        return result.deleted_count

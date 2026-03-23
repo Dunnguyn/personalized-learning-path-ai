@@ -11,13 +11,23 @@ from bson import ObjectId
 from fastapi import BackgroundTasks, UploadFile
 
 from backend.app.api.schemas import ResourceCreate, ResourceImportRequest
-from backend.app.repositories import ResourceRepository
-from backend.app.services.embedding_service import semantic_search
+from backend.app.repositories import (
+    LessonRecommendedChunkRepository,
+    LessonRepository,
+    QuestionBankRepository,
+    ResourceChunkRepository,
+    ResourceRepository,
+)
+from backend.app.services.embedding_service import embedding_service, semantic_search
 from backend.app.services.ingestion_service import ingestion_service
 
 logger = logging.getLogger(__name__)
 
 _resource_repository = ResourceRepository()
+_chunk_repository = ResourceChunkRepository()
+_lesson_repository = LessonRepository()
+_lesson_recommended_chunk_repository = LessonRecommendedChunkRepository()
+_question_repository = QuestionBankRepository()
 
 
 def serialize_mongo(document: Dict[str, Any]) -> Dict[str, Any]:
@@ -192,6 +202,93 @@ def get_pdf_file_path(resource_id: str) -> Path:
     if not pdf_path:
         raise ValueError("Resource does not have an associated PDF file.")
     return Path(pdf_path)
+
+
+def get_resource_by_id_service(resource_id: str) -> Dict[str, Any]:
+    """Return a single top-level resource with flattened metadata."""
+    resource = _resource_repository.get(resource_id)
+    if not resource:
+        raise ValueError("Resource not found.")
+
+    metadata = resource.get("metadata", {}) or {}
+    return {
+        "resource_id": str(resource["_id"]),
+        "title": str(resource.get("title") or ""),
+        "source": str(resource.get("source") or "manual"),
+        "type": str(resource.get("type") or "text"),
+        "topic": str(resource.get("topic") or ""),
+        "level": metadata.get("level"),
+        "concept_id": metadata.get("concept_id"),
+        "url": metadata.get("url"),
+        "content_summary": resource.get("content_summary"),
+        "status": resource.get("status"),
+        "chunks_count": int(resource.get("chunks_count", 0)),
+        "processing_time": float(resource.get("processing_time", 0.0)),
+        "metadata": metadata,
+        "created_at": resource.get("created_at"),
+        "updated_at": resource.get("updated_at"),
+    }
+
+
+def delete_resource_service(resource_id: str) -> Dict[str, Any]:
+    """Delete a top-level resource and its derived chunk documents."""
+    resource = _resource_repository.get(resource_id)
+    if not resource:
+        raise ValueError("Resource not found.")
+
+    chunks = _chunk_repository.get_by_resource_ids([resource_id])
+    chunk_ids = [str(chunk["_id"]) for chunk in chunks]
+    vector_ids = [f"{resource_id}:{int(chunk.get('chunk_index', 0))}" for chunk in chunks]
+
+    affected_recommendations = _lesson_recommended_chunk_repository.find_by_resources_or_chunks(
+        resource_ids=[resource_id],
+        chunk_ids=chunk_ids,
+    )
+    affected_lesson_ids = [str(item["lesson_id"]) for item in affected_recommendations if item.get("lesson_id")]
+
+    recommendation_ids = [item["_id"] for item in affected_recommendations if item.get("_id")]
+    if recommendation_ids:
+        _lesson_recommended_chunk_repository.delete_many_by_ids(recommendation_ids)
+
+    if affected_lesson_ids:
+        _lesson_repository.update_many(
+            affected_lesson_ids,
+            {
+                "recommended_chunk_ids": [],
+                "recommended_resource_ids": [],
+            },
+        )
+
+    removed_question_bank_entries = _question_repository.delete_by_resources_or_chunks(
+        resource_ids=[resource_id],
+        chunk_ids=chunk_ids,
+    )
+
+    if vector_ids:
+        embedding_service.vector_store.delete_chunks(vector_ids)
+
+    _chunk_repository.delete_for_resource(resource_id)
+
+    pdf_path = resource.get("metadata", {}).get("pdf_file_path")
+    if pdf_path:
+        try:
+            path = Path(pdf_path)
+            if path.exists():
+                path.unlink()
+        except OSError:
+            logger.warning("Could not delete stored PDF for resource %s", resource_id, exc_info=True)
+
+    deleted_count = _resource_repository.delete(resource_id)
+    if deleted_count == 0:
+        raise ValueError("Resource not found.")
+
+    return {
+        "resource_id": str(resource_id),
+        "deleted": True,
+        "removed_chunks": len(chunk_ids),
+        "removed_recommendations": len(recommendation_ids),
+        "removed_question_bank_entries": removed_question_bank_entries,
+    }
 
 
 def get_resource_stats(user_id: Optional[str] = None) -> Dict[str, Any]:

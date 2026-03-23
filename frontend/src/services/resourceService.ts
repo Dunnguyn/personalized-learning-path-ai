@@ -43,6 +43,16 @@ export interface UploadResponse {
   error?: string;
 }
 
+export interface IngestionJobStatus {
+  job_id: string;
+  resource_id: string;
+  status: string;
+  chunks_count: number;
+  processing_time: number;
+  error?: string | null;
+  resource_status?: string | null;
+}
+
 const DEFAULT_PAGE_SIZE = 10;
 const PDF_UPLOAD_TIMEOUT = 60000;
 
@@ -191,16 +201,16 @@ export const resourceService = {
   ): Promise<UploadResponse> {
     try {
       if (!file) {
-        throw new Error('File is required');
+        throw new Error('Vui lòng chọn tệp PDF');
       }
 
       if (!topic || topic.trim().length === 0) {
-        throw new Error('Topic is required');
+        throw new Error('Vui lòng nhập chủ đề');
       }
 
       const maxSize = 100 * 1024 * 1024;
       if (file.size > maxSize) {
-        throw new Error('File size exceeds 100MB limit');
+        throw new Error('Kích thước tệp vượt quá giới hạn 100MB');
       }
 
       const formData = new FormData();
@@ -228,7 +238,7 @@ export const resourceService = {
           signal: controller.signal,
         }),
         PDF_UPLOAD_TIMEOUT,
-        'PDF upload timed out. The file may be too large or complex. Please try a smaller file.'
+        'Tải PDF quá lâu. Tệp có thể quá lớn hoặc quá phức tạp, vui lòng thử tệp nhỏ hơn.'
       )) as Response;
 
       if (!response.ok) {
@@ -236,7 +246,7 @@ export const resourceService = {
         throw new Error(
           errorData.detail ||
             errorData.message ||
-            `Upload failed: ${response.statusText}`
+            `Tải tệp thất bại: ${response.statusText}`
         );
       }
 
@@ -251,10 +261,10 @@ export const resourceService = {
         resource_id: data.resource_id,
         job_id: data.job_id,
         status: data.status,
-        message: 'PDF uploaded successfully',
+        message: 'Tải PDF lên thành công',
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error occurred';
+      const message = error instanceof Error ? error.message : 'Đã xảy ra lỗi không xác định';
       return {
         success: false,
         error: message,
@@ -271,7 +281,7 @@ export const resourceService = {
   ): Promise<UploadResponse> {
     try {
       if (!url || (!url.includes('youtube.com') && !url.includes('youtu.be'))) {
-        throw new Error('Please provide a valid YouTube URL');
+        throw new Error('Vui lòng nhập liên kết YouTube hợp lệ');
       }
 
       const response = (await apiClient.post('/resources/import-youtube', {
@@ -291,10 +301,10 @@ export const resourceService = {
         resource_id: response.resource_id,
         job_id: response.job_id,
         status: response.status,
-        message: 'YouTube resource added successfully',
+        message: 'Đã thêm tài nguyên YouTube thành công',
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to add YouTube resource';
+      const message = error instanceof Error ? error.message : 'Không thể thêm tài nguyên YouTube';
       return {
         success: false,
         error: message,
@@ -314,13 +324,13 @@ export const resourceService = {
   ): Promise<UploadResponse> {
     try {
       if (!data.title.trim()) {
-        throw new Error('Title is required');
+        throw new Error('Vui lòng nhập tiêu đề');
       }
       if (!data.content.trim() || data.content.trim().length < 10) {
-        throw new Error('Content must be at least 10 characters');
+        throw new Error('Nội dung phải có ít nhất 10 ký tự');
       }
       if (!data.topic.trim()) {
-        throw new Error('Topic is required');
+        throw new Error('Vui lòng nhập chủ đề');
       }
 
       const response = (await apiClient.post('/resources', {
@@ -343,10 +353,10 @@ export const resourceService = {
         resource_id: response.resource_id,
         job_id: response.job_id,
         status: response.status,
-        message: 'Web resource added successfully',
+        message: 'Đã thêm tài nguyên web thành công',
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to add web resource';
+      const message = error instanceof Error ? error.message : 'Không thể thêm tài nguyên web';
       return {
         success: false,
         error: message,
@@ -355,23 +365,68 @@ export const resourceService = {
   },
 
   async deleteResource(_resourceId: string): Promise<{ success: boolean; error?: string }> {
-    return {
-      success: false,
-      error: 'Delete resource endpoint is not available in the current backend.',
-    };
+    try {
+      if (!_resourceId.trim()) {
+        throw new Error('Thiếu mã tài nguyên');
+      }
+
+      await apiClient.delete(`/resources/${encodeURIComponent(_resourceId)}`);
+      return {
+        success: true,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Không thể xóa tài nguyên';
+      return {
+        success: false,
+        error: message,
+      };
+    }
   },
 
+  async getIngestionJobStatus(jobId: string): Promise<IngestionJobStatus> {
+    if (!jobId.trim()) {
+      throw new Error('Thiếu mã job xử lý tài nguyên');
+    }
+
+    return apiClient.get(`/resources/jobs/${encodeURIComponent(jobId)}`) as Promise<IngestionJobStatus>;
+  },
+
+  async waitForIngestionCompletion(
+    jobId: string,
+    options?: {
+      intervalMs?: number;
+      timeoutMs?: number;
+    }
+  ): Promise<IngestionJobStatus> {
+    const intervalMs = options?.intervalMs ?? 1500;
+    const timeoutMs = options?.timeoutMs ?? 45000;
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const status = await this.getIngestionJobStatus(jobId);
+      const normalizedStatus = String(status.status || '').toLowerCase();
+
+      if (['completed', 'complete', 'done', 'success'].includes(normalizedStatus)) {
+        return status;
+      }
+
+      if (['failed', 'error', 'cancelled'].includes(normalizedStatus)) {
+        throw new Error(status.error || 'Xử lý tài nguyên thất bại');
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+    }
+
+    throw new Error('Xử lý tài nguyên mất quá nhiều thời gian. Vui lòng thử tải lại sau.');
+  },
   async getResourceById(resourceId: string): Promise<Resource | null> {
     try {
       if (!resourceId) {
-        throw new Error('Resource ID is required');
+        throw new Error('Thiếu mã tài nguyên');
       }
 
-      const response = await this.getAllResources({ page: 1, size: 100 });
-      return (
-        response.results.find((item) => item.resource_id === resourceId || item._id === resourceId) ||
-        null
-      );
+      const response = await apiClient.get(`/resources/${encodeURIComponent(resourceId)}`);
+      return normalizeResource(response);
     } catch (error) {
       console.error(`Error fetching resource ${resourceId}:`, error);
       return null;

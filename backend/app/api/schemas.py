@@ -75,6 +75,7 @@ class UserResponse(BaseModel):
     name: str
     email: EmailStr
     level: LevelEnum
+    learning_goal: Optional[str] = None
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
@@ -143,6 +144,24 @@ class ResourceResponse(ResourceCreate):
     created_at: datetime
 
 
+class ResourceDetailResponse(BaseModel):
+    resource_id: str
+    title: str
+    source: SourceEnum
+    type: ResourceTypeEnum
+    topic: str
+    level: Optional[LevelEnum] = None
+    concept_id: Optional[int] = None
+    url: Optional[str] = None
+    content_summary: Optional[str] = None
+    status: Optional[str] = None
+    chunks_count: int = 0
+    processing_time: float = 0.0
+    metadata: dict = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
 class ResourceMetadataCreate(BaseModel):
     pedagogy_type: Optional[PedagogyEnum] = None
     bloom_level: Optional[str] = None
@@ -203,6 +222,14 @@ class SubjectResponse(SubjectCreate):
     created_at: datetime
 
 
+class SubjectListResponse(BaseModel):
+    items: List[SubjectResponse]
+    total: int
+    page: int
+    size: int
+    pages: int
+
+
 class ChapterCreate(BaseModel):
     subject_id: str = Field(..., description="MongoDB ObjectId")
     title: str = Field(..., min_length=2, max_length=200)
@@ -215,6 +242,14 @@ class ChapterCreate(BaseModel):
 class ChapterResponse(ChapterCreate):
     chapter_id: str
     created_at: datetime
+
+
+class ChapterListResponse(BaseModel):
+    items: List[ChapterResponse]
+    total: int
+    page: int
+    size: int
+    pages: int
 
 
 class LessonCreate(BaseModel):
@@ -234,6 +269,14 @@ class LessonCreate(BaseModel):
 class LessonNodeResponse(LessonCreate):
     lesson_id: str
     created_at: datetime
+
+
+class LessonListResponse(BaseModel):
+    items: List[LessonNodeResponse]
+    total: int
+    page: int
+    size: int
+    pages: int
 
 
 class LessonRecommendedChunksRequest(BaseModel):
@@ -305,6 +348,8 @@ class LessonQuestionGenerationResponse(BaseModel):
     question_ids: List[str] = Field(default_factory=list)
     chunks_used: List[str] = Field(default_factory=list)
     insufficient_data: bool = False
+    reused_existing: bool = False
+    existing_count: int = 0
     message: str = ""
 
 
@@ -327,6 +372,14 @@ class BatchResourceIngestionResponse(BaseModel):
     total: int
     submitted: int
     items: List[ResourceIngestionResponse]
+
+
+class ResourceDeleteResponse(BaseModel):
+    resource_id: str
+    deleted: bool
+    removed_chunks: int = 0
+    removed_recommendations: int = 0
+    removed_question_bank_entries: int = 0
 
 
 class IngestionJobStatusResponse(BaseModel):
@@ -450,6 +503,15 @@ class LearningPathHistoryItemResponse(BaseModel):
     generated_at: datetime
     chapter_count: int = 0
     lesson_count: int = 0
+
+
+class LearningPathDeleteResponse(BaseModel):
+    path_id: str
+    deleted: bool = True
+    removed_lessons: int = 0
+    removed_chapters: int = 0
+    removed_recommendations: int = 0
+    removed_questions: int = 0
 
 
 class LessonProgressUpdate(BaseModel):

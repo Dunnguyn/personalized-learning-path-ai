@@ -15,6 +15,8 @@ from backend.app.api.schemas import (
     IngestionJobStatusResponse,
     LevelEnum,
     ResourceCreate,
+    ResourceDetailResponse,
+    ResourceDeleteResponse,
     ResourceImportRequest,
     ResourceIngestionResponse,
     ResourceTypeEnum,
@@ -22,8 +24,10 @@ from backend.app.api.schemas import (
 )
 from backend.app.services.resource_service import (
     add_resource_service,
+    delete_resource_service,
     get_ingestion_job_status_service,
     get_pdf_file_path,
+    get_resource_by_id_service,
     get_resources_service,
     import_pdf_service,
     import_resources_service,
@@ -235,3 +239,33 @@ def download_pdf(resource_id: str):
         filename=pdf_path.name,
         headers={"Content-Disposition": f'inline; filename="{pdf_path.name}"'},
     )
+
+
+@router.get("/{resource_id}", response_model=ResourceDetailResponse, summary="Get resource detail")
+def get_resource_detail(resource_id: str):
+    """Return a single top-level resource by id."""
+    try:
+        return get_resource_by_id_service(resource_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to load resource %s: %s", resource_id, exc)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load resource.")
+
+
+@router.delete(
+    "/{resource_id}",
+    response_model=ResourceDeleteResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Delete a resource and its derived chunks",
+)
+def delete_resource(resource_id: str, current_user=Depends(get_current_user)):
+    """Delete a top-level resource plus generated chunk documents."""
+    del current_user
+    try:
+        return delete_resource_service(resource_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to delete resource %s: %s", resource_id, exc)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not delete resource.")

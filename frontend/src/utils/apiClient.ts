@@ -143,7 +143,7 @@ class ApiClient {
       // Create timeout promise
       const timeoutPromise = new Promise<Response>((_, reject) =>
         setTimeout(
-          () => reject(new Error(`Request timeout after ${this.timeout}ms`)),
+          () => reject(new Error(`Yêu cầu đã hết thời gian chờ sau ${this.timeout}ms`)),
           this.timeout
         )
       );
@@ -160,7 +160,7 @@ class ApiClient {
         const message =
           error.detail ||
           error.message ||
-          `Request failed: ${finalResponse.statusText}`;
+          `Yêu cầu thất bại: ${finalResponse.statusText}`;
         
         const apiError = new Error(message);
         (apiError as any).status = finalResponse.status;

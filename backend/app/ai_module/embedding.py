@@ -109,6 +109,14 @@ class ChromaVectorStore:
         except Exception as exc:  # pragma: no cover - optional dependency
             logger.warning("Chroma upsert failed: %s", exc)
 
+    def delete_chunks(self, ids: List[str]) -> None:
+        if not self.available or not self.collection or not ids:
+            return
+        try:
+            self.collection.delete(ids=ids)
+        except Exception as exc:  # pragma: no cover - optional dependency
+            logger.warning("Chroma delete failed: %s", exc)
+
     def query(
         self,
         query_embedding: List[float],

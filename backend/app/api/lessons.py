@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from backend.app.api.auth import get_current_user
 from backend.app.api.schemas import (
     LessonCreate,
+    LessonListResponse,
     LessonNodeResponse,
     LessonQuestionBankResponse,
     LessonQuestionGenerationRequest,
@@ -25,6 +27,36 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/lessons", tags=["Lessons"])
 
 
+@router.get("/", response_model=LessonListResponse, status_code=status.HTTP_200_OK)
+def list_lessons(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    subject_id: Optional[str] = Query(None, description="Filter lessons by subject ID"),
+    chapter_id: Optional[str] = Query(None, description="Filter lessons by chapter ID"),
+    q: Optional[str] = Query(None, min_length=1, description="Search by title or summary"),
+    topic: Optional[str] = Query(None, min_length=1),
+    level: Optional[str] = Query(None, min_length=1),
+    current_user=Depends(get_current_user),
+):
+    """List lessons with pagination and optional filters."""
+    del current_user
+    try:
+        return lesson_structure_service.list_lessons_paginated(
+            page=page,
+            size=size,
+            subject_id=subject_id,
+            chapter_id=chapter_id,
+            q=q,
+            topic=topic,
+            level=level,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to list lessons: %s", exc)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load lessons.")
+
+
 @router.post("/", response_model=LessonNodeResponse, status_code=status.HTTP_201_CREATED)
 def create_lesson(payload: LessonCreate, current_user=Depends(get_current_user)):
     """Create a lesson under a chapter."""
@@ -36,6 +68,19 @@ def create_lesson(payload: LessonCreate, current_user=Depends(get_current_user))
     except Exception as exc:
         logger.exception("Failed to create lesson: %s", exc)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create lesson.")
+
+
+@router.get("/{lesson_id}", response_model=LessonNodeResponse, status_code=status.HTTP_200_OK)
+def get_lesson(lesson_id: str, current_user=Depends(get_current_user)):
+    """Get a single lesson."""
+    del current_user
+    try:
+        return lesson_structure_service.get_lesson(lesson_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to get lesson %s: %s", lesson_id, exc)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load lesson.")
 
 
 @router.post(

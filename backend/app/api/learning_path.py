@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.api.auth import get_current_user
 from backend.app.api.schemas import (
+    LearningPathDeleteResponse,
     LearningPathResponse,
     LessonProgressResponse,
     LessonProgressUpdate,
@@ -24,7 +25,7 @@ from backend.app.services.learning_path.service import generate_learning_path
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-router = APIRouter(prefix="/learning-path", tags=["Learning Path"])
+router = APIRouter(prefix="/learning-path", tags=["Learning Paths (Legacy)"], include_in_schema=False)
 
 
 def _build_lesson_progress(curriculum: Optional[List[dict]]) -> dict:
@@ -222,6 +223,32 @@ def update_lesson_progress(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not update lesson progress",
+        ) from exc
+
+
+@router.delete("/{path_id}", response_model=LearningPathDeleteResponse, status_code=status.HTTP_200_OK)
+def delete_learning_path(
+    path_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = str(current_user.get("_id", ""))
+
+    try:
+        from backend.app.services.learning_path_service import learning_path_service
+
+        result = learning_path_service.delete_learning_path(path_id=path_id, user_id=user_id)
+        return LearningPathDeleteResponse(**result)
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        logger.exception("Error deleting learning path: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not delete learning path",
         ) from exc
 
 

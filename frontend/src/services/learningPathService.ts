@@ -3,6 +3,8 @@ import { apiClient } from '../utils/apiClient';
 export type LearningLevel = 'beginner' | 'intermediate' | 'advanced';
 export type LearningPathSubjectId = 'python' | 'cpp' | 'csharp' | 'java' | 'web';
 export type LessonStatus = 'not_started' | 'in_progress' | 'complete';
+export type LessonQuestionType = 'multiple_choice' | 'short_answer' | 'true_false';
+export type BloomLevel = 'remember' | 'understand' | 'apply' | 'analyze' | 'evaluate' | 'create';
 
 export interface ConceptNode {
   concept_id: number;
@@ -61,11 +63,80 @@ export interface LearningPathHistory {
   lesson_count?: number;
 }
 
+export interface LearningPathDeleteResponse {
+  path_id: string;
+  deleted: boolean;
+  removed_lessons: number;
+  removed_chapters: number;
+  removed_recommendations: number;
+  removed_questions: number;
+}
+
 export interface LessonProgressApiResponse {
   path_id: string;
   lesson_id: string;
   status: LessonStatus;
   updated_at: string;
+}
+
+export interface LessonQuestion {
+  question_id: string;
+  subject_id: string;
+  chapter_id: string;
+  lesson_id: string;
+  chunk_ids: string[];
+  resource_ids: string[];
+  question_type: LessonQuestionType;
+  question: string;
+  correct_answer: string;
+  distractors: string[];
+  explanation: string;
+  difficulty: LearningLevel;
+  bloom_level: BloomLevel;
+  is_ai_generated: boolean;
+  llm_provider?: string | null;
+  llm_model?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface LessonQuestionBank {
+  lesson_id: string;
+  total: number;
+  questions: LessonQuestion[];
+}
+
+export interface LessonQuestionGenerationResponse {
+  lesson_id: string;
+  status: string;
+  generated_count: number;
+  question_ids: string[];
+  chunks_used: string[];
+  insufficient_data: boolean;
+  reused_existing: boolean;
+  existing_count: number;
+  message: string;
+}
+
+export interface RecommendedChunkItem {
+  chunk_id: string;
+  resource_id: string;
+  chunk_index: number;
+  score: number;
+  preview: string;
+}
+
+export interface LessonRecommendedChunks {
+  recommendation_id: string;
+  subject_id: string;
+  chapter_id: string;
+  lesson_id: string;
+  chunk_ids: string[];
+  resource_ids: string[];
+  selection_strategy: string;
+  metadata: Record<string, unknown>;
+  recommended_chunks: RecommendedChunkItem[];
+  created_at: string;
 }
 
 const DEFAULT_GENERATED_AT = () => new Date().toISOString();
@@ -77,9 +148,29 @@ const normalizeLessonStatus = (value: unknown): LessonStatus => {
   return 'not_started';
 };
 
+const normalizeQuestionType = (value: unknown): LessonQuestionType => {
+  if (value === 'short_answer' || value === 'true_false') {
+    return value;
+  }
+  return 'multiple_choice';
+};
+
+const normalizeBloomLevel = (value: unknown): BloomLevel => {
+  switch (value) {
+    case 'apply':
+    case 'analyze':
+    case 'evaluate':
+    case 'create':
+    case 'understand':
+      return value;
+    default:
+      return 'remember';
+  }
+};
+
 const normalizeLesson = (lesson: any): LearningPathLesson => ({
   lesson_id: String(lesson?.lesson_id ?? ''),
-  title: String(lesson?.title ?? 'Bài học'),
+  title: String(lesson?.title ?? 'B?i h?c'),
   summary: String(lesson?.summary ?? ''),
   resources: Array.isArray(lesson?.resources)
     ? lesson.resources
@@ -95,7 +186,7 @@ const normalizeLesson = (lesson: any): LearningPathLesson => ({
 
 const normalizeChapter = (chapter: any): LearningPathChapter => ({
   chapter_id: String(chapter?.chapter_id ?? ''),
-  title: String(chapter?.title ?? 'Chương học'),
+  title: String(chapter?.title ?? 'Ch??ng h?c'),
   lessons: Array.isArray(chapter?.lessons) ? chapter.lessons.map(normalizeLesson) : [],
 });
 
@@ -160,6 +251,64 @@ const normalizeHistoryItem = (item: any): LearningPathHistory => ({
   lesson_count: typeof item?.lesson_count === 'number' ? item.lesson_count : undefined,
 });
 
+const normalizeLessonQuestion = (item: any): LessonQuestion => ({
+  question_id: String(item?.question_id ?? ''),
+  subject_id: String(item?.subject_id ?? ''),
+  chapter_id: String(item?.chapter_id ?? ''),
+  lesson_id: String(item?.lesson_id ?? ''),
+  chunk_ids: Array.isArray(item?.chunk_ids) ? item.chunk_ids.map((chunkId: unknown) => String(chunkId)) : [],
+  resource_ids: Array.isArray(item?.resource_ids)
+    ? item.resource_ids.map((resourceId: unknown) => String(resourceId))
+    : [],
+  question_type: normalizeQuestionType(item?.question_type),
+  question: String(item?.question ?? ''),
+  correct_answer: String(item?.correct_answer ?? ''),
+  distractors: Array.isArray(item?.distractors)
+    ? item.distractors.map((choice: unknown) => String(choice)).filter(Boolean)
+    : [],
+  explanation: String(item?.explanation ?? ''),
+  difficulty: (item?.difficulty ?? 'beginner') as LearningLevel,
+  bloom_level: normalizeBloomLevel(item?.bloom_level),
+  is_ai_generated: Boolean(item?.is_ai_generated),
+  llm_provider: item?.llm_provider ? String(item.llm_provider) : null,
+  llm_model: item?.llm_model ? String(item.llm_model) : null,
+  metadata:
+    item?.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata) ? item.metadata : {},
+  created_at: String(item?.created_at ?? DEFAULT_GENERATED_AT()),
+});
+
+const normalizeLessonQuestionBank = (payload: any): LessonQuestionBank => ({
+  lesson_id: String(payload?.lesson_id ?? ''),
+  total: typeof payload?.total === 'number' ? payload.total : 0,
+  questions: Array.isArray(payload?.questions) ? payload.questions.map(normalizeLessonQuestion) : [],
+});
+
+const normalizeLessonRecommendedChunks = (payload: any): LessonRecommendedChunks => ({
+  recommendation_id: String(payload?.recommendation_id ?? ''),
+  subject_id: String(payload?.subject_id ?? ''),
+  chapter_id: String(payload?.chapter_id ?? ''),
+  lesson_id: String(payload?.lesson_id ?? ''),
+  chunk_ids: Array.isArray(payload?.chunk_ids) ? payload.chunk_ids.map((item: unknown) => String(item)) : [],
+  resource_ids: Array.isArray(payload?.resource_ids)
+    ? payload.resource_ids.map((item: unknown) => String(item))
+    : [],
+  selection_strategy: String(payload?.selection_strategy ?? ''),
+  metadata:
+    payload?.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
+      ? payload.metadata
+      : {},
+  recommended_chunks: Array.isArray(payload?.recommended_chunks)
+    ? payload.recommended_chunks.map((item: any) => ({
+        chunk_id: String(item?.chunk_id ?? ''),
+        resource_id: String(item?.resource_id ?? ''),
+        chunk_index: typeof item?.chunk_index === 'number' ? item.chunk_index : 0,
+        score: typeof item?.score === 'number' ? item.score : 0,
+        preview: String(item?.preview ?? ''),
+      }))
+    : [],
+  created_at: String(payload?.created_at ?? DEFAULT_GENERATED_AT()),
+});
+
 export const learningPathService = {
   async generateLearningPath(data: {
     user_id?: string;
@@ -191,12 +340,65 @@ export const learningPathService = {
     return normalizeLearningPath(response);
   },
 
+  async deleteLearningPath(pathId: string): Promise<LearningPathDeleteResponse> {
+    return apiClient.delete(`/learning-paths/${pathId}`) as Promise<LearningPathDeleteResponse>;
+  },
+
   async updateLessonProgress(data: {
     path_id: string;
     lesson_id: string;
     status: LessonStatus;
   }): Promise<LessonProgressApiResponse> {
     return apiClient.post('/learning-paths/lesson-progress', data) as Promise<LessonProgressApiResponse>;
+  },
+
+  async getLessonQuestions(lessonId: string): Promise<LessonQuestionBank> {
+    const response = await apiClient.get(`/lessons/${lessonId}/questions`);
+    return normalizeLessonQuestionBank(response);
+  },
+
+  async generateLessonQuestions(
+    lessonId: string,
+    payload?: {
+      target_count?: number;
+      question_types?: LessonQuestionType[];
+      difficulty?: LearningLevel;
+      bloom_levels?: BloomLevel[];
+      overwrite?: boolean;
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<LessonQuestionGenerationResponse> {
+    return apiClient.post(`/lessons/${lessonId}/generate-questions`, {
+      target_count: payload?.target_count ?? 4,
+      question_types: payload?.question_types ?? ['multiple_choice', 'short_answer'],
+      difficulty: payload?.difficulty ?? 'beginner',
+      bloom_levels: payload?.bloom_levels ?? ['remember', 'understand', 'apply'],
+      overwrite: payload?.overwrite ?? false,
+      metadata: payload?.metadata ?? {},
+    }) as Promise<LessonQuestionGenerationResponse>;
+  },
+
+  async getLessonRecommendedChunks(lessonId: string): Promise<LessonRecommendedChunks> {
+    const response = await apiClient.get(`/lessons/${lessonId}/recommended-chunks`);
+    return normalizeLessonRecommendedChunks(response);
+  },
+
+  async recommendLessonChunks(
+    lessonId: string,
+    payload?: {
+      max_chunks?: number;
+      selection_strategy?: string;
+      resource_ids?: string[];
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<LessonRecommendedChunks> {
+    const response = await apiClient.post(`/lessons/${lessonId}/recommended-chunks`, {
+      max_chunks: payload?.max_chunks ?? 6,
+      selection_strategy: payload?.selection_strategy ?? 'local_semantic_lesson_scope_v1',
+      resource_ids: payload?.resource_ids ?? [],
+      metadata: payload?.metadata ?? {},
+    });
+    return normalizeLessonRecommendedChunks(response);
   },
 
   async getConcepts(): Promise<any[]> {
