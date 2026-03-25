@@ -5,7 +5,6 @@ import iconLearningPath from '../../assets/learning-journey.png';
 import iconResources from '../../assets/resources.png';
 import iconAiTutor from '../../assets/ai-tutor.png';
 import iconSettings from '../../assets/setting.png';
-import iconUser from '../../assets/account.png';
 
 interface NavItem {
   name: string;
@@ -50,16 +49,16 @@ export default function Sidebar() {
                     className={`h-7 w-7 object-contain ${isActive ? 'brightness-[8]' : 'opacity-85'}`}
                     src={item.icon}
                   />
-                  {item.path === '/learning-path' && (
+                  {item.path === '/learning-path' ? (
                     <span className="absolute right-3 top-3 h-2.5 w-2.5 rounded-full bg-[#f39aa9]" />
-                  )}
+                  ) : null}
                 </Link>
               );
             })}
           </div>
         </div>
 
-        <div className="flex flex-col items-center gap-5">
+        <div className="flex flex-col items-center gap-4">
           <Link
             to="/settings"
             title="Cài đặt"
@@ -71,10 +70,6 @@ export default function Sidebar() {
               src={iconSettings}
             />
           </Link>
-
-          <div className="h-[72px] w-[72px] overflow-hidden rounded-[24px] border border-white/70 shadow-[0_14px_28px_rgba(114,62,83,0.12)]">
-            <img alt="Người dùng" className="h-full w-full object-cover" src={iconUser} />
-          </div>
         </div>
       </div>
     </aside>

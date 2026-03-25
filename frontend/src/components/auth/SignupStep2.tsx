@@ -1,38 +1,27 @@
 import React, { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { authService } from '../../services/authService';
+import { useLocation, useNavigate } from 'react-router-dom';
 import bunnyLogo from '../../assets/Elegant Sub-Logo Designs for Beauty Brands.jpg';
 import iconDropdown from '../../assets/down-arrow.png';
 import illustrationLearning from '../../assets/tải xuống (1).jpg';
-
-interface SignupFormData {
-  fullName: string;
-  email: string;
-  password: string;
-}
-
-interface Step2FormData {
-  goal: string;
-  level: string;
-}
+import { authService } from '../../services/authService';
+import type { SignUpRequest, SignupStep2FormData } from '../../types/auth';
 
 export default function SignupStep2() {
   const navigate = useNavigate();
   const location = useLocation();
-  const formData = (location.state?.formData as SignupFormData) || {
+  const formData = (location.state?.formData as SignUpRequest) || {
     fullName: '',
     email: '',
     password: '',
   };
 
-  const [step2Data, setStep2Data] = useState<Step2FormData>({
+  const [step2Data, setStep2Data] = useState<SignupStep2FormData>({
     goal: '',
     level: '',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Goal options
   const goalOptions = [
     'Cải thiện kỹ năng',
     'Học một ngôn ngữ mới',
@@ -40,15 +29,10 @@ export default function SignupStep2() {
     'Phát triển sự nghiệp',
   ];
 
-  // Level options
-  const levelOptions = [
-    'Bước đầu',
-    'Trung cấp',
-    'Nâng cao',
-  ];
+  const levelOptions = ['Bước đầu', 'Trung cấp', 'Nâng cao'];
 
   const handleChange = (field: 'goal' | 'level', value: string) => {
-    setStep2Data(prev => ({
+    setStep2Data((prev) => ({
       ...prev,
       [field]: value,
     }));
@@ -70,51 +54,39 @@ export default function SignupStep2() {
     setLoading(true);
 
     try {
-      // First, create the account
       const signupData = await authService.signup({
         email: formData.email,
         password: formData.password,
         fullName: formData.fullName,
       });
 
-      // Store token FIRST before making any authenticated requests
       localStorage.setItem('token', signupData.token);
-      
-      // Store user info
       authService.setStoredUser(signupData.user);
-      
-      // Map Vietnamese level to English
-      const levelMap: { [key: string]: string } = {
+
+      const levelMap: Record<string, string> = {
         'Bước đầu': 'beginner',
         'Trung cấp': 'intermediate',
-        'Nâng cao': 'advanced'
+        'Nâng cao': 'advanced',
       };
       const englishLevel = levelMap[step2Data.level] || 'beginner';
 
-      // Update user level and goal
       try {
-        // Wait a bit to ensure localStorage is updated
-        await new Promise(resolve => setTimeout(resolve, 100));
-        
+        await new Promise((resolve) => setTimeout(resolve, 100));
         await authService.updateUserLevel({
           user_id: signupData.user.user_id,
           level: englishLevel,
-          learning_goal: step2Data.goal
+          learning_goal: step2Data.goal,
         });
-        
-        // Update stored user with new level
+
         authService.setStoredUser({
           ...signupData.user,
-          level: englishLevel
+          level: englishLevel,
         });
       } catch (updateErr) {
         console.error('Failed to update user level:', updateErr);
-        // Continue anyway, user can update later
       }
 
-      // Store user goal
       localStorage.setItem('userGoal', step2Data.goal);
-
       navigate('/dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Có lỗi xảy ra. Vui lòng thử lại.');
@@ -123,52 +95,29 @@ export default function SignupStep2() {
     }
   };
 
-  const handleBack = () => {
-    navigate('/signup');
-  };
-
-  const handleBackToLogin = () => {
-    navigate('/login');
-  };
-
   return (
     <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#fbe7ef_0%,#f6d7e4_100%)] p-6">
       <div className="relative flex min-h-[800px] w-full max-w-[1253px] overflow-hidden rounded-[36px] border border-white/70 bg-[#fff9fd]/95 shadow-[0_28px_80px_rgba(114,62,83,0.16)]">
-        {/* Left Side - Form */}
         <div className="flex w-[682px] flex-col items-center justify-center bg-[linear-gradient(180deg,#fff7fb_0%,#fce7f0_100%)] p-12">
-          {/* Logo */}
-          <div className="w-[100px] h-[100px] rounded-full mb-8 overflow-hidden">
-            <img 
-              alt="Logo" 
-              className="w-full h-full object-cover" 
-              src={bunnyLogo} 
-            />
+          <div className="mb-8 h-[100px] w-[100px] overflow-hidden rounded-full">
+            <img alt="Logo" className="h-full w-full object-cover" src={bunnyLogo} />
           </div>
 
-          {/* Progress Indicators */}
-          <div className="flex gap-2 mb-8">
-            <div className="w-[10px] h-[4px] rounded-[2px] bg-[#de8fac]" />
-            <div className="w-[10px] h-[4px] rounded-[2px] bg-[#5b1724]" />
+          <div className="mb-8 flex gap-2">
+            <div className="h-[4px] w-[10px] rounded-[2px] bg-[#de8fac]" />
+            <div className="h-[4px] w-[10px] rounded-[2px] bg-[#5b1724]" />
           </div>
 
-          {/* Heading */}
-          <h1 className="text-[35px] font-semibold text-[#832e44] text-center mb-4">
-            Bắt đầu ngay
-          </h1>
+          <h1 className="mb-4 text-center text-[35px] font-semibold text-[#832e44]">Bắt đầu ngay</h1>
 
-          {/* Subtitle */}
-          <p className="mb-12 text-center text-[15px] text-[#832e44]">
-            Chọn mục tiêu của bạn
-          </p>
+          <p className="mb-12 text-center text-[15px] text-[#832e44]">Chọn mục tiêu của bạn</p>
 
-          {/* Form */}
           <form onSubmit={handleSubmit} className="w-[396px] space-y-6">
-            {/* Goal Dropdown */}
             <div className="relative">
               <select
                 value={step2Data.goal}
                 onChange={(e) => handleChange('goal', e.target.value)}
-                className="w-full h-[35px] px-4 rounded-[12px] bg-white text-[#e4b6d0] text-[13px] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] border-none focus:outline-none focus:ring-2 focus:ring-[#832e44] appearance-none cursor-pointer"
+                className="h-[35px] w-full cursor-pointer appearance-none rounded-[12px] border-none bg-white px-4 text-[13px] text-[#e4b6d0] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] focus:outline-none focus:ring-2 focus:ring-[#832e44]"
               >
                 <option value="">Mục tiêu</option>
                 {goalOptions.map((opt) => (
@@ -177,19 +126,18 @@ export default function SignupStep2() {
                   </option>
                 ))}
               </select>
-              <img 
-                alt="" 
-                className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none" 
-                src={iconDropdown} 
+              <img
+                alt=""
+                className="pointer-events-none absolute right-4 top-1/2 h-5 w-5 -translate-y-1/2"
+                src={iconDropdown}
               />
             </div>
 
-            {/* Level Dropdown */}
             <div className="relative">
               <select
                 value={step2Data.level}
                 onChange={(e) => handleChange('level', e.target.value)}
-                className="w-full h-[35px] px-4 rounded-[12px] bg-white text-[#e4b6d0] text-[13px] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] border-none focus:outline-none focus:ring-2 focus:ring-[#832e44] appearance-none cursor-pointer"
+                className="h-[35px] w-full cursor-pointer appearance-none rounded-[12px] border-none bg-white px-4 text-[13px] text-[#e4b6d0] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] focus:outline-none focus:ring-2 focus:ring-[#832e44]"
               >
                 <option value="">Cấp độ hiện tại</option>
                 {levelOptions.map((opt) => (
@@ -198,21 +146,15 @@ export default function SignupStep2() {
                   </option>
                 ))}
               </select>
-              <img 
-                alt="" 
-                className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none" 
-                src={iconDropdown} 
+              <img
+                alt=""
+                className="pointer-events-none absolute right-4 top-1/2 h-5 w-5 -translate-y-1/2"
+                src={iconDropdown}
               />
             </div>
 
-            {/* Error Message */}
-            {error && (
-              <div className="text-red-500 text-[12px] text-center">
-                {error}
-              </div>
-            )}
+            {error && <div className="text-center text-[12px] text-red-500">{error}</div>}
 
-            {/* Submit Button */}
             <div className="flex justify-center pt-4">
               <button
                 type="submit"
@@ -224,32 +166,23 @@ export default function SignupStep2() {
             </div>
           </form>
 
-          {/* Back Button */}
-          <button
-            onClick={handleBack}
-            className="mt-4 text-[#832e44] text-[13px] hover:underline"
-          >
+          <button onClick={() => navigate('/signup')} className="mt-4 text-[13px] text-[#832e44] hover:underline">
             ← Quay lại
           </button>
 
-          {/* Login Link */}
-          <p className="text-[10px] text-[#832e44] mt-8 text-center">
+          <p className="mt-8 text-center text-[10px] text-[#832e44]">
             <span>Đã có tài khoản? </span>
-            <button
-              onClick={handleBackToLogin}
-              className="font-bold hover:underline cursor-pointer"
-            >
+            <button onClick={() => navigate('/login')} className="cursor-pointer font-bold hover:underline">
               Đăng nhập
             </button>
           </p>
         </div>
 
-        {/* Right Side - Illustration */}
         <div className="relative h-full w-[571px] overflow-hidden">
-          <img 
-            alt="Learning illustration" 
-            className="w-full h-full object-cover" 
-            src={illustrationLearning} 
+          <img
+            alt="Learning illustration"
+            className="h-full w-full object-cover"
+            src={illustrationLearning}
           />
           <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(140,52,81,0.08)_0%,rgba(255,255,255,0)_45%,rgba(140,52,81,0.14)_100%)]" />
         </div>

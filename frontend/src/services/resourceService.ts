@@ -1,57 +1,14 @@
 import { apiClient } from '@/utils/apiClient';
+import type { IngestionJobStatus, Resource, SearchResponse, UploadResponse } from '../types/resource';
+import {
+  asRecord,
+  normalizeIngestionJobStatus,
+  normalizeResource,
+  normalizeUploadPayload,
+  transformToSearchResponse,
+} from './parsers/resourceParser';
 
-export interface Resource {
-  id?: string;
-  resource_id?: string;
-  _id?: string;
-  title: string;
-  content?: string;
-  content_summary?: string;
-  url?: string;
-  source: string;
-  type?: string;
-  topic: string;
-  level: 'beginner' | 'intermediate' | 'advanced';
-  concept_id?: number;
-  thumbnail?: string;
-  pdf_file_path?: string;
-  created_at?: string;
-  video_id?: string;
-  youtube_url?: string;
-  video_metadata?: {
-    thumbnail_url?: string;
-    duration?: number;
-    channel?: string;
-  };
-  score?: number;
-  snippet?: string;
-}
-
-export interface SearchResponse {
-  results: Resource[];
-  total: number;
-  page: number;
-  size: number;
-}
-
-export interface UploadResponse {
-  success: boolean;
-  resource_id?: string;
-  job_id?: string;
-  status?: string;
-  message?: string;
-  error?: string;
-}
-
-export interface IngestionJobStatus {
-  job_id: string;
-  resource_id: string;
-  status: string;
-  chunks_count: number;
-  processing_time: number;
-  error?: string | null;
-  resource_status?: string | null;
-}
+export type { IngestionJobStatus, Resource, SearchResponse, UploadResponse } from '../types/resource';
 
 const DEFAULT_PAGE_SIZE = 10;
 const PDF_UPLOAD_TIMEOUT = 60000;
@@ -63,84 +20,8 @@ function withTimeout<T>(
 ): Promise<T> {
   return Promise.race([
     promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(timeoutMessage)), ms)
-    ),
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(timeoutMessage)), ms)),
   ]);
-}
-
-const normalizeLevel = (value: unknown): Resource['level'] => {
-  if (value === 'intermediate' || value === 'advanced') {
-    return value;
-  }
-  return 'beginner';
-};
-
-const normalizeResource = (resource: any): Resource => {
-  const metadata = resource?.metadata ?? {};
-  const videoMetadata = metadata?.video_metadata ?? resource?.video_metadata ?? {};
-
-  return {
-    ...resource,
-    id: resource?.id ? String(resource.id) : undefined,
-    resource_id: resource?.resource_id
-      ? String(resource.resource_id)
-      : resource?._id
-      ? String(resource._id)
-      : undefined,
-    _id: resource?._id ? String(resource._id) : undefined,
-    title: String(resource?.title ?? 'Tài nguyên'),
-    content: resource?.content ? String(resource.content) : undefined,
-    content_summary: resource?.content_summary ? String(resource.content_summary) : undefined,
-    url: resource?.url ?? metadata?.url,
-    source: String(resource?.source ?? 'manual'),
-    type: resource?.type ? String(resource.type) : undefined,
-    topic: String(resource?.topic ?? ''),
-    level: normalizeLevel(resource?.level ?? metadata?.level),
-    concept_id:
-      typeof resource?.concept_id === 'number'
-        ? resource.concept_id
-        : typeof metadata?.concept_id === 'number'
-        ? metadata.concept_id
-        : undefined,
-    thumbnail: resource?.thumbnail ?? metadata?.thumbnail,
-    pdf_file_path: resource?.pdf_file_path ?? metadata?.pdf_file_path,
-    created_at: resource?.created_at ? String(resource.created_at) : undefined,
-    video_id: resource?.video_id ?? metadata?.video_id,
-    youtube_url: resource?.youtube_url ?? metadata?.youtube_url ?? resource?.url,
-    video_metadata: {
-      thumbnail_url: videoMetadata?.thumbnail_url,
-      duration: videoMetadata?.duration,
-      channel: videoMetadata?.channel,
-    },
-    score: typeof resource?.score === 'number' ? resource.score : undefined,
-    snippet: resource?.snippet ? String(resource.snippet) : undefined,
-  };
-};
-
-function transformToSearchResponse(response: any): SearchResponse {
-  if (Array.isArray(response)) {
-    const results = response.map(normalizeResource);
-    return {
-      results,
-      total: results.length,
-      page: 1,
-      size: DEFAULT_PAGE_SIZE,
-    };
-  }
-
-  const rawResults =
-    (response as any)?.resources ||
-    (response as any)?.results ||
-    (response as any)?.data ||
-    [];
-
-  return {
-    results: Array.isArray(rawResults) ? rawResults.map(normalizeResource) : [],
-    total: (response as any)?.total || (response as any)?.result_count || 0,
-    page: (response as any)?.page || 1,
-    size: (response as any)?.size || DEFAULT_PAGE_SIZE,
-  };
 }
 
 export const resourceService = {
@@ -242,19 +123,11 @@ export const resourceService = {
       )) as Response;
 
       if (!response.ok) {
-        const errorData = (await response.json().catch(() => ({}))) as any;
-        throw new Error(
-          errorData.detail ||
-            errorData.message ||
-            `Tải tệp thất bại: ${response.statusText}`
-        );
+        const errorData = asRecord(await response.json().catch(() => ({})));
+        throw new Error(String(errorData.detail || errorData.message || `Tải tệp thất bại: ${response.statusText}`));
       }
 
-      const data = (await response.json()) as {
-        resource_id?: string;
-        job_id?: string;
-        status?: string;
-      };
+      const data = normalizeUploadPayload(await response.json());
 
       return {
         success: true,
@@ -284,17 +157,15 @@ export const resourceService = {
         throw new Error('Vui lòng nhập liên kết YouTube hợp lệ');
       }
 
-      const response = (await apiClient.post('/resources/import-youtube', {
-        url: url.trim(),
-        title: title.trim(),
-        topic: topic.trim(),
-        level,
-        concept_id: conceptId && conceptId > 0 ? conceptId : undefined,
-      })) as {
-        resource_id?: string;
-        job_id?: string;
-        status?: string;
-      };
+      const response = normalizeUploadPayload(
+        await apiClient.post('/resources/import-youtube', {
+          url: url.trim(),
+          title: title.trim(),
+          topic: topic.trim(),
+          level,
+          concept_id: conceptId && conceptId > 0 ? conceptId : undefined,
+        })
+      );
 
       return {
         success: true,
@@ -312,16 +183,14 @@ export const resourceService = {
     }
   },
 
-  async addWebResource(
-    data: {
-      title: string;
-      content: string;
-      topic: string;
-      level: 'beginner' | 'intermediate' | 'advanced';
-      url?: string;
-      conceptId?: number;
-    }
-  ): Promise<UploadResponse> {
+  async addWebResource(data: {
+    title: string;
+    content: string;
+    topic: string;
+    level: 'beginner' | 'intermediate' | 'advanced';
+    url?: string;
+    conceptId?: number;
+  }): Promise<UploadResponse> {
     try {
       if (!data.title.trim()) {
         throw new Error('Vui lòng nhập tiêu đề');
@@ -333,20 +202,18 @@ export const resourceService = {
         throw new Error('Vui lòng nhập chủ đề');
       }
 
-      const response = (await apiClient.post('/resources', {
-        title: data.title.trim(),
-        content: data.content.trim(),
-        source: 'web',
-        type: 'text',
-        topic: data.topic.trim(),
-        level: data.level,
-        url: data.url?.trim() || undefined,
-        concept_id: data.conceptId && data.conceptId > 0 ? data.conceptId : undefined,
-      })) as {
-        resource_id?: string;
-        job_id?: string;
-        status?: string;
-      };
+      const response = normalizeUploadPayload(
+        await apiClient.post('/resources', {
+          title: data.title.trim(),
+          content: data.content.trim(),
+          source: 'web',
+          type: 'text',
+          topic: data.topic.trim(),
+          level: data.level,
+          url: data.url?.trim() || undefined,
+          concept_id: data.conceptId && data.conceptId > 0 ? data.conceptId : undefined,
+        })
+      );
 
       return {
         success: true,
@@ -388,7 +255,7 @@ export const resourceService = {
       throw new Error('Thiếu mã job xử lý tài nguyên');
     }
 
-    return apiClient.get(`/resources/jobs/${encodeURIComponent(jobId)}`) as Promise<IngestionJobStatus>;
+    return normalizeIngestionJobStatus(await apiClient.get(`/resources/jobs/${encodeURIComponent(jobId)}`));
   },
 
   async waitForIngestionCompletion(
@@ -419,6 +286,7 @@ export const resourceService = {
 
     throw new Error('Xử lý tài nguyên mất quá nhiều thời gian. Vui lòng thử tải lại sau.');
   },
+
   async getResourceById(resourceId: string): Promise<Resource | null> {
     try {
       if (!resourceId) {

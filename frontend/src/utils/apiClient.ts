@@ -12,6 +12,10 @@ export interface ApiResponse<T = unknown> {
   error?: ApiError;
 }
 
+type ApiClientError = Error & {
+  status?: number;
+};
+
 // ==========================================
 // CONFIG
 // ==========================================
@@ -162,8 +166,8 @@ class ApiClient {
           error.message ||
           `Yêu cầu thất bại: ${finalResponse.statusText}`;
         
-        const apiError = new Error(message);
-        (apiError as any).status = finalResponse.status;
+        const apiError: ApiClientError = new Error(message);
+        apiError.status = finalResponse.status;
         throw apiError;
       }
 

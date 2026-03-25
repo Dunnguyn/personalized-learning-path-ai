@@ -133,6 +133,7 @@ class LessonChunkRecommendationService:
                     "chunk_id": str(chunk["_id"]),
                     "resource_id": str(chunk["resource_id"]),
                     "chunk_index": int(chunk.get("chunk_index", 0)),
+                    "page_number": self._resolve_page_number(chunk),
                     "score": round(score, 4),
                     "semantic_score": round(semantic_score, 4),
                     "lexical_score": round(lexical_score, 4),
@@ -187,6 +188,7 @@ class LessonChunkRecommendationService:
                     "chunk_id": chunk_id,
                     "resource_id": str(chunk["resource_id"]),
                     "chunk_index": int(chunk.get("chunk_index", 0)),
+                    "page_number": self._resolve_page_number(chunk),
                     "score": float(scores.get(chunk_id, 0.0)),
                     "preview": str(chunk.get("content") or "")[:240],
                 }
@@ -299,7 +301,33 @@ class LessonChunkRecommendationService:
         return expanded
 
     @staticmethod
-    def _serialize_recommendation(recommendation: Dict[str, Any], selected_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _resolve_page_number(chunk: Dict[str, Any]) -> int | None:
+        metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+        page_number = metadata.get("page_number")
+        if isinstance(page_number, int) and page_number > 0:
+            return page_number
+        return None
+
+    def _serialize_recommendation(self, recommendation: Dict[str, Any], selected_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        resource_ids = [item.get("resource_id") for item in selected_chunks if item.get("resource_id")]
+        resources = self.resource_repository.get_many(resource_ids) if resource_ids else []
+        resource_map = {str(resource["_id"]): resource for resource in resources if resource.get("_id")}
+
+        enriched_chunks = []
+        for item in selected_chunks:
+            resource = resource_map.get(str(item.get("resource_id")))
+            resource_metadata = resource.get("metadata", {}) if isinstance(resource, dict) else {}
+            enriched_chunks.append(
+                {
+                    **item,
+                    "resource_title": str(resource.get("title") or "") if resource else None,
+                    "resource_source": str(resource.get("source") or "") if resource else None,
+                    "resource_url": (
+                        str(resource_metadata.get("url") or "").strip() if resource_metadata.get("url") else None
+                    ),
+                }
+            )
+
         return {
             "recommendation_id": str(recommendation["_id"]),
             "subject_id": str(recommendation["subject_id"]),
@@ -309,7 +337,7 @@ class LessonChunkRecommendationService:
             "resource_ids": [str(item) for item in recommendation.get("resource_ids", [])],
             "selection_strategy": recommendation.get("selection_strategy"),
             "metadata": recommendation.get("metadata", {}),
-            "recommended_chunks": selected_chunks,
+            "recommended_chunks": enriched_chunks,
             "created_at": recommendation.get("created_at", datetime.utcnow()),
         }
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 DEFAULT_CHUNK_SIZE = int(os.getenv("RESOURCE_CHUNK_SIZE", "1200"))
 DEFAULT_CHUNK_OVERLAP = int(os.getenv("RESOURCE_CHUNK_OVERLAP", "180"))
@@ -72,17 +72,26 @@ def build_chunk_documents(
     chunks: List[str],
     embeddings: List[List[float]],
     metadata: Dict[str, object],
+    chunk_indexes: Optional[List[int]] = None,
+    chunk_metadata_overrides: Optional[List[Dict[str, object]]] = None,
 ) -> List[Dict[str, object]]:
     """Create chunk documents for MongoDB insertion."""
+    if chunk_indexes is not None and len(chunk_indexes) != len(chunks):
+        raise ValueError("chunk_indexes length must match chunks length.")
+    if chunk_metadata_overrides is not None and len(chunk_metadata_overrides) != len(chunks):
+        raise ValueError("chunk_metadata_overrides length must match chunks length.")
+
     documents: List[Dict[str, object]] = []
     for index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+        document_index = chunk_indexes[index] if chunk_indexes is not None else index
+        per_chunk_metadata = chunk_metadata_overrides[index] if chunk_metadata_overrides is not None else {}
         documents.append(
             {
                 "resource_id": resource_id,
-                "chunk_index": index,
+                "chunk_index": document_index,
                 "content": chunk,
                 "embedding": embedding,
-                "metadata": {**metadata, "chunk_size": len(chunk)},
+                "metadata": {**metadata, **per_chunk_metadata, "chunk_size": len(chunk)},
             }
         )
     return documents

@@ -2,6 +2,20 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
+const getPackageName = (id: string) => {
+  const normalizedId = id.split('node_modules/')[1]?.replace(/\\/g, '/')
+  if (!normalizedId) {
+    return null
+  }
+
+  const segments = normalizedId.split('/')
+  if (segments[0].startsWith('@')) {
+    return `${segments[0]}/${segments[1]}`
+  }
+
+  return segments[0]
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -50,10 +64,57 @@ export default defineConfig({
     // Chunk size optimization
     rollupOptions: {
       output: {
-        // Manually configure chunk sizes for optimal loading
-        manualChunks: {
-          // Vendor chunks for reduce initial load time
-          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+        manualChunks: (id) => {
+          if (!id.includes('node_modules')) {
+            return undefined;
+          }
+
+          const packageName = getPackageName(id)
+
+          if (!packageName) {
+            return undefined;
+          }
+
+          if (packageName === 'reactflow' || packageName.startsWith('@reactflow/')) {
+            return 'vendor-reactflow';
+          }
+
+          if (
+            [
+              'react-markdown',
+              'remark-gfm',
+              'remark-parse',
+              'remark-rehype',
+              'rehype-raw',
+              'unified',
+            ].includes(packageName) ||
+            packageName.startsWith('micromark') ||
+            packageName.startsWith('mdast-') ||
+            packageName.startsWith('hast-') ||
+            packageName.startsWith('unist-') ||
+            packageName.startsWith('remark-')
+          ) {
+            return 'vendor-markdown';
+          }
+
+          if (packageName === 'axios') {
+            return 'vendor-network';
+          }
+
+          if (
+            [
+              'react',
+              'react-dom',
+              'react-router',
+              'react-router-dom',
+              'scheduler',
+              'use-sync-external-store',
+            ].includes(packageName)
+          ) {
+            return 'vendor-react';
+          }
+
+          return undefined;
         },
         
         // Asset naming

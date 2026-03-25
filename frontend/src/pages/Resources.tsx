@@ -1,9 +1,72 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import PDFViewer from '../components/PDFViewer';
 import { resourceService } from '../services/resourceService';
-import type { Resource, SearchResponse } from '../services/resourceService';
+import type { Resource, SearchResponse } from '../types/resource';
+
+type ResourceLevel = Resource['level'];
+const PDF_PAGE_MARKER_REGEX = /\[Page\s+\d+\]\s*/gi;
+const MAX_PREVIEW_LENGTH = 240;
+
+const parseResourceLevel = (value: FormDataEntryValue | null): ResourceLevel => {
+  if (value === 'intermediate' || value === 'advanced') {
+    return value;
+  }
+  return 'beginner';
+};
+
+const collapseText = (value: string): string =>
+  value
+    .replace(PDF_PAGE_MARKER_REGEX, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const truncateText = (value: string, maxLength: number = MAX_PREVIEW_LENGTH): string => {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength).trimEnd()}...`;
+};
+
+const formatPdfTitle = (value: string): string =>
+  value
+    .replace(/\.pdf$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/([A-Za-z])(\d)/g, '$1 $2')
+    .replace(/(\d)([A-Za-z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const getDisplayTitle = (resource: Resource): string => {
+  const rawTitle = (resource.title || resource.topic || 'Tài nguyên').trim();
+
+  if (resource.source !== 'pdf') {
+    return rawTitle;
+  }
+
+  return formatPdfTitle(rawTitle) || 'Tài liệu PDF';
+};
+
+const getDisplaySnippet = (resource: Resource): string => {
+  const rawPreview = resource.snippet || resource.content_summary || resource.content || '';
+  const cleanedPreview = collapseText(rawPreview);
+
+  if (cleanedPreview) {
+    return truncateText(cleanedPreview, resource.source === 'pdf' ? 220 : MAX_PREVIEW_LENGTH);
+  }
+
+  if (resource.source === 'pdf') {
+    return 'Tài liệu PDF này đã được thêm vào thư viện và sẵn sàng để xem trực tiếp.';
+  }
+
+  if (resource.source === 'youtube') {
+    return 'Video này đã được thêm vào thư viện để bạn xem lại bất cứ lúc nào.';
+  }
+
+  return 'Tài nguyên được chọn để bổ trợ cho quá trình học tập hiện tại của bạn.';
+};
 
 export default function Resources() {
   const [searchParams] = useSearchParams();
@@ -49,23 +112,7 @@ export default function Resources() {
     }
   }, [queryParam]);
 
-  useEffect(() => {
-    fetchResources();
-  }, [currentPage, filters, searchQuery, conceptIdParam]);
-
-  useEffect(() => {
-    if (!toast) {
-      return undefined;
-    }
-
-    const timer = window.setTimeout(() => {
-      setToast(null);
-    }, 2600);
-
-    return () => window.clearTimeout(timer);
-  }, [toast]);
-
-  const fetchResources = async () => {
+  const fetchResources = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -101,7 +148,23 @@ export default function Resources() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [conceptIdParam, currentPage, filters.level, filters.source, searchQuery]);
+
+  useEffect(() => {
+    void fetchResources();
+  }, [fetchResources]);
+
+  useEffect(() => {
+    if (!toast) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      setToast(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -133,7 +196,7 @@ export default function Resources() {
     const form = new FormData(e.currentTarget as HTMLFormElement);
     const file = form.get('pdf_file') as File;
     const topic = form.get('topic') as string;
-    const level = form.get('level') as any;
+    const level = parseResourceLevel(form.get('level'));
 
     if (!file || !topic) {
       showToast('error', 'Vui lòng điền đầy đủ thông tin.');
@@ -166,7 +229,7 @@ export default function Resources() {
     const url = form.get('youtube_url') as string;
     const title = form.get('title') as string;
     const topic = form.get('topic') as string;
-    const level = form.get('level') as any;
+    const level = parseResourceLevel(form.get('level'));
 
     if (!url || !title || !topic) {
       showToast('error', 'Vui lòng điền đầy đủ thông tin.');
@@ -200,7 +263,7 @@ export default function Resources() {
     const title = form.get('title') as string;
     const content = form.get('content') as string;
     const topic = form.get('topic') as string;
-    const level = form.get('level') as any;
+    const level = parseResourceLevel(form.get('level'));
 
     if (!title || !topic || !content) {
       showToast('error', 'Vui lòng điền đầy đủ thông tin.');
@@ -348,17 +411,136 @@ export default function Resources() {
     }
   };
 
+  const getLevelLabel = (level: string) => {
+    switch (level) {
+      case 'beginner':
+        return 'Cơ bản';
+      case 'intermediate':
+        return 'Trung bình';
+      case 'advanced':
+        return 'Nâng cao';
+      default:
+        return 'Cơ bản';
+    }
+  };
+
+  const getSourceLabel = (source: string) => {
+    if (source === 'pdf') return 'Tài liệu PDF';
+    if (source === 'youtube') return 'YouTube';
+    return 'Trang web';
+  };
+
+  const getSourceTheme = (source: string) => {
+    if (source === 'youtube') {
+      return {
+        chip: 'border-[#f2d7e0] bg-[#fff6fa] text-[#9b2f55]',
+        icon: 'border-[#f2d7e0] bg-[#fff6fa] text-[#9b2f55]',
+        preview: 'bg-[linear-gradient(180deg,#fff9fb_0%,#fcecf3_100%)]',
+        accent: 'bg-[#9b2f55]',
+        soft: 'bg-[#fff2f7]',
+      };
+    }
+
+    if (source === 'pdf') {
+      return {
+        chip: 'border-[#e8dff3] bg-[#fbf8ff] text-[#6d4c8f]',
+        icon: 'border-[#e8dff3] bg-[#fbf8ff] text-[#6d4c8f]',
+        preview: 'bg-[linear-gradient(180deg,#fffaff_0%,#f5eefc_100%)]',
+        accent: 'bg-[#6d4c8f]',
+        soft: 'bg-[#f7f1ff]',
+      };
+    }
+
+    return {
+      chip: 'border-[#dbe8f2] bg-[#f6fbff] text-[#2f657f]',
+      icon: 'border-[#dbe8f2] bg-[#f6fbff] text-[#2f657f]',
+      preview: 'bg-[linear-gradient(180deg,#fbfeff_0%,#edf7fc_100%)]',
+      accent: 'bg-[#2f657f]',
+      soft: 'bg-[#eef8fd]',
+    };
+  };
+
+  const getSourceIcon = (source: string) => {
+    if (source === 'youtube') {
+      return (
+        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M21.6 7.2a2.9 2.9 0 0 0-2-2C17.8 4.7 12 4.7 12 4.7s-5.8 0-7.6.5a2.9 2.9 0 0 0-2 2A30.3 30.3 0 0 0 2 12a30.3 30.3 0 0 0 .4 4.8 2.9 2.9 0 0 0 2 2c1.8.5 7.6.5 7.6.5s5.8 0 7.6-.5a2.9 2.9 0 0 0 2-2A30.3 30.3 0 0 0 22 12a30.3 30.3 0 0 0-.4-4.8ZM10 15.5v-7l6 3.5-6 3.5Z" />
+        </svg>
+      );
+    }
+
+    if (source === 'pdf') {
+      return (
+        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+          <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z" />
+          <path d="M14 2v5h5" />
+          <path d="M8 13h2.5a1.5 1.5 0 0 0 0-3H8v7" />
+          <path d="M14 10h1a2 2 0 0 1 0 4h-1v-4Z" />
+          <path d="M18 10h-2v4" />
+        </svg>
+      );
+    }
+
+    return (
+      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+        <path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0-18 0Z" />
+        <path d="M3.6 9h16.8" />
+        <path d="M3.6 15h16.8" />
+        <path d="M12 3a15.3 15.3 0 0 1 0 18" />
+        <path d="M12 3a15.3 15.3 0 0 0 0 18" />
+      </svg>
+    );
+  };
+
+  const getResourceTimestamp = (resource: Resource) => {
+    if (!resource.created_at) {
+      return 'Cập nhật gần đây';
+    }
+
+    const date = new Date(resource.created_at);
+    if (Number.isNaN(date.getTime())) {
+      return 'Cập nhật gần đây';
+    }
+
+    return `Cập nhật ${date.toLocaleDateString('vi-VN')}`;
+  };
+
+  const handleOpenResource = (resource: Resource) => {
+    const displayTitle = getDisplayTitle(resource);
+
+    if (resource.source === 'youtube') {
+      handlePlayVideo(resource);
+      return;
+    }
+
+    if (resource.source === 'pdf') {
+      const resourceId = getResourceIdentifier(resource);
+      if (!resourceId) {
+        setError('Không tìm thấy ID tài nguyên PDF');
+        return;
+      }
+
+      setViewingPDF({ title: displayTitle, resourceId });
+      return;
+    }
+
+    const targetUrl = resource.url?.trim();
+    if (targetUrl) {
+      window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="page-shell pb-6">
-        <p className="page-kicker">Tài nguyên</p>
+        <p className="page-kicker">Thư viện học tập</p>
         <h1 className="page-title">
           Tài nguyên học tập
         </h1>
 
         {error && (
           <div className="white-panel mb-6 border border-red-200 px-4 py-3 text-[14px] text-red-700">
-            ✕ {error}
+            • {error}
           </div>
         )}
 
@@ -371,7 +553,7 @@ export default function Resources() {
         <div className="soft-panel sticky top-4 z-10 mb-[40px] space-y-4 p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-[13px] text-[#6f6661]">
-              {totalResults > 0 ? `${totalResults} tài nguyên phù hợp` : 'Tìm kiếm, lọc và thêm tài nguyên nhanh hơn'}
+              {totalResults > 0 ? `${totalResults} tài nguyên khớp với bộ lọc` : 'Tìm kiếm, lọc và thêm tài nguyên nhanh hơn'}
             </p>
           </div>
           <form onSubmit={handleSearch} className="flex flex-col gap-3 sm:flex-row">
@@ -607,126 +789,199 @@ export default function Resources() {
           </div>
         ) : (
           <>
-            <div className="mb-[40px] grid grid-cols-1 gap-[22px] md:grid-cols-2 lg:grid-cols-3">
-              {resources.map((resource) => (
-                <div
-                  key={getResourceIdentifier(resource) || resource.title}
-                  className="white-panel overflow-hidden rounded-[28px] border border-[#f0c7d5] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_16px_34px_rgba(114,62,83,0.12)]"
-                >
-                  <div className="p-6">
-                    <div className="mb-3 flex items-start justify-between">
-                      <div className="flex-1">
-                        <h3 className="line-clamp-1 text-[20px] font-semibold tracking-[-0.03em] text-[#8c3451]">
-                          {resource.title}
+            <div className="mb-[40px] grid grid-cols-1 gap-6 md:grid-cols-2 2xl:grid-cols-3">
+
+              {resources.map((resource) => {
+                const sourceTheme = getSourceTheme(resource.source);
+                const resourceId = getResourceIdentifier(resource);
+                const displayTitle = getDisplayTitle(resource);
+                const previewText = getDisplaySnippet(resource);
+                const resourceHost = resource.url
+                  ? resource.url.replace(/^https?:\/\//, '').replace(/^www\./, '')
+                  : 'Nguồn web';
+
+                return (
+                  <article
+                    key={resourceId || displayTitle}
+                    className="group flex min-h-[460px] flex-col overflow-hidden rounded-[34px] border border-[#ebe2e8] bg-[linear-gradient(180deg,#ffffff_0%,#fffafc_100%)] p-6 shadow-[0_18px_40px_rgba(114,62,83,0.08)] transition-all duration-200 hover:-translate-y-1.5 hover:shadow-[0_26px_54px_rgba(114,62,83,0.14)]"
+                  >
+                    <div className="mb-5 flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="text-[12px] font-semibold tracking-[0.08em] text-[#8d7e84]">
+                          {resource.topic || 'Bunny Library'}
+                        </p>
+                        <h3 className="mt-3 line-clamp-2 break-words text-[22px] font-semibold leading-[1.22] tracking-[-0.04em] text-[#17141a]">
+                          {displayTitle}
                         </h3>
                       </div>
-                      <span
-                        className={`ml-2 rounded-full px-3 py-1 text-[11px] font-medium ${getLevelColor(
-                          resource.level
-                        )}`}
-                      >
-                        {resource.level === 'beginner'
-                          ? 'Cơ bản'
-                          : resource.level === 'intermediate'
-                          ? 'Trung bình'
-                          : 'Nâng cao'}
+                      <div className="flex shrink-0 items-start gap-2">
+                        <span className={`rounded-full px-3 py-1.5 text-[11px] font-medium ${getLevelColor(resource.level)}`}>
+                          {getLevelLabel(resource.level)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteResource(resource)}
+                          disabled={deletingResourceId === resourceId}
+                          className="rounded-full border border-[#ebe2e7] bg-white px-3 py-1.5 text-[11px] font-medium text-[#8c3451] transition-colors hover:bg-[#fff4f8] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {deletingResourceId === resourceId ? 'Đang xóa...' : 'Xóa'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mb-5 flex items-center justify-between gap-3">
+                      <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[12px] font-medium ${sourceTheme.chip}`}>
+                        {getSourceLabel(resource.source)}
+                      </span>
+                      <span className={`flex h-11 w-11 items-center justify-center rounded-full border ${sourceTheme.icon}`}>
+                        {getSourceIcon(resource.source)}
                       </span>
                     </div>
 
-                    <p className="mb-3 text-[12px] text-[#7f3650]">
-                      Nguồn: {resource.source === 'pdf' ? 'PDF' : resource.source === 'youtube' ? 'YouTube' : 'Trang web'}
-                    </p>
-                    <div className="mb-3 flex items-center justify-end">
-                      <button
-                        type="button"
-                        onClick={() => void handleDeleteResource(resource)}
-                        disabled={deletingResourceId === getResourceIdentifier(resource)}
-                        className="rounded-full border border-[#efc7d4] px-3 py-1.5 text-[11px] font-medium text-[#8c3451] transition-colors hover:bg-[#fff1f6] disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {deletingResourceId === getResourceIdentifier(resource) ? 'Đang xóa...' : 'Xóa'}
-                      </button>
-                    </div>
-                    {(resource.snippet || resource.content_summary) && (
-                      <p className="line-clamp-2 text-[13px] leading-6 text-[#6f5260]">
-                        {resource.snippet || resource.content_summary}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="mx-6 mb-6 flex h-[260px] items-center justify-center overflow-hidden rounded-[24px] bg-[#fdf5f8] shadow-[0_12px_24px_rgba(114,62,83,0.08)] sm:h-[309px]">
-                    {resource.source === 'youtube' ? (
-                      (() => {
-                        const thumbnailUrl = getYouTubeThumbnail(resource);
-                        return thumbnailUrl ? (
-                          <div
-                            className="relative w-full h-full cursor-pointer group"
-                            onClick={() => handlePlayVideo(resource)}
-                          >
+                    <div className={`relative mb-5 flex min-h-[250px] flex-1 overflow-hidden rounded-[28px] border border-[#efeaed] ${sourceTheme.preview}`}>
+                      {resource.source === 'youtube' ? (
+                        (() => {
+                          const thumbnailUrl = getYouTubeThumbnail(resource);
+                          return thumbnailUrl ? (
+                            <button
+                              type="button"
+                              className="relative h-full w-full overflow-hidden text-left"
+                              onClick={() => handleOpenResource(resource)}
+                            >
+                              <img
+                                src={thumbnailUrl}
+                                alt={displayTitle}
+                                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                  e.currentTarget.parentElement!.innerHTML =
+                                    '<p class="flex h-full items-center justify-center px-4 text-center text-[12px] text-[#7f3650]">Xem trước YouTube</p>';
+                                }}
+                              />
+                              <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(19,16,22,0.02)_0%,rgba(19,16,22,0.35)_100%)]" />
+                              <div className="absolute inset-x-5 bottom-5 flex items-end justify-between gap-4">
+                                <div className="max-w-[70%] rounded-[20px] bg-white/88 px-4 py-3 backdrop-blur-sm">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#9b2f55]">YouTube</p>
+                                  <p className="mt-1 line-clamp-2 text-[14px] font-medium leading-5 text-[#17141a]">
+                                    {displayTitle}
+                                  </p>
+                                </div>
+                                <span className={`flex h-16 w-16 shrink-0 items-center justify-center rounded-full text-white shadow-[0_18px_30px_rgba(114,62,83,0.18)] ${sourceTheme.accent}`}>
+                                  <svg className="ml-1 h-8 w-8" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M8 5v14l11-7z" />
+                                  </svg>
+                                </span>
+                              </div>
+                            </button>
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center px-6 text-center text-[13px] font-medium text-[#7f3650]">
+                              Xem trước YouTube
+                            </div>
+                          );
+                        })()
+                      ) : resource.source === 'pdf' ? (
+                        <button
+                          type="button"
+                          className="relative h-full w-full overflow-hidden text-left"
+                          onClick={() => handleOpenResource(resource)}
+                        >
+                          {resource.thumbnail ? (
                             <img
-                              src={thumbnailUrl}
-                              alt={resource.title}
-                              className="w-full h-full object-cover"
+                              src={resource.thumbnail}
+                              alt={displayTitle}
+                              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
                               onError={(e) => {
                                 e.currentTarget.style.display = 'none';
                                 e.currentTarget.parentElement!.innerHTML =
-                                  '<p class="text-[10px] text-[#7f3650] text-center px-4">Thumbnail clip YouTube</p>';
+                                  '<div class="flex h-full flex-col items-center justify-center gap-3 px-4 text-center"><p class="text-[12px] font-medium text-[#7f3650]">PDF không có xem trước</p></div>';
                               }}
                             />
-                            <div className="absolute inset-0 flex items-center justify-center bg-[#8c3451]/0 transition-all group-hover:bg-[#8c3451]/20">
-                              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[#8c3451] opacity-85 transition-transform group-hover:scale-110 group-hover:opacity-100">
-                                <svg className="w-8 h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
-                                  <path d="M8 5v14l11-7z" />
-                                </svg>
+                          ) : (
+                            <div className={`flex h-full w-full flex-col items-center justify-center gap-4 px-6 text-center ${sourceTheme.soft}`}>
+                              <span className={`flex h-16 w-16 items-center justify-center rounded-[20px] border bg-white shadow-[0_12px_24px_rgba(114,62,83,0.08)] ${sourceTheme.icon}`}>
+                                {getSourceIcon(resource.source)}
+                              </span>
+                              <div>
+                                <p className="text-[12px] font-semibold tracking-[0.08em] text-[#8d7e84]">Tệp PDF</p>
+                                <p className="mt-2 text-[16px] font-medium leading-6 text-[#1b171c]">
+                                  Xem nhanh tài liệu trực tiếp trong thư viện của bạn.
+                                </p>
                               </div>
                             </div>
+                          )}
+                          <div className="pointer-events-none absolute inset-x-5 bottom-5 flex items-center justify-between gap-4">
+                            <div className="rounded-[18px] bg-white/90 px-4 py-3 backdrop-blur-sm">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6d4c8f]">PDF</p>
+                              <p className="mt-1 text-[14px] font-medium text-[#17141a]">Xem trước tài liệu</p>
+                            </div>
+                            <span className="rounded-full bg-white/90 p-3 text-[#8c3451] shadow-[0_12px_24px_rgba(114,62,83,0.12)] backdrop-blur-sm">
+                              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                              </svg>
+                            </span>
                           </div>
-                        ) : (
-                          <p className="text-[10px] text-[#7f3650] text-center px-4">Thumbnail clip YouTube</p>
-                        );
-                      })()
-                    ) : resource.source === 'pdf' ? (
-                      <div
-                        className="relative w-full h-full cursor-pointer group"
-                        onClick={() => {
-                          const resourceId = resource.resource_id || resource._id || resource.id || '';
-                          if (!resourceId) {
-                            setError('Không tìm thấy ID tài nguyên PDF');
-                            return;
-                          }
-                          setViewingPDF({ title: resource.title, resourceId });
-                        }}
-                      >
-                        {resource.thumbnail ? (
-                          <img
-                            src={resource.thumbnail}
-                            alt={resource.title}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              e.currentTarget.style.display = 'none';
-                              e.currentTarget.parentElement!.innerHTML =
-                                '<p class="text-[10px] text-gray-600 text-center px-4 flex items-center justify-center h-full">PDF không có preview</p>';
-                            }}
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center bg-[#f9eef2] px-4 text-center">
-                            <p className="text-[10px] text-[#7f3650]">PDF</p>
+                        </button>
+                      ) : (
+                        <div className="flex h-full w-full flex-col justify-between p-6">
+                          <div>
+                            <p className="text-[12px] font-semibold tracking-[0.08em] text-[#2f657f]/70">
+                              Nguồn tham khảo
+                            </p>
+                            <p className="mt-4 line-clamp-5 text-[17px] font-medium leading-8 text-[#1b171c]">
+                              {previewText}
+                            </p>
                           </div>
-                        )}
-                        <div className="absolute inset-0 flex items-center justify-center bg-[#8c3451]/0 transition-all group-hover:bg-[#8c3451]/20">
-                              <div className="rounded-full bg-white p-3 opacity-0 transition-opacity group-hover:opacity-100">
-                            <svg className="w-6 h-6 text-[#8c3451]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                            </svg>
+                          <div className="flex items-end justify-between gap-3">
+                            <span className={`max-w-[75%] rounded-full px-3 py-2 text-[12px] ${sourceTheme.soft} ${sourceTheme.icon}`}>
+                              {resourceHost}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenResource(resource)}
+                              className={`rounded-full border bg-white px-4 py-2 text-[12px] font-medium transition hover:bg-white ${sourceTheme.chip}`}
+                            >
+                              Mở nguồn
+                            </button>
                           </div>
                         </div>
+                      )}
+                    </div>
+
+                    <div className={`rounded-[24px] border px-4 py-4 ${sourceTheme.soft} border-white/70`}>
+                      <p className="line-clamp-2 min-h-[44px] break-words text-[13px] leading-6 text-[#6a625d]">
+                        {previewText}
+                      </p>
+
+                      <div className="mt-4 flex items-center justify-between gap-3 border-t border-white/80 pt-4">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <span className={`flex h-10 w-10 items-center justify-center rounded-[14px] border bg-white ${sourceTheme.icon}`}>
+                            {getSourceIcon(resource.source)}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-[13px] font-normal leading-5 tracking-normal text-[#8f7b87]">
+                              Mới cập nhật
+                            </p>
+                            <p className="line-clamp-1 text-[15px] font-semibold leading-6 tracking-[-0.01em] text-[#18141a]">
+                              {resource.topic || displayTitle}
+                            </p>
+                            <p className="text-[12px] font-normal leading-5 tracking-normal text-[#7a726d]">{getResourceTimestamp(resource)}</p>
+                          </div>
+                        </div>
+                        {resource.source !== 'web' && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenResource(resource)}
+                            className={`rounded-full border bg-white px-4 py-2 text-[12px] font-medium transition hover:bg-white ${sourceTheme.chip}`}
+                          >
+                            {resource.source === 'youtube' ? 'Xem video' : 'Xem trước'}
+                          </button>
+                        )}
                       </div>
-                    ) : (
-                      <div className="w-full h-full" />
-                    )}
-                  </div>
-                </div>
-              ))}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
 
             {totalPages > 1 && (
@@ -849,7 +1104,7 @@ export default function Resources() {
               Xóa tài nguyên này?
             </h3>
             <p className="mb-6 text-[14px] leading-6 text-[#6f5260]">
-              Tài nguyên <span className="font-semibold text-[#8c3451]">{pendingDeleteResource.title}</span> sẽ bị xóa khỏi danh sách,
+              Tài nguyên <span className="font-semibold text-[#8c3451]">{getDisplayTitle(pendingDeleteResource)}</span> sẽ bị xóa khỏi danh sách,
               đồng thời dọn luôn dữ liệu chunk và gợi ý liên quan trong hệ thống.
             </p>
 

@@ -1,7 +1,20 @@
 import { useEffect, useState } from 'react';
 
+interface TokenPayload {
+  [key: string]: unknown;
+}
+
+interface DebugTokenInfo {
+  token?: string;
+  payload?: TokenPayload;
+  user?: unknown;
+  fullToken?: string;
+  error?: string;
+  exception?: string;
+}
+
 export default function DebugToken() {
-  const [tokenInfo, setTokenInfo] = useState<any>(null);
+  const [tokenInfo, setTokenInfo] = useState<DebugTokenInfo | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -12,11 +25,11 @@ export default function DebugToken() {
         // Decode JWT (without verification - just for debugging)
         const parts = token.split('.');
         if (parts.length === 3) {
-          const payload = JSON.parse(atob(parts[1]));
+          const payload = JSON.parse(atob(parts[1])) as TokenPayload;
           setTokenInfo({
             token: token.substring(0, 50) + '...',
             payload,
-            user: user ? JSON.parse(user) : null,
+            user: user ? (JSON.parse(user) as unknown) : null,
             fullToken: token
           });
         }

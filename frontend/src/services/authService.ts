@@ -1,30 +1,43 @@
 import { apiClient } from '../utils/apiClient';
-import type { 
-  LoginRequest, 
-  SignUpRequest, 
-  LoginResponse, 
-  SignupResponse
+import type {
+  CurrentUserResponse,
+  LoginRequest,
+  LoginResponse,
+  SignUpRequest,
+  SignupResponse,
+  StoredUser,
+  UpdateUserLevelRequest,
 } from '../types/auth';
+import {
+  normalizeCurrentUserResponse,
+  normalizeLoginResponse,
+  normalizeSignupResponse,
+  normalizeStoredUser,
+  parseStoredUser,
+} from './parsers/authParser';
+
+export type { CurrentUserResponse, StoredUser } from '../types/auth';
 
 export const authService = {
   async login(credentials: LoginRequest): Promise<LoginResponse> {
-    return apiClient.post('/auth/login', credentials) as Promise<LoginResponse>;
+    return normalizeLoginResponse(await apiClient.post('/auth/login', credentials));
   },
 
   async signup(data: SignUpRequest): Promise<SignupResponse> {
-    return apiClient.post('/auth/signup', data) as Promise<SignupResponse>;
+    return normalizeSignupResponse(await apiClient.post('/auth/signup', data));
   },
 
-  async updateUserLevel(data: { user_id: string; level: string; learning_goal?: string }): Promise<any> {
-    // Update user level in database
-    return apiClient.put(`/users/${data.user_id}`, {
-      level: data.level,
-      learning_goal: data.learning_goal
-    });
+  async updateUserLevel(data: UpdateUserLevelRequest): Promise<CurrentUserResponse> {
+    return normalizeCurrentUserResponse(
+      await apiClient.put(`/users/${data.user_id}`, {
+        level: data.level,
+        learning_goal: data.learning_goal,
+      })
+    );
   },
 
-  async getCurrentUser(): Promise<any> {
-    return apiClient.get('/users/me');
+  async getCurrentUser(): Promise<CurrentUserResponse> {
+    return normalizeCurrentUserResponse(await apiClient.get('/users/me'));
   },
 
   async logout(): Promise<void> {
@@ -41,13 +54,12 @@ export const authService = {
     return localStorage.getItem('email');
   },
 
-  getStoredUser(): any | null {
-    const user = localStorage.getItem('user');
-    return user ? JSON.parse(user) : null;
+  getStoredUser(): StoredUser | null {
+    return parseStoredUser(localStorage.getItem('user'));
   },
 
-  setStoredUser(user: any): void {
-    localStorage.setItem('user', JSON.stringify(user));
+  setStoredUser(user: StoredUser): void {
+    localStorage.setItem('user', JSON.stringify(normalizeStoredUser(user)));
   },
 
   isAuthenticated(): boolean {

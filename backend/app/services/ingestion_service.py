@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -177,7 +178,7 @@ class IngestionService:
 
         resource = self.resource_repository.create(
             {
-                "title": safe_name,
+                "title": self._build_pdf_title(file.filename or safe_name),
                 "type": "pdf",
                 "topic": topic.strip().lower(),
                 "source": "pdf",
@@ -376,26 +377,28 @@ class IngestionService:
 
     def _process_pdf_content(self, resource_id: str, file_path: str) -> Dict[str, Any]:
         resource = self._require_resource(resource_id)
-        text, page_count = self.extract_pdf_text(file_path)
-        if not text:
+        pages, page_count = self.extract_pdf_pages(file_path)
+        if not pages:
             raise IngestionError("No readable text extracted from PDF.")
-        cleaned_text = clean_text(text)
-        raw_chunks = split_into_chunks(cleaned_text)
-        ranked_chunks = self._rank_chunks_by_topic(
-            raw_chunks,
-            topic=resource.get("topic", ""),
-            limit=MAX_STORED_CHUNKS,
-        )
+        chunk_pages = pages
+        cleaned_text = "\n\n".join(page_text for _, page_text in pages)
+        page_chunks = [page_text for _, page_text in chunk_pages]
+        page_chunk_indexes = [page_number - 1 for page_number, _ in chunk_pages]
+        page_chunk_metadata = [{"page_number": page_number} for page_number, _ in chunk_pages]
         metadata = {
             **resource.get("metadata", {}),
             "pages": page_count,
+            "stored_pages": len(chunk_pages),
+            "chunking_strategy": "page",
             "content_hash": compute_content_hash(cleaned_text),
         }
         return self._store_chunks(
             resource=resource,
-            chunks=ranked_chunks,
+            chunks=page_chunks,
             summary=self._summarize_content(cleaned_text),
             metadata_updates=metadata,
+            chunk_indexes=page_chunk_indexes,
+            per_chunk_metadata_overrides=page_chunk_metadata,
         )
 
     def _process_youtube_content(
@@ -454,7 +457,9 @@ class IngestionService:
         chunks: List[str],
         summary: str,
         metadata_updates: Dict[str, Any],
+        chunk_indexes: Optional[List[int]] = None,
         chunk_metadata_overrides: Optional[Dict[str, Any]] = None,
+        per_chunk_metadata_overrides: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         if not chunks:
             raise IngestionError("No chunks were produced from the source content.")
@@ -473,6 +478,8 @@ class IngestionService:
             chunks=chunks,
             embeddings=embeddings,
             metadata=base_chunk_metadata,
+            chunk_indexes=chunk_indexes,
+            chunk_metadata_overrides=per_chunk_metadata_overrides,
         )
         inserted = self.chunk_repository.insert_many(documents)
 
@@ -488,6 +495,7 @@ class IngestionService:
                         "level": str(document["metadata"].get("level") or ""),
                         "resource_id": str(resource_id),
                         "chunk_index": document["chunk_index"],
+                        "page_number": document["metadata"].get("page_number"),
                     },
                 }
             )
@@ -573,6 +581,18 @@ class IngestionService:
         return safe
 
     @staticmethod
+    def _build_pdf_title(filename: str) -> str:
+        stem = Path(filename).stem.strip()
+        if not stem:
+            return "PDF document"
+
+        normalized = stem.replace("_", " ").replace("-", " ")
+        normalized = re.sub(r"([A-Za-z])(\d)", r"\1 \2", normalized)
+        normalized = re.sub(r"(\d)([A-Za-z])", r"\1 \2", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized or "PDF document"
+
+    @staticmethod
     def extract_video_id(url: str) -> str:
         """Extract YouTube `video_id` from common URL formats."""
         parsed = urlparse(url.strip())
@@ -594,27 +614,27 @@ class IngestionService:
         return candidate
 
     @staticmethod
-    def extract_pdf_text(file_path: str) -> Tuple[str, int]:
-        """Extract text and page count from PDF using available library."""
+    def extract_pdf_pages(file_path: str) -> Tuple[List[Tuple[int, str]], int]:
+        """Extract normalized text for each readable page plus total page count."""
         if PYMUPDF_AVAILABLE and fitz is not None:
             document = fitz.open(file_path)
             try:
-                texts = []
+                pages: List[Tuple[int, str]] = []
                 for page_number, page in enumerate(document, start=1):
-                    page_text = page.get_text().strip()
+                    page_text = clean_text(page.get_text())
                     if page_text:
-                        texts.append(f"[Page {page_number}]\n{page_text}")
-                return "\n\n".join(texts), len(document)
+                        pages.append((page_number, page_text))
+                return pages, len(document)
             finally:
                 document.close()
         if PYPDF_AVAILABLE and PdfReader is not None:
             reader = PdfReader(file_path)
-            texts = []
+            pages: List[Tuple[int, str]] = []
             for page_number, page in enumerate(reader.pages, start=1):
-                page_text = (page.extract_text() or "").strip()
+                page_text = clean_text(page.extract_text() or "")
                 if page_text:
-                    texts.append(f"[Page {page_number}]\n{page_text}")
-            return "\n\n".join(texts), len(reader.pages)
+                    pages.append((page_number, page_text))
+            return pages, len(reader.pages)
         raise IngestionError("No PDF extraction library available.")
 
     @staticmethod

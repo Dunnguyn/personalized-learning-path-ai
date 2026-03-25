@@ -130,7 +130,7 @@
   }
 
   .hero-title {
-    @apply text-[56px] font-medium leading-[0.95] tracking-[-0.05em] text-[#121019];
+    @apply text-[56px] font-medium leading-[0.95] tracking-[-0.05em] text-[#8c3451];
   }
 
   .chip {

@@ -1,12 +1,6 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { authService } from '../services/authService';
-
-interface User {
-  user_id: string;
-  name: string;
-  email: string;
-  level?: string;
-}
+import type { StoredUser, User } from '../types/auth';
 
 interface AuthContextType {
   user: User | null;
@@ -18,22 +12,30 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const normalizeAuthUser = (user: StoredUser): User | null => {
+  const userId = user.user_id || user._id;
+  if (!userId || !user.name || !user.email) {
+    return null;
+  }
+
+  return {
+    user_id: userId,
+    name: user.name,
+    email: user.email,
+    level: user.level || 'beginner',
+  };
+};
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check if user is authenticated on mount
     const token = authService.getStoredToken();
     if (token) {
       const storedUser = authService.getStoredUser();
       if (storedUser) {
-        setUser({
-          user_id: storedUser.user_id || storedUser._id,
-          name: storedUser.name,
-          email: storedUser.email,
-          level: storedUser.level || 'beginner'
-        });
+        setUser(normalizeAuthUser(storedUser));
       }
     }
     setLoading(false);
@@ -43,17 +45,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const token = authService.getStoredToken();
       if (token) {
-        // Try to fetch fresh user data from API
-        // This requires a /users/me endpoint in backend
         const userData = await authService.getCurrentUser();
-        const updatedUser = {
-          user_id: userData.user_id || userData._id,
-          name: userData.name,
-          email: userData.email,
-          level: userData.level
-        };
-        setUser(updatedUser);
-        authService.setStoredUser(updatedUser);
+        const updatedUser = normalizeAuthUser(userData);
+        if (updatedUser) {
+          setUser(updatedUser);
+          authService.setStoredUser(updatedUser);
+        }
       }
     } catch (error) {
       console.error('Failed to refresh user:', error);
@@ -72,6 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   const context = useContext(AuthContext);
   if (context === undefined) {

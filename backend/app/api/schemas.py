@@ -290,8 +290,12 @@ class RecommendedChunkItem(BaseModel):
     chunk_id: str
     resource_id: str
     chunk_index: int
+    page_number: Optional[int] = None
     score: float
     preview: str
+    resource_title: Optional[str] = None
+    resource_source: Optional[str] = None
+    resource_url: Optional[str] = None
 
 
 class LessonRecommendedChunksResponse(BaseModel):

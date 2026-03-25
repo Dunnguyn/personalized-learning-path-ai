@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ReactFlow, {
   Background,
@@ -14,6 +14,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import PDFViewer from '../components/PDFViewer';
 import { useAuth } from '../contexts/AuthContext';
 import { learningPathService } from '../services';
 import type {
@@ -24,7 +25,7 @@ import type {
   LessonQuestion,
   LessonQuestionBank,
   LessonStatus,
-} from '../services/learningPathService';
+} from '../types/learningPath';
 import { SUBJECTS } from '../utils/subjects';
 
 interface PathState {
@@ -46,7 +47,42 @@ interface LessonResourceCard {
   title: string;
   source: string;
   preview: string;
+  resourceId?: string;
+  resourceUrl?: string;
+  pageNumber?: number;
+  actionLabel?: string;
 }
+
+interface PinnedLessonResource extends LessonResourceCard {
+  pinnedAt: string;
+}
+
+const LESSON_RESOURCE_STOP_WORDS = new Set([
+  'bai',
+  'bài',
+  'chuong',
+  'chương',
+  'lesson',
+  'chapter',
+  'hoc',
+  'học',
+  'trong',
+  'cua',
+  'của',
+  'voi',
+  'với',
+  'cho',
+  'nguoi',
+  'người',
+  'co',
+  'có',
+  'ban',
+  'bạn',
+  'muc',
+  'mục',
+  'tieu',
+  'tiêu',
+]);
 
 interface MapLessonNodeData {
   lesson: LessonNode;
@@ -362,6 +398,96 @@ const getResourcePreview = (source: string) => {
   return 'Xem trước tài nguyên';
 };
 
+const formatPdfResourceTitle = (title: string) =>
+  title
+    .replace(/\.pdf$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/([A-Za-z])(\d)/g, '$1 $2')
+    .replace(/(\d)([A-Za-z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const formatResourceSource = (source?: string) => {
+  switch ((source || '').toLowerCase()) {
+    case 'youtube':
+      return 'YouTube';
+    case 'pdf':
+      return 'PDF';
+    case 'web':
+      return 'Trang web';
+    default:
+      return source?.trim() || 'Tài liệu';
+  }
+};
+
+const getLessonResourceTheme = (source: string) => {
+  switch (source) {
+    case 'PDF':
+      return {
+        chip: 'bg-[#f4edff] text-[#6d4c8f]',
+        frame: 'bg-[linear-gradient(180deg,#fffaff_0%,#f5eefc_100%)] border-[#eadff9]',
+        preview: 'bg-[#f7f1ff]',
+        accent: 'text-[#6d4c8f]',
+        icon: 'PDF',
+      };
+    case 'YouTube':
+      return {
+        chip: 'bg-[#fff1f6] text-[#9b2f55]',
+        frame: 'bg-[linear-gradient(180deg,#fff9fb_0%,#fdeef4_100%)] border-[#f5d8e3]',
+        preview: 'bg-[#fff3f7]',
+        accent: 'text-[#9b2f55]',
+        icon: 'YT',
+      };
+    case 'Trang web':
+      return {
+        chip: 'bg-[#eef8fd] text-[#2f657f]',
+        frame: 'bg-[linear-gradient(180deg,#fcfeff_0%,#eef8fd_100%)] border-[#dbe8f2]',
+        preview: 'bg-[#f2f9fd]',
+        accent: 'text-[#2f657f]',
+        icon: 'WEB',
+      };
+    default:
+      return {
+        chip: 'bg-[#f6f1f4] text-[#6f5260]',
+        frame: 'bg-[linear-gradient(180deg,#fffdfd_0%,#faf5f8_100%)] border-[#eadfe5]',
+        preview: 'bg-[#faf5f8]',
+        accent: 'text-[#6f5260]',
+        icon: 'DOC',
+      };
+  }
+};
+
+const getLessonResourceHint = (resource: LessonResourceCard) => {
+  if (resource.source === 'PDF' && resource.pageNumber) {
+    return `Mở trực tiếp từ trang ${resource.pageNumber} để đọc đúng đoạn được gợi ý.`;
+  }
+  if (resource.source === 'PDF') {
+    return 'Mở trực tiếp tài liệu PDF trong trình xem tích hợp.';
+  }
+  if (resource.source === 'YouTube') {
+    return 'Mở nguồn video gốc để xem toàn bộ nội dung liên quan.';
+  }
+  return 'Mở nguồn tài liệu gốc để đọc đầy đủ nội dung tham khảo.';
+};
+
+const extractLessonResourceTerms = (lesson?: LessonNode | null) => {
+  const sources = [cleanLessonTitle(lesson?.title || ''), lesson?.summary || ''];
+  const tokens = new Set<string>();
+
+  sources.forEach((source) => {
+    const matches = source.match(/\p{L}[\p{L}\p{N}]*/gu) || [];
+    matches.forEach((token) => {
+      const normalized = token.toLowerCase().trim();
+      if (normalized.length < 4 || LESSON_RESOURCE_STOP_WORDS.has(normalized)) {
+        return;
+      }
+      tokens.add(normalized);
+    });
+  });
+
+  return Array.from(tokens).slice(0, 8);
+};
+
 const buildQuestionChoices = (question: LessonQuestion) => {
   if (question.question_type === 'multiple_choice') {
     return [question.correct_answer, ...question.distractors].filter(Boolean).slice(0, 4);
@@ -385,11 +511,15 @@ export default function LearningPathDetail() {
   const [lessonTab, setLessonTab] = useState<LessonTab>('lesson');
   const [selectedLesson, setSelectedLesson] = useState<LessonNode | null>(null);
   const [lessonRecommendedChunks, setLessonRecommendedChunks] = useState<LessonRecommendedChunks | null>(null);
+  const [lessonResourcesLoading, setLessonResourcesLoading] = useState(false);
   const [questionBank, setQuestionBank] = useState<LessonQuestionBank | null>(null);
   const [questionLoading, setQuestionLoading] = useState(false);
   const [questionGenerating, setQuestionGenerating] = useState(false);
   const [questionError, setQuestionError] = useState<string | null>(null);
   const [questionNotice, setQuestionNotice] = useState<string | null>(null);
+  const [viewingPDF, setViewingPDF] = useState<{ key: string; title: string; resourceId: string; initialPage?: number } | null>(null);
+  const [currentReadingResource, setCurrentReadingResource] = useState<LessonResourceCard | null>(null);
+  const [pinnedLessonResource, setPinnedLessonResource] = useState<PinnedLessonResource | null>(null);
   const [pendingDeletePath, setPendingDeletePath] = useState(false);
   const [deletingPath, setDeletingPath] = useState(false);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -489,6 +619,14 @@ export default function LearningPathDetail() {
     () => mapLessons.findIndex((lesson) => lesson.lesson_id === selectedLesson?.lesson_id),
     [mapLessons, selectedLesson?.lesson_id]
   );
+  const lessonResourceHighlightTerms = useMemo(() => extractLessonResourceTerms(selectedLesson), [selectedLesson]);
+  const pinnedLessonResourceStorageKey = useMemo(() => {
+    if (!selectedLesson) {
+      return null;
+    }
+
+    return `learning-path:pinned-resource:${path?.path_id || pathId || 'draft'}:${selectedLesson.lesson_id}`;
+  }, [path?.path_id, pathId, selectedLesson]);
 
   useEffect(() => {
     if (lessons.length === 0) {
@@ -524,8 +662,39 @@ export default function LearningPathDetail() {
   }, [hoveredLesson, mapLessons]);
 
   useEffect(() => {
+    setViewingPDF(null);
+    setCurrentReadingResource(null);
+  }, [selectedLesson?.lesson_id]);
+
+  useEffect(() => {
+    if (!pinnedLessonResourceStorageKey) {
+      setPinnedLessonResource(null);
+      return;
+    }
+
+    try {
+      const storedValue = window.localStorage.getItem(pinnedLessonResourceStorageKey);
+      if (!storedValue) {
+        setPinnedLessonResource(null);
+        return;
+      }
+
+      const parsed = JSON.parse(storedValue) as PinnedLessonResource;
+      if (!parsed?.key || !parsed?.title) {
+        setPinnedLessonResource(null);
+        return;
+      }
+
+      setPinnedLessonResource(parsed);
+    } catch {
+      setPinnedLessonResource(null);
+    }
+  }, [pinnedLessonResourceStorageKey]);
+
+  useEffect(() => {
     if (!selectedLesson) {
       setLessonRecommendedChunks(null);
+      setLessonResourcesLoading(false);
       return;
     }
 
@@ -533,6 +702,9 @@ export default function LearningPathDetail() {
 
     const loadRecommendedChunks = async () => {
       try {
+        if (active) {
+          setLessonResourcesLoading(true);
+        }
         const existing = await learningPathService.getLessonRecommendedChunks(selectedLesson.lesson_id);
         if (active) {
           setLessonRecommendedChunks(existing);
@@ -551,6 +723,10 @@ export default function LearningPathDetail() {
             setLessonRecommendedChunks(null);
           }
         }
+      } finally {
+        if (active) {
+          setLessonResourcesLoading(false);
+        }
       }
     };
 
@@ -559,7 +735,7 @@ export default function LearningPathDetail() {
     return () => {
       active = false;
     };
-  }, [selectedLesson?.lesson_id]);
+  }, [selectedLesson]);
 
   useEffect(() => {
     if (screenMode !== 'map' || mapPresentationMode) {
@@ -611,9 +787,16 @@ export default function LearningPathDetail() {
     if (lessonRecommendedChunks?.recommended_chunks?.length) {
       return lessonRecommendedChunks.recommended_chunks.slice(0, 3).map((chunk, index) => ({
         key: chunk.chunk_id || `${chunk.resource_id}-${index}`,
-        title: `Học liệu gợi ý ${index + 1}`,
-        source: 'Chunk gợi ý',
+        title:
+          (chunk.resource_source || '').toLowerCase() === 'pdf'
+            ? formatPdfResourceTitle(chunk.resource_title || '') || `Tài liệu gợi ý ${index + 1}`
+            : chunk.resource_title?.trim() || `Tài liệu gợi ý ${index + 1}`,
+        source: formatResourceSource(chunk.resource_source),
         preview: chunk.preview?.trim() || 'Đang đồng bộ nội dung học liệu từ backend.',
+        resourceId: chunk.resource_id || undefined,
+        resourceUrl: chunk.resource_url || undefined,
+        pageNumber: chunk.page_number,
+        actionLabel: (chunk.resource_source || '').toLowerCase() === 'pdf' ? 'Đọc tài liệu' : 'Mở tài liệu',
       }));
     }
 
@@ -648,6 +831,221 @@ export default function LearningPathDetail() {
     ];
   }, [lessonRecommendedChunks, selectedLesson?.resources]);
 
+  const resolvedPinnedLessonResource = useMemo<PinnedLessonResource | null>(() => {
+    if (!pinnedLessonResource) {
+      return null;
+    }
+
+    const matchedResource = currentLessonResources.find((resource) => resource.key === pinnedLessonResource.key);
+    if (!matchedResource) {
+      return pinnedLessonResource;
+    }
+
+    return {
+      ...pinnedLessonResource,
+      ...matchedResource,
+      pageNumber: pinnedLessonResource.pageNumber ?? matchedResource.pageNumber,
+    };
+  }, [currentLessonResources, pinnedLessonResource]);
+
+  const resolvedCurrentReadingResource = useMemo<LessonResourceCard | null>(() => {
+    if (!currentReadingResource) {
+      return null;
+    }
+
+    const matchedResource = currentLessonResources.find((resource) => resource.key === currentReadingResource.key);
+    if (!matchedResource) {
+      return currentReadingResource;
+    }
+
+    return {
+      ...matchedResource,
+      pageNumber: currentReadingResource.pageNumber ?? matchedResource.pageNumber,
+    };
+  }, [currentLessonResources, currentReadingResource]);
+
+  const persistPinnedLessonResource = useCallback(
+    (resource: PinnedLessonResource | null) => {
+      setPinnedLessonResource(resource);
+
+      if (!pinnedLessonResourceStorageKey) {
+        return;
+      }
+
+      try {
+        if (!resource) {
+          window.localStorage.removeItem(pinnedLessonResourceStorageKey);
+          return;
+        }
+
+        window.localStorage.setItem(pinnedLessonResourceStorageKey, JSON.stringify(resource));
+      } catch {
+        // Ignore storage write issues so the lesson experience still works in-memory.
+      }
+    },
+    [pinnedLessonResourceStorageKey]
+  );
+
+  const buildLessonResourceOpenUrl = useCallback((resource: LessonResourceCard) => {
+    if (!resource.resourceId) {
+      return resource.resourceUrl || null;
+    }
+
+    if (resource.source === 'PDF') {
+      const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const apiBasePath = import.meta.env.VITE_API_BASE_PATH || '/api';
+      const normalizedBaseUrl = apiBaseUrl.replace(/\/$/, '');
+      const normalizedBasePath = apiBasePath.startsWith('/') ? apiBasePath : `/${apiBasePath}`;
+      const baseUrl = `${normalizedBaseUrl}${normalizedBasePath}/resources/pdf/${resource.resourceId}`;
+      return resource.pageNumber ? `${baseUrl}#page=${resource.pageNumber}` : baseUrl;
+    }
+
+    return resource.resourceUrl || null;
+  }, []);
+
+  const handleTogglePinnedLessonResource = useCallback(
+    (resource: LessonResourceCard, pageOverride?: number) => {
+      if (resolvedPinnedLessonResource?.key === resource.key) {
+        persistPinnedLessonResource(null);
+        return;
+      }
+
+      persistPinnedLessonResource({
+        ...resource,
+        pageNumber: pageOverride ?? resource.pageNumber,
+        pinnedAt: new Date().toISOString(),
+      });
+    },
+    [persistPinnedLessonResource, resolvedPinnedLessonResource?.key]
+  );
+
+  const handleOpenLessonResource = useCallback(
+    (resource: LessonResourceCard) => {
+      const resourceSnapshot = {
+        ...resource,
+      };
+
+      setCurrentReadingResource(resourceSnapshot);
+
+      if (!resource.resourceId) {
+        if (resource.resourceUrl) {
+          window.open(resource.resourceUrl, '_blank', 'noopener,noreferrer');
+        }
+        return;
+      }
+
+      if (resource.source === 'PDF') {
+        setViewingPDF({
+          key: resource.key,
+          title: resource.title,
+          resourceId: resource.resourceId,
+          initialPage: resource.pageNumber,
+        });
+        return;
+      }
+
+      if (resource.resourceUrl) {
+        window.open(resource.resourceUrl, '_blank', 'noopener,noreferrer');
+      }
+    },
+    []
+  );
+
+  const handleOpenAllLessonResources = useCallback(() => {
+    currentLessonResources.slice(0, 3).forEach((resource) => {
+      const targetUrl = buildLessonResourceOpenUrl(resource);
+      if (!targetUrl) {
+        return;
+      }
+      window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    });
+  }, [buildLessonResourceOpenUrl, currentLessonResources]);
+
+  const handlePDFViewerPageChange = useCallback(
+    (page: number) => {
+      setCurrentReadingResource((previous) =>
+        previous && viewingPDF && previous.key === viewingPDF.key
+          ? {
+              ...previous,
+              pageNumber: page,
+            }
+          : previous
+      );
+
+      if (!viewingPDF) {
+        return;
+      }
+
+      if (resolvedPinnedLessonResource?.key === viewingPDF.key) {
+        persistPinnedLessonResource({
+          ...resolvedPinnedLessonResource,
+          pageNumber: page,
+        });
+      }
+    },
+    [persistPinnedLessonResource, resolvedPinnedLessonResource, viewingPDF]
+  );
+
+  const handleTogglePinnedViewingPDF = useCallback(
+    (page: number) => {
+      if (!viewingPDF) {
+        return;
+      }
+
+      const resourceToPin =
+        currentLessonResources.find((resource) => resource.key === viewingPDF.key) ||
+        (resolvedCurrentReadingResource?.key === viewingPDF.key ? resolvedCurrentReadingResource : null) ||
+        null;
+
+      if (!resourceToPin) {
+        return;
+      }
+
+      handleTogglePinnedLessonResource(resourceToPin, page);
+      setCurrentReadingResource({
+        ...resourceToPin,
+        pageNumber: page,
+      });
+    },
+    [currentLessonResources, handleTogglePinnedLessonResource, resolvedCurrentReadingResource, viewingPDF]
+  );
+
+  const renderHighlightedPreview = useCallback(
+    (preview: string) => {
+      if (!lessonResourceHighlightTerms.length) {
+        return preview;
+      }
+
+      const escapedTerms = lessonResourceHighlightTerms
+        .map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .filter(Boolean);
+      if (!escapedTerms.length) {
+        return preview;
+      }
+
+      const regex = new RegExp(`(${escapedTerms.join('|')})`, 'giu');
+      const parts = preview.split(regex);
+
+      return parts.map((part, index) => {
+        const normalized = part.toLowerCase();
+        const isHighlighted = lessonResourceHighlightTerms.some((term) => normalized === term);
+        if (!isHighlighted) {
+          return <span key={`${part}-${index}`}>{part}</span>;
+        }
+
+        return (
+          <mark
+            key={`${part}-${index}`}
+            className="rounded-[6px] bg-[#ffe6f0] px-1 py-0.5 font-semibold text-[#8c3451]"
+          >
+            {part}
+          </mark>
+        );
+      });
+    },
+    [lessonResourceHighlightTerms]
+  );
+
   const quizQuestions = useMemo(() => {
     const items = questionBank?.questions || [];
     const multipleChoice = items.filter((question) => buildQuestionChoices(question).length >= 2);
@@ -666,19 +1064,19 @@ export default function LearningPathDetail() {
     return { total, correct, wrong, confidence };
   }, [quizQuestions, selectedAnswers, submitted]);
 
-  const openLessonScreen = (lesson: LessonNode) => {
+  const openLessonScreen = useCallback((lesson: LessonNode) => {
     setSelectedLesson(lesson);
     setLessonTab('lesson');
     setScreenMode('lesson');
-  };
+  }, []);
 
-  const handleMapLessonSelect = (lesson: LessonNode) => {
+  const handleMapLessonSelect = useCallback((lesson: LessonNode) => {
     if (selectedLesson?.lesson_id === lesson.lesson_id && lesson.status !== 'not_started') {
       openLessonScreen(lesson);
       return;
     }
     setSelectedLesson(lesson);
-  };
+  }, [openLessonScreen, selectedLesson?.lesson_id]);
 
   const mapNodes = useMemo<Node[]>(
     () => {
@@ -928,7 +1326,7 @@ export default function LearningPathDetail() {
     );
   };
 
-  const handleFitAllMapNodes = () => {
+  const handleFitAllMapNodes = useCallback(() => {
     if (!mapInstance || mapLessons.length === 0) {
       return;
     }
@@ -937,9 +1335,9 @@ export default function LearningPathDetail() {
       padding: 0.18,
       duration: 500,
     });
-  };
+  }, [mapInstance, mapLessons.length]);
 
-  const handleFitCurrentChapter = () => {
+  const handleFitCurrentChapter = useCallback(() => {
     if (!mapInstance || !selectedLesson) {
       return;
     }
@@ -962,7 +1360,7 @@ export default function LearningPathDetail() {
       padding: 0.22,
       duration: 500,
     });
-  };
+  }, [mapInstance, mapNodes, selectedLesson]);
 
   const handlePersistViewport = () => {
     if (!mapInstance || !mapViewportStorageKey) {
@@ -2098,32 +2496,197 @@ export default function LearningPathDetail() {
         </button>
       </div>
 
-      <div className="soft-panel mt-6 grid grid-cols-1 gap-8 px-6 pb-6 pt-7 xl:grid-cols-3">
-        {currentLessonResources.slice(0, 3).map((resource) => {
-          return (
-            <div
-              key={resource.key}
-              className="min-h-[404px] rounded-[28px] border bg-white px-5 pb-6 pt-5"
-              style={{ borderColor: 'rgba(17,16,21,0.08)' }}
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h3 className="text-[20px] font-semibold tracking-[-0.03em] text-[#141217]">{resource.title}</h3>
-                  <p className="mt-1 text-[13px] text-black/55">Nguồn: {resource.source}</p>
+      <div className="soft-panel mt-6 px-6 pb-6 pt-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/5 pb-4">
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-[0.22em] text-[#8c3451]/60">
+              Học liệu gợi ý
+            </p>
+            <p className="mt-2 text-[14px] leading-6 text-[#6a625d]">
+              Hệ thống đang ưu tiên đúng tài liệu và đúng trang liên quan nhất với lesson hiện tại để bạn đọc tiếp nhanh hơn.
+            </p>
+          </div>
+          {lessonRecommendedChunks?.metadata?.selected_count ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="rounded-full bg-white px-4 py-2 text-[12px] font-medium text-[#8c3451] shadow-[0_10px_20px_rgba(114,62,83,0.08)]">
+                {String(lessonRecommendedChunks.metadata.selected_count)} chunk đã chọn
+              </span>
+              {currentLessonResources.some((resource) => buildLessonResourceOpenUrl(resource)) ? (
+                <button
+                  type="button"
+                  onClick={handleOpenAllLessonResources}
+                  className="theme-button-secondary px-4 py-2 text-[12px]"
+                >
+                  Mở tất cả học liệu
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
+        {resolvedPinnedLessonResource ? (
+          <div className="mt-6 rounded-[24px] border border-[#efd7e0] bg-[linear-gradient(135deg,#fffafd_0%,#fdf2f6_100%)] p-5 shadow-[0_16px_36px_rgba(114,62,83,0.08)]">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]">
+                    Đọc tiếp nhanh
+                  </span>
+                  <span className="rounded-full bg-[#f7dfe8] px-3 py-1 text-[11px] font-semibold text-[#8c3451]">
+                    Đã ghim
+                  </span>
                 </div>
-                <span className="rounded-full bg-[#f6d6e0] px-4 py-2 text-[11px] font-semibold text-[#7f3650]">
-                  {path?.level || 'Cơ bản'}
-                </span>
+                <h3 className="mt-3 text-[20px] font-semibold tracking-[-0.03em] text-[#141217]">
+                  {resolvedPinnedLessonResource.title}
+                </h3>
+                <p className="mt-2 text-[14px] leading-6 text-[#6a625d]">
+                  {resolvedPinnedLessonResource.source}
+                  {resolvedPinnedLessonResource.pageNumber ? ` • Quay lại từ trang ${resolvedPinnedLessonResource.pageNumber}` : ''}
+                </p>
+                <p className="mt-3 max-w-3xl text-[13px] leading-6 text-[#6a625d]">
+                  Tài liệu này được giữ lại theo lesson hiện tại để bạn quay lại đúng chỗ đang đọc sau mỗi lần rời trang.
+                </p>
               </div>
-              <div
-                className="mx-auto mt-8 flex h-[309px] w-full max-w-[227px] items-start justify-center overflow-hidden rounded-[22px] bg-[#fbf8f3] px-4 pt-4 text-[10px] text-black/70"
-                style={{ boxShadow: '0 12px 28px rgba(45,31,17,0.08)' }}
-              >
-                <p className="max-h-[260px] overflow-hidden text-center text-[12px] leading-6 text-black/65">{resource.preview}</p>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleOpenLessonResource(resolvedPinnedLessonResource)}
+                  className="theme-button px-5 py-3 text-[13px]"
+                >
+                  Mở lại tài liệu
+                </button>
+                <button
+                  type="button"
+                  onClick={() => persistPinnedLessonResource(null)}
+                  className="theme-button-secondary px-5 py-3 text-[13px]"
+                >
+                  Bỏ ghim
+                </button>
               </div>
             </div>
-          );
-        })}
+          </div>
+        ) : resolvedCurrentReadingResource ? (
+          <div className="mt-6 rounded-[22px] border border-[#efdfeb] bg-white px-5 py-4 shadow-[0_14px_30px_rgba(114,62,83,0.06)]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/60">
+                  Bạn đang đọc
+                </p>
+                <p className="mt-2 text-[15px] font-medium text-[#141217]">
+                  {resolvedCurrentReadingResource.title}
+                  {resolvedCurrentReadingResource.pageNumber ? ` • Trang ${resolvedCurrentReadingResource.pageNumber}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleTogglePinnedLessonResource(resolvedCurrentReadingResource)}
+                className="theme-button-secondary px-5 py-3 text-[13px]"
+              >
+                Ghim để quay lại nhanh
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {lessonResourcesLoading ? (
+          <div className="mt-6 grid grid-cols-1 gap-8 xl:grid-cols-3">
+            {Array.from({ length: 3 }, (_, index) => (
+              <div
+                key={`resource-skeleton-${index}`}
+                className="min-h-[404px] animate-pulse rounded-[28px] border bg-white/90 px-5 pb-6 pt-5"
+                style={{ borderColor: 'rgba(17,16,21,0.08)' }}
+              >
+                <div className="h-5 w-24 rounded-full bg-[#f3dbe5]" />
+                <div className="mt-4 h-7 w-3/4 rounded-full bg-[#f7e8ee]" />
+                <div className="mt-3 h-4 w-1/2 rounded-full bg-[#f7e8ee]" />
+                <div className="mt-8 h-[220px] rounded-[22px] bg-[#fbf4f7]" />
+                <div className="mt-5 h-11 w-32 rounded-full bg-[#f3dbe5]" />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-6 grid grid-cols-1 gap-8 xl:grid-cols-3">
+            {currentLessonResources.slice(0, 3).map((resource) => {
+              const theme = getLessonResourceTheme(resource.source);
+              const canOpenResource = Boolean(
+                (resource.source === 'PDF' && resource.resourceId) || resource.resourceUrl
+              );
+              const isPinned = resolvedPinnedLessonResource?.key === resource.key;
+              const isCurrentReading = resolvedCurrentReadingResource?.key === resource.key;
+
+              return (
+                <div
+                  key={resource.key}
+                  className={`min-h-[404px] rounded-[28px] border px-5 pb-6 pt-5 ${theme.frame}`}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`inline-flex rounded-full px-3 py-1 text-[11px] font-semibold ${theme.chip}`}>
+                          {resource.source}
+                        </span>
+                        {isPinned ? (
+                          <span className="inline-flex rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#8c3451]">
+                            Đã ghim
+                          </span>
+                        ) : null}
+                        {isCurrentReading ? (
+                          <span className="inline-flex rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#6f5260]">
+                            Đang đọc
+                          </span>
+                        ) : null}
+                      </div>
+                      <h3 className="mt-3 text-[20px] font-semibold tracking-[-0.03em] text-[#141217]">{resource.title}</h3>
+                      {resource.pageNumber ? (
+                        <p className={`mt-2 text-[13px] font-medium ${theme.accent}`}>Trang gợi ý: {resource.pageNumber}</p>
+                      ) : null}
+                    </div>
+                    <span className="rounded-full bg-[#f6d6e0] px-4 py-2 text-[11px] font-semibold text-[#7f3650]">
+                      {path?.level || 'Cơ bản'}
+                    </span>
+                  </div>
+                  <div
+                    className={`mx-auto mt-8 flex h-[309px] w-full max-w-[227px] items-start justify-center overflow-hidden rounded-[22px] px-4 pt-4 text-[10px] text-black/70 ${theme.preview}`}
+                    style={{ boxShadow: '0 12px 28px rgba(45,31,17,0.08)' }}
+                  >
+                    <div className="flex h-full w-full flex-col items-center">
+                      <span className={`rounded-full bg-white/90 px-3 py-1 text-[10px] font-semibold tracking-[0.18em] ${theme.accent}`}>
+                        {theme.icon}
+                      </span>
+                      <p className="mt-4 max-h-[220px] overflow-hidden text-center text-[12px] leading-6 text-black/65">
+                        {renderHighlightedPreview(resource.preview)}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="mt-4 text-[13px] leading-6 text-[#6a625d]">{getLessonResourceHint(resource)}</p>
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenLessonResource(resource)}
+                      disabled={!canOpenResource}
+                      className="theme-button px-5 py-3 text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {resource.actionLabel || 'Mở tài liệu'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleTogglePinnedLessonResource(resource)}
+                      disabled={!canOpenResource}
+                      className="theme-button-secondary px-5 py-3 text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isPinned ? 'Bỏ ghim' : 'Ghim nhanh'}
+                    </button>
+                    {resource.pageNumber ? (
+                      <span className={`inline-flex items-center rounded-full bg-white px-4 py-2 text-[12px] font-medium shadow-[0_8px_18px_rgba(114,62,83,0.08)] ${theme.accent}`}>
+                        Đọc từ trang {resource.pageNumber}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="mt-6 flex flex-wrap gap-3">
@@ -2152,6 +2715,17 @@ export default function LearningPathDetail() {
           Quay lại map
         </button>
       </div>
+
+      <PDFViewer
+        isOpen={!!viewingPDF}
+        title={viewingPDF?.title || ''}
+        resourceId={viewingPDF?.resourceId || ''}
+        initialPage={viewingPDF?.initialPage}
+        isPinned={resolvedPinnedLessonResource?.key === viewingPDF?.key}
+        onPageChange={handlePDFViewerPageChange}
+        onTogglePin={handleTogglePinnedViewingPDF}
+        onClose={() => setViewingPDF(null)}
+      />
     </div>
   );
 

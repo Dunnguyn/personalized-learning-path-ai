@@ -83,7 +83,9 @@ export default function Settings() {
         });
       } catch (fetchError) {
         console.error('Failed to load settings profile:', fetchError);
-        setError(fetchError instanceof Error ? fetchError.message : 'Không thể tải cài đặt tài khoản.');
+        setError(
+          fetchError instanceof Error ? fetchError.message : 'Không thể tải cài đặt tài khoản.'
+        );
         setForm({
           name: user.name || '',
           email: user.email || '',
@@ -103,10 +105,7 @@ export default function Settings() {
     [form.level]
   );
 
-  const handleFieldChange = (
-    field: keyof SettingsFormState,
-    value: string
-  ) => {
+  const handleFieldChange = (field: keyof SettingsFormState, value: string) => {
     setForm((prev) => ({
       ...prev,
       [field]: value,
@@ -147,7 +146,7 @@ export default function Settings() {
         <div className="page-shell">
           <div className="white-panel flex min-h-[320px] items-center justify-center">
             <div className="text-center">
-              <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-b-2 border-[#8c3451]"></div>
+              <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-b-2 border-[#8c3451]" />
               <p className="text-[#8c3451]">Đang tải cài đặt tài khoản...</p>
             </div>
           </div>
@@ -228,8 +227,8 @@ export default function Settings() {
               <div className="mb-6">
                 <h2 className="page-section-title">Thiết lập cá nhân hóa</h2>
                 <p className="mt-2 text-[14px] leading-6 text-[#6d6660]">
-                  Các thay đổi dưới đây sẽ được dùng cho learning path, dashboard recommendation và
-                  các gợi ý từ trợ giảng AI.
+                  Các thay đổi dưới đây sẽ được dùng cho lộ trình học tập, gợi ý trên dashboard và
+                  các đề xuất từ trợ giảng AI.
                 </p>
               </div>
 
@@ -291,7 +290,7 @@ export default function Settings() {
               <h2 className="page-section-title mb-4">Phạm vi đồng bộ</h2>
               <ul className="space-y-3 text-[14px] leading-6 text-[#5d5650]">
                 <li>Lộ trình học tập sẽ dùng cấp độ và mục tiêu mới khi tạo lộ trình tiếp theo.</li>
-                <li>Dashboard recommendation sẽ phản ánh hồ sơ học tập hiện tại của bạn.</li>
+                <li>Gợi ý trên dashboard sẽ phản ánh hồ sơ học tập hiện tại của bạn.</li>
                 <li>Trợ giảng AI sẽ dùng cấp độ này để gợi ý nội dung phù hợp hơn.</li>
               </ul>
             </div>

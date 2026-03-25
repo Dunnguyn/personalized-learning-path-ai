@@ -1,14 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
-import {
-  learningPathService,
-  type LearningLevel,
-  type LearningPath,
-  type LearningPathSubjectId,
-} from '../services/learningPathService';
+import { learningPathService } from '../services/learningPathService';
+import type { LearningLevel, LearningPath, LearningPathSubjectId } from '../types/learningPath';
 import { SUBJECTS } from '../utils/subjects';
 
 const CARD_THEMES = ['pastel-pink', 'pastel-yellow', 'pastel-purple', 'pastel-mint'] as const;
@@ -32,14 +28,6 @@ export default function LearningPath() {
     goalDetail: '',
     level: 'beginner' as LearningLevel,
   });
-
-  useEffect(() => {
-    if (!user) {
-      navigate('/login');
-      return;
-    }
-    void fetchLearningPaths();
-  }, [navigate, user]);
 
   useEffect(() => {
     const state = location.state as { notice?: string } | null;
@@ -80,7 +68,7 @@ export default function LearningPath() {
     return `${baseGoal} - ${detail}`;
   };
 
-  const fetchLearningPaths = async () => {
+  const fetchLearningPaths = useCallback(async () => {
     if (!user) {
       return;
     }
@@ -126,7 +114,15 @@ export default function LearningPath() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) {
+      navigate('/login');
+      return;
+    }
+    void fetchLearningPaths();
+  }, [fetchLearningPaths, navigate, user]);
 
   const handleGeneratePath = async (event: React.FormEvent) => {
     event.preventDefault();

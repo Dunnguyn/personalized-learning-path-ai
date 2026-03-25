@@ -515,6 +515,7 @@ class HybridLearningPathService:
                 "chunk_id": str(chunk["_id"]),
                 "resource_id": str(chunk["resource_id"]),
                 "chunk_index": int(chunk.get("chunk_index", 0)),
+                "page_number": self.lesson_chunk_service._resolve_page_number(chunk),
                 "score": 0.0,
                 "preview": str(chunk.get("content") or "")[:240],
             }

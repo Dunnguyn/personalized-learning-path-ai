@@ -44,6 +44,69 @@ export interface AdaptiveRecommendation {
   priority_score: number;
 }
 
+export interface RecommendedConceptApiItem {
+  concept_id: number;
+  concept_name: string;
+  difficulty?: number;
+  topic?: string;
+}
+
+export interface RecommendedConceptsResponse {
+  success: boolean;
+  user_id: string;
+  recommended: RecommendedConceptApiItem[];
+}
+
+export interface RecommendedResourceItem {
+  resource_id: number | string;
+  title: string;
+  source: string;
+  level: string;
+  topic: string;
+  url?: string | null;
+  reason: string;
+  relevance_score: number;
+}
+
+export interface PersonalizedRecommendationResponse {
+  user_id: number | string;
+  goal: string;
+  level: string;
+  recommended_resources: RecommendedResourceItem[];
+  completed_concepts: number;
+  total_concepts: number;
+  progress_percentage: number;
+  message: string;
+}
+
+export interface GoalProgressConceptItem {
+  concept_id: number;
+  concept_name: string;
+  difficulty: number;
+  mastery: number;
+  status: string;
+}
+
+export interface GoalProgressResponse {
+  user_id: number | string;
+  goal: string;
+  concepts: GoalProgressConceptItem[];
+  overall_mastery: number;
+  message: string;
+}
+
+export interface ProgressUpdateResponse {
+  success: boolean;
+  message?: string;
+}
+
+export interface ResourceSearchResponse {
+  results?: unknown[];
+  total?: number;
+  page?: number;
+  size?: number;
+}
+
 export interface DashboardData {
   progressOverview: ProgressOverview;
   confidenceOverview: ConfidenceOverview;
