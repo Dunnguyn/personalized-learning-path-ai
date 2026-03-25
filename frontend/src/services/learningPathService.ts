@@ -7,11 +7,13 @@ import type {
   LearningPathHistory,
   LearningPathSubjectId,
   LessonProgressApiResponse,
+  LessonStudyTimeResponse,
   LessonQuestionBank,
   LessonQuestionGenerationResponse,
   LessonQuestionType,
   LessonRecommendedChunks,
   LessonStatus,
+  StudySummary,
 } from '../types/learningPath';
 import {
   asRecord,
@@ -19,9 +21,11 @@ import {
   normalizeLearningPath,
   normalizeLearningPathDeleteResponse,
   normalizeLessonProgressResponse,
+  normalizeLessonStudyTimeResponse,
   normalizeLessonQuestionBank,
   normalizeLessonQuestionGenerationResponse,
   normalizeLessonRecommendedChunks,
+  normalizeStudySummary,
   type ApiRecord,
 } from './parsers/learningPathParser';
 
@@ -36,12 +40,14 @@ export type {
   LearningPathLesson,
   LearningPathSubjectId,
   LessonProgressApiResponse,
+  LessonStudyTimeResponse,
   LessonQuestion,
   LessonQuestionBank,
   LessonQuestionGenerationResponse,
   LessonQuestionType,
   LessonRecommendedChunks,
   LessonStatus,
+  StudySummary,
 } from '../types/learningPath';
 
 export { normalizeLearningPath } from './parsers/learningPathParser';
@@ -95,6 +101,20 @@ export const learningPathService = {
       path_id: data.path_id,
       lesson_id: data.lesson_id,
     });
+  },
+
+  async recordLessonStudyTime(data: {
+    path_id: string;
+    lesson_id: string;
+    seconds_spent: number;
+  }): Promise<LessonStudyTimeResponse> {
+    const response = await apiClient.post('/learning-paths/study-time', data);
+    return normalizeLessonStudyTimeResponse(response, data);
+  },
+
+  async getStudySummary(): Promise<StudySummary> {
+    const response = await apiClient.get('/learning-paths/study-summary');
+    return normalizeStudySummary(response);
   },
 
   async getLessonQuestions(lessonId: string): Promise<LessonQuestionBank> {

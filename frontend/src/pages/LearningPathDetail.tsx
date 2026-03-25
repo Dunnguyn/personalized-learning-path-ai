@@ -18,12 +18,15 @@ import PDFViewer from '../components/PDFViewer';
 import { useAuth } from '../contexts/AuthContext';
 import { learningPathService } from '../services';
 import type {
+  BloomLevel,
   LearningPath,
   LearningPathChapter,
   LearningPathLesson,
+  LearningLevel,
   LessonRecommendedChunks,
   LessonQuestion,
   LessonQuestionBank,
+  LessonQuestionType,
   LessonStatus,
 } from '../types/learningPath';
 import { SUBJECTS } from '../utils/subjects';
@@ -57,6 +60,13 @@ interface PinnedLessonResource extends LessonResourceCard {
   pinnedAt: string;
 }
 
+interface QuestionGenerationConfig {
+  targetCount: number;
+  difficulty: LearningLevel;
+  questionTypes: LessonQuestionType[];
+  bloomLevels: BloomLevel[];
+}
+
 const LESSON_RESOURCE_STOP_WORDS = new Set([
   'bai',
   'bài',
@@ -83,6 +93,28 @@ const LESSON_RESOURCE_STOP_WORDS = new Set([
   'tieu',
   'tiêu',
 ]);
+
+const QUESTION_COUNT_OPTIONS = [4, 6, 8];
+const QUESTION_TYPE_OPTIONS: Array<{ value: LessonQuestionType; label: string; description: string }> = [
+  { value: 'multiple_choice', label: 'Trắc nghiệm', description: 'Chọn 1 đáp án đúng' },
+  { value: 'true_false', label: 'Đúng / Sai', description: 'Kiểm tra nhận định nhanh' },
+  { value: 'short_answer', label: 'Trả lời ngắn', description: 'Tự gõ câu trả lời' },
+];
+const BLOOM_LEVEL_OPTIONS: Array<{ value: BloomLevel; label: string }> = [
+  { value: 'remember', label: 'Ghi nhớ' },
+  { value: 'understand', label: 'Hiểu' },
+  { value: 'apply', label: 'Áp dụng' },
+  { value: 'analyze', label: 'Phân tích' },
+  { value: 'evaluate', label: 'Đánh giá' },
+  { value: 'create', label: 'Sáng tạo' },
+];
+const DIFFICULTY_OPTIONS: Array<{ value: LearningLevel; label: string }> = [
+  { value: 'beginner', label: 'Cơ bản' },
+  { value: 'intermediate', label: 'Trung bình' },
+  { value: 'advanced', label: 'Nâng cao' },
+];
+const STUDY_TIME_MIN_SECONDS = 10;
+const STUDY_TIME_FLUSH_INTERVAL_MS = 15000;
 
 interface MapLessonNodeData {
   lesson: LessonNode;
@@ -493,9 +525,77 @@ const buildQuestionChoices = (question: LessonQuestion) => {
     return [question.correct_answer, ...question.distractors].filter(Boolean).slice(0, 4);
   }
   if (question.question_type === 'true_false') {
-    return ['Đúng', 'Sai'];
+    return ['True', 'False'];
   }
   return [question.correct_answer || 'Trả lời ngắn'];
+};
+
+const getQuestionChoiceLabel = (choice: string) => {
+  if (choice === 'True') {
+    return 'Đúng';
+  }
+  if (choice === 'False') {
+    return 'Sai';
+  }
+  return choice;
+};
+
+const getQuestionTypeLabel = (questionType: LessonQuestionType) => {
+  return QUESTION_TYPE_OPTIONS.find((item) => item.value === questionType)?.label || 'Câu hỏi';
+};
+
+const getBloomLevelLabel = (bloomLevel: BloomLevel) => {
+  return BLOOM_LEVEL_OPTIONS.find((item) => item.value === bloomLevel)?.label || bloomLevel;
+};
+
+const getDifficultyLabel = (difficulty: LearningLevel) => {
+  return DIFFICULTY_OPTIONS.find((item) => item.value === difficulty)?.label || difficulty;
+};
+
+const normalizeQuizAnswer = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+const isShortAnswerMatch = (picked: string, correct: string) => {
+  const normalizedPicked = normalizeQuizAnswer(picked);
+  const normalizedCorrect = normalizeQuizAnswer(correct);
+
+  if (!normalizedPicked || !normalizedCorrect) {
+    return false;
+  }
+
+  if (normalizedPicked === normalizedCorrect) {
+    return true;
+  }
+
+  if (normalizedCorrect.includes(normalizedPicked) || normalizedPicked.includes(normalizedCorrect)) {
+    return true;
+  }
+
+  const pickedTokens = new Set(normalizedPicked.split(' ').filter((token) => token.length > 2));
+  const correctTokens = normalizedCorrect.split(' ').filter((token) => token.length > 2);
+  if (pickedTokens.size === 0 || correctTokens.length === 0) {
+    return false;
+  }
+
+  const overlap = correctTokens.filter((token) => pickedTokens.has(token)).length;
+  return overlap >= Math.max(1, Math.ceil(correctTokens.length * 0.6));
+};
+
+const isQuestionAnsweredCorrectly = (question: LessonQuestion, answer?: string) => {
+  if (!answer?.trim()) {
+    return false;
+  }
+
+  if (question.question_type === 'short_answer') {
+    return isShortAnswerMatch(answer, question.correct_answer);
+  }
+
+  return normalizeQuizAnswer(answer) === normalizeQuizAnswer(question.correct_answer);
 };
 
 export default function LearningPathDetail() {
@@ -517,6 +617,12 @@ export default function LearningPathDetail() {
   const [questionGenerating, setQuestionGenerating] = useState(false);
   const [questionError, setQuestionError] = useState<string | null>(null);
   const [questionNotice, setQuestionNotice] = useState<string | null>(null);
+  const [questionConfig, setQuestionConfig] = useState<QuestionGenerationConfig>({
+    targetCount: 6,
+    difficulty: 'beginner',
+    questionTypes: ['multiple_choice', 'true_false'],
+    bloomLevels: ['remember', 'understand', 'apply'],
+  });
   const [viewingPDF, setViewingPDF] = useState<{ key: string; title: string; resourceId: string; initialPage?: number } | null>(null);
   const [currentReadingResource, setCurrentReadingResource] = useState<LessonResourceCard | null>(null);
   const [pinnedLessonResource, setPinnedLessonResource] = useState<PinnedLessonResource | null>(null);
@@ -543,6 +649,9 @@ export default function LearningPathDetail() {
   const mapCanvasRef = useRef<HTMLDivElement | null>(null);
   const mapSearchInputRef = useRef<HTMLInputElement | null>(null);
   const desktopOptionsRef = useRef<HTMLDivElement | null>(null);
+  const studyTrackingStartedAtRef = useRef<number | null>(null);
+  const trackedLessonIdRef = useRef<string | null>(null);
+  const trackedPathIdRef = useRef<string | null>(null);
 
   const statePath = (location.state as PathState | null)?.path;
 
@@ -627,6 +736,17 @@ export default function LearningPathDetail() {
 
     return `learning-path:pinned-resource:${path?.path_id || pathId || 'draft'}:${selectedLesson.lesson_id}`;
   }, [path?.path_id, pathId, selectedLesson]);
+
+  useEffect(() => {
+    if (!path?.level) {
+      return;
+    }
+
+    setQuestionConfig((previous) => ({
+      ...previous,
+      difficulty: path.level,
+    }));
+  }, [path?.level]);
 
   useEffect(() => {
     if (lessons.length === 0) {
@@ -785,7 +905,7 @@ export default function LearningPathDetail() {
 
   const currentLessonResources = useMemo<LessonResourceCard[]>(() => {
     if (lessonRecommendedChunks?.recommended_chunks?.length) {
-      return lessonRecommendedChunks.recommended_chunks.slice(0, 3).map((chunk, index) => ({
+      return lessonRecommendedChunks.recommended_chunks.map((chunk, index) => ({
         key: chunk.chunk_id || `${chunk.resource_id}-${index}`,
         title:
           (chunk.resource_source || '').toLowerCase() === 'pdf'
@@ -801,7 +921,7 @@ export default function LearningPathDetail() {
     }
 
     if (selectedLesson?.resources?.length) {
-      return selectedLesson.resources.slice(0, 3).map((resource, index) => ({
+      return selectedLesson.resources.map((resource, index) => ({
         key: `${resource}-${index}`,
         title: `Học liệu gợi ý ${index + 1}`,
         source: getResourceSource(resource),
@@ -952,7 +1072,7 @@ export default function LearningPathDetail() {
   );
 
   const handleOpenAllLessonResources = useCallback(() => {
-    currentLessonResources.slice(0, 3).forEach((resource) => {
+    currentLessonResources.forEach((resource) => {
       const targetUrl = buildLessonResourceOpenUrl(resource);
       if (!targetUrl) {
         return;
@@ -1047,22 +1167,33 @@ export default function LearningPathDetail() {
   );
 
   const quizQuestions = useMemo(() => {
-    const items = questionBank?.questions || [];
-    const multipleChoice = items.filter((question) => buildQuestionChoices(question).length >= 2);
-    return multipleChoice.length > 0 ? multipleChoice : items;
+    return questionBank?.questions || [];
   }, [questionBank]);
 
   const currentQuestion = quizQuestions[currentQuestionIndex] || null;
+  const currentQuestionSources = useMemo(() => {
+    if (!currentQuestion || !lessonRecommendedChunks?.recommended_chunks?.length) {
+      return [];
+    }
+
+    return currentQuestion.chunk_ids
+      .map((chunkId) => lessonRecommendedChunks.recommended_chunks.find((item) => item.chunk_id === chunkId))
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  }, [currentQuestion, lessonRecommendedChunks]);
 
   const quizStats = useMemo(() => {
     const total = quizQuestions.length;
     const correct = quizQuestions.reduce((count, question) => {
-      return selectedAnswers[question.question_id] === question.correct_answer ? count + 1 : count;
+      return isQuestionAnsweredCorrectly(question, selectedAnswers[question.question_id]) ? count + 1 : count;
     }, 0);
     const wrong = submitted ? Math.max(total - correct, 0) : 0;
     const confidence = total > 0 && submitted ? Math.round((correct / total) * 100) : 0;
     return { total, correct, wrong, confidence };
   }, [quizQuestions, selectedAnswers, submitted]);
+  const answeredQuestionCount = useMemo(
+    () => quizQuestions.filter((question) => Boolean(selectedAnswers[question.question_id]?.trim())).length,
+    [quizQuestions, selectedAnswers]
+  );
 
   const openLessonScreen = useCallback((lesson: LessonNode) => {
     setSelectedLesson(lesson);
@@ -1486,6 +1617,100 @@ export default function LearningPathDetail() {
     handleFitCurrentChapter,
   ]);
 
+  const flushTrackedStudyTime = useCallback(
+    async (keepTracking = false) => {
+      const trackedPathId = trackedPathIdRef.current;
+      const trackedLessonId = trackedLessonIdRef.current;
+      const startedAt = studyTrackingStartedAtRef.current;
+
+      if (!trackedPathId || !trackedLessonId || !startedAt) {
+        return;
+      }
+
+      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+      if (elapsedSeconds < STUDY_TIME_MIN_SECONDS) {
+        if (keepTracking) {
+          studyTrackingStartedAtRef.current = Date.now();
+        } else {
+          studyTrackingStartedAtRef.current = null;
+          trackedLessonIdRef.current = null;
+          trackedPathIdRef.current = null;
+        }
+        return;
+      }
+
+      try {
+        await learningPathService.recordLessonStudyTime({
+          path_id: trackedPathId,
+          lesson_id: trackedLessonId,
+          seconds_spent: elapsedSeconds,
+        });
+      } catch (trackingError) {
+        console.error('Failed to record lesson study time:', trackingError);
+      } finally {
+        if (keepTracking) {
+          studyTrackingStartedAtRef.current = Date.now();
+        } else {
+          studyTrackingStartedAtRef.current = null;
+          trackedLessonIdRef.current = null;
+          trackedPathIdRef.current = null;
+        }
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    const activePathId = path?.path_id || null;
+    const activeLessonId = screenMode === 'lesson' ? selectedLesson?.lesson_id || null : null;
+    const trackedLessonId = trackedLessonIdRef.current;
+    const trackedPathId = trackedPathIdRef.current;
+
+    if (
+      trackedLessonId &&
+      trackedPathId &&
+      (!activeLessonId || !activePathId || trackedLessonId !== activeLessonId || trackedPathId !== activePathId)
+    ) {
+      void flushTrackedStudyTime(false);
+    }
+
+    if (
+      activePathId &&
+      activeLessonId &&
+      (trackedLessonId !== activeLessonId || trackedPathId !== activePathId || !studyTrackingStartedAtRef.current)
+    ) {
+      trackedPathIdRef.current = activePathId;
+      trackedLessonIdRef.current = activeLessonId;
+      studyTrackingStartedAtRef.current = Date.now();
+    }
+  }, [flushTrackedStudyTime, path?.path_id, screenMode, selectedLesson?.lesson_id]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        void flushTrackedStudyTime(false);
+        return;
+      }
+
+      if (document.visibilityState === 'visible' && trackedLessonIdRef.current && trackedPathIdRef.current) {
+        studyTrackingStartedAtRef.current = Date.now();
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      if (trackedLessonIdRef.current && trackedPathIdRef.current && studyTrackingStartedAtRef.current) {
+        void flushTrackedStudyTime(true);
+      }
+    }, STUDY_TIME_FLUSH_INTERVAL_MS);
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      void flushTrackedStudyTime(false);
+    };
+  }, [flushTrackedStudyTime]);
+
   const handleLessonStatusUpdate = async (lessonId: string, status: LessonStatus) => {
     if (!path?.path_id) {
       return;
@@ -1534,7 +1759,7 @@ export default function LearningPathDetail() {
     }
   };
 
-  const generateLessonQuestions = async () => {
+  const generateLessonQuestions = async (overwrite = true) => {
     if (!selectedLesson) {
       return;
     }
@@ -1544,12 +1769,18 @@ export default function LearningPathDetail() {
       setQuestionError(null);
       setQuestionNotice(null);
       const result = await learningPathService.generateLessonQuestions(selectedLesson.lesson_id, {
-        target_count: 5,
-        question_types: ['multiple_choice'],
-        difficulty: path?.level || 'beginner',
-        bloom_levels: ['remember', 'understand', 'apply'],
-        overwrite: true,
-        metadata: { source: 'learning_path_quiz' },
+        target_count: questionConfig.targetCount,
+        question_types: questionConfig.questionTypes,
+        difficulty: questionConfig.difficulty,
+        bloom_levels: questionConfig.bloomLevels,
+        overwrite,
+        metadata: {
+          source: 'learning_path_quiz',
+          config_target_count: questionConfig.targetCount,
+          config_question_types: questionConfig.questionTypes,
+          config_bloom_levels: questionConfig.bloomLevels,
+          config_difficulty: questionConfig.difficulty,
+        },
       });
       if (result.reused_existing && result.existing_count > 0) {
         await loadLessonQuestions(selectedLesson.lesson_id);
@@ -1594,6 +1825,34 @@ export default function LearningPathDetail() {
       ...previous,
       [questionId]: value,
     }));
+  };
+
+  const handleQuestionTypeToggle = (questionType: LessonQuestionType) => {
+    setQuestionConfig((previous) => {
+      const exists = previous.questionTypes.includes(questionType);
+      const nextQuestionTypes = exists
+        ? previous.questionTypes.filter((item) => item !== questionType)
+        : [...previous.questionTypes, questionType];
+
+      return {
+        ...previous,
+        questionTypes: nextQuestionTypes.length > 0 ? nextQuestionTypes : previous.questionTypes,
+      };
+    });
+  };
+
+  const handleBloomLevelToggle = (bloomLevel: BloomLevel) => {
+    setQuestionConfig((previous) => {
+      const exists = previous.bloomLevels.includes(bloomLevel);
+      const nextBloomLevels = exists
+        ? previous.bloomLevels.filter((item) => item !== bloomLevel)
+        : [...previous.bloomLevels, bloomLevel];
+
+      return {
+        ...previous,
+        bloomLevels: nextBloomLevels.length > 0 ? nextBloomLevels : previous.bloomLevels,
+      };
+    });
   };
 
   const handleDeletePath = async () => {
@@ -2589,24 +2848,31 @@ export default function LearningPathDetail() {
         ) : null}
 
         {lessonResourcesLoading ? (
-          <div className="mt-6 grid grid-cols-1 gap-8 xl:grid-cols-3">
-            {Array.from({ length: 3 }, (_, index) => (
+          <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {Array.from(
+              { length: Math.min(8, Math.max(4, Number(lessonRecommendedChunks?.metadata?.selected_count ?? 4))) },
+              (_, index) => (
               <div
                 key={`resource-skeleton-${index}`}
-                className="min-h-[404px] animate-pulse rounded-[28px] border bg-white/90 px-5 pb-6 pt-5"
+                className="min-h-[360px] animate-pulse rounded-[30px] border bg-white/90 px-5 pb-5 pt-5 shadow-[0_18px_34px_rgba(114,62,83,0.06)]"
                 style={{ borderColor: 'rgba(17,16,21,0.08)' }}
               >
-                <div className="h-5 w-24 rounded-full bg-[#f3dbe5]" />
-                <div className="mt-4 h-7 w-3/4 rounded-full bg-[#f7e8ee]" />
-                <div className="mt-3 h-4 w-1/2 rounded-full bg-[#f7e8ee]" />
-                <div className="mt-8 h-[220px] rounded-[22px] bg-[#fbf4f7]" />
-                <div className="mt-5 h-11 w-32 rounded-full bg-[#f3dbe5]" />
+                <div className="flex items-center justify-between gap-3">
+                  <div className="h-8 w-16 rounded-full bg-[#f3dbe5]" />
+                  <div className="h-8 w-20 rounded-full bg-[#f7e8ee]" />
+                </div>
+                <div className="mt-5 h-7 w-3/4 rounded-full bg-[#f7e8ee]" />
+                <div className="mt-3 h-5 w-1/2 rounded-full bg-[#f7e8ee]" />
+                <div className="mt-6 h-[170px] rounded-[22px] bg-[#fbf4f7]" />
+                <div className="mt-4 h-4 w-full rounded-full bg-[#f7e8ee]" />
+                <div className="mt-2 h-4 w-5/6 rounded-full bg-[#f7e8ee]" />
+                <div className="mt-5 h-11 w-full rounded-full bg-[#f3dbe5]" />
               </div>
             ))}
           </div>
         ) : (
-          <div className="mt-6 grid grid-cols-1 gap-8 xl:grid-cols-3">
-            {currentLessonResources.slice(0, 3).map((resource) => {
+          <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {currentLessonResources.map((resource) => {
               const theme = getLessonResourceTheme(resource.source);
               const canOpenResource = Boolean(
                 (resource.source === 'PDF' && resource.resourceId) || resource.resourceUrl
@@ -2617,10 +2883,10 @@ export default function LearningPathDetail() {
               return (
                 <div
                   key={resource.key}
-                  className={`min-h-[404px] rounded-[28px] border px-5 pb-6 pt-5 ${theme.frame}`}
+                  className={`flex min-h-[360px] flex-col rounded-[30px] border px-5 pb-5 pt-5 shadow-[0_18px_34px_rgba(114,62,83,0.06)] transition-transform duration-200 hover:-translate-y-1 hover:shadow-[0_24px_44px_rgba(114,62,83,0.1)] ${theme.frame}`}
                 >
                   <div className="flex items-start justify-between gap-4">
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className={`inline-flex rounded-full px-3 py-1 text-[11px] font-semibold ${theme.chip}`}>
                           {resource.source}
@@ -2636,51 +2902,77 @@ export default function LearningPathDetail() {
                           </span>
                         ) : null}
                       </div>
-                      <h3 className="mt-3 text-[20px] font-semibold tracking-[-0.03em] text-[#141217]">{resource.title}</h3>
+                      <h3
+                        className="mt-3 text-[22px] font-semibold leading-[1.15] tracking-[-0.04em] text-[#141217]"
+                        style={{
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {resource.title}
+                      </h3>
+                      <p className="mt-3 text-[12px] font-medium uppercase tracking-[0.16em] text-[#8c3451]/60">
+                        Đoạn trích nên đọc tiếp
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      <span className="rounded-full bg-[#f6d6e0] px-4 py-2 text-[11px] font-semibold text-[#7f3650]">
+                        {path?.level || 'Cơ bản'}
+                      </span>
                       {resource.pageNumber ? (
-                        <p className={`mt-2 text-[13px] font-medium ${theme.accent}`}>Trang gợi ý: {resource.pageNumber}</p>
+                        <span className={`rounded-full bg-white px-4 py-2 text-[12px] font-semibold shadow-[0_8px_18px_rgba(114,62,83,0.08)] ${theme.accent}`}>
+                          Trang {resource.pageNumber}
+                        </span>
                       ) : null}
                     </div>
-                    <span className="rounded-full bg-[#f6d6e0] px-4 py-2 text-[11px] font-semibold text-[#7f3650]">
-                      {path?.level || 'Cơ bản'}
-                    </span>
                   </div>
                   <div
-                    className={`mx-auto mt-8 flex h-[309px] w-full max-w-[227px] items-start justify-center overflow-hidden rounded-[22px] px-4 pt-4 text-[10px] text-black/70 ${theme.preview}`}
+                    className={`mt-6 flex h-[178px] w-full overflow-hidden rounded-[24px] border border-white/70 px-5 py-5 text-[10px] text-black/70 ${theme.preview}`}
                     style={{ boxShadow: '0 12px 28px rgba(45,31,17,0.08)' }}
                   >
-                    <div className="flex h-full w-full flex-col items-center">
-                      <span className={`rounded-full bg-white/90 px-3 py-1 text-[10px] font-semibold tracking-[0.18em] ${theme.accent}`}>
+                    <div className="flex h-full w-full flex-col">
+                      <span className={`w-fit rounded-full bg-white/90 px-3 py-1 text-[10px] font-semibold tracking-[0.18em] ${theme.accent}`}>
                         {theme.icon}
                       </span>
-                      <p className="mt-4 max-h-[220px] overflow-hidden text-center text-[12px] leading-6 text-black/65">
+                      <p
+                        className="mt-4 overflow-hidden text-left text-[13px] leading-7 text-black/65"
+                        style={{
+                          display: '-webkit-box',
+                          WebkitLineClamp: 5,
+                          WebkitBoxOrient: 'vertical',
+                        }}
+                      >
                         {renderHighlightedPreview(resource.preview)}
                       </p>
                     </div>
                   </div>
                   <p className="mt-4 text-[13px] leading-6 text-[#6a625d]">{getLessonResourceHint(resource)}</p>
-                  <div className="mt-5 flex flex-wrap gap-3">
+                  <div className="mt-auto pt-5">
                     <button
                       type="button"
                       onClick={() => handleOpenLessonResource(resource)}
                       disabled={!canOpenResource}
-                      className="theme-button px-5 py-3 text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
+                      className="theme-button w-full px-5 py-3 text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {resource.actionLabel || 'Mở tài liệu'}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => handleTogglePinnedLessonResource(resource)}
-                      disabled={!canOpenResource}
-                      className="theme-button-secondary px-5 py-3 text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {isPinned ? 'Bỏ ghim' : 'Ghim nhanh'}
-                    </button>
-                    {resource.pageNumber ? (
-                      <span className={`inline-flex items-center rounded-full bg-white px-4 py-2 text-[12px] font-medium shadow-[0_8px_18px_rgba(114,62,83,0.08)] ${theme.accent}`}>
-                        Đọc từ trang {resource.pageNumber}
-                      </span>
-                    ) : null}
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePinnedLessonResource(resource)}
+                        disabled={!canOpenResource}
+                        className="theme-button-secondary px-4 py-2.5 text-[12px] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {isPinned ? 'Bỏ ghim' : 'Ghim nhanh'}
+                      </button>
+                      {resource.pageNumber ? (
+                        <span className={`inline-flex items-center rounded-full bg-white px-4 py-2.5 text-[12px] font-medium shadow-[0_8px_18px_rgba(114,62,83,0.08)] ${theme.accent}`}>
+                          Đọc từ trang {resource.pageNumber}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               );
@@ -2752,10 +3044,154 @@ export default function LearningPathDetail() {
         </button>
       </div>
 
-      <div className="soft-panel mt-6 grid w-full gap-1 px-6 py-5 text-[13px] font-semibold text-[#141217] sm:max-w-[260px]">
-        <p>Độ tự tin: {submitted ? `${quizStats.confidence}%` : ''}</p>
-        <p>Số câu đúng: {submitted ? quizStats.correct : ''}</p>
-        <p>Số câu sai: {submitted ? quizStats.wrong : ''}</p>
+      <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_320px]">
+        <div className="soft-panel px-6 py-6">
+          <p className="text-[12px] font-semibold uppercase tracking-[0.22em] text-[#8c3451]/60">Quiz Studio</p>
+          <h3 className="mt-2 text-[28px] font-semibold tracking-[-0.04em] text-[#141217]">
+            Tạo bộ câu hỏi sát với lesson này
+          </h3>
+          <p className="mt-3 text-[14px] leading-6 text-[#6a625d]">
+            Câu hỏi sẽ bám trên các chunk đã được gợi ý cho lesson hiện tại. Bạn có thể đổi số lượng, dạng câu hỏi và
+            mức tư duy trước khi sinh lại.
+          </p>
+
+          <div className="mt-6 grid gap-5 lg:grid-cols-2">
+            <div>
+              <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">Số lượng câu</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {QUESTION_COUNT_OPTIONS.map((count) => {
+                  const active = questionConfig.targetCount === count;
+                  return (
+                    <button
+                      key={`question-count-${count}`}
+                      type="button"
+                      onClick={() => setQuestionConfig((previous) => ({ ...previous, targetCount: count }))}
+                      className={`rounded-full border px-4 py-2 text-[13px] font-semibold transition ${
+                        active ? 'bg-[#8c3451] text-white shadow-[0_16px_28px_rgba(140,52,81,0.18)]' : 'bg-white text-[#6a625d]'
+                      }`}
+                      style={{ borderColor: active ? '#8c3451' : 'rgba(17,16,21,0.08)' }}
+                    >
+                      {count} câu
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">Độ khó</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {DIFFICULTY_OPTIONS.map((option) => {
+                  const active = questionConfig.difficulty === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setQuestionConfig((previous) => ({ ...previous, difficulty: option.value }))}
+                      className={`rounded-full border px-4 py-2 text-[13px] font-semibold transition ${
+                        active ? 'bg-[#8c3451] text-white shadow-[0_16px_28px_rgba(140,52,81,0.18)]' : 'bg-white text-[#6a625d]'
+                      }`}
+                      style={{ borderColor: active ? '#8c3451' : 'rgba(17,16,21,0.08)' }}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">Loại câu hỏi</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {QUESTION_TYPE_OPTIONS.map((option) => {
+                const active = questionConfig.questionTypes.includes(option.value);
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => handleQuestionTypeToggle(option.value)}
+                    className={`rounded-[18px] border px-4 py-3 text-left transition ${
+                      active ? 'bg-[#8c3451] text-white shadow-[0_16px_28px_rgba(140,52,81,0.18)]' : 'bg-white text-[#6a625d]'
+                    }`}
+                    style={{ borderColor: active ? '#8c3451' : 'rgba(17,16,21,0.08)' }}
+                  >
+                    <p className="text-[13px] font-semibold">{option.label}</p>
+                    <p className={`mt-1 text-[12px] ${active ? 'text-white/80' : 'text-[#8b7f88]'}`}>{option.description}</p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">Mức tư duy Bloom</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {BLOOM_LEVEL_OPTIONS.map((option) => {
+                const active = questionConfig.bloomLevels.includes(option.value);
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => handleBloomLevelToggle(option.value)}
+                    className={`rounded-full border px-4 py-2 text-[13px] font-semibold transition ${
+                      active ? 'bg-[#f6d6e0] text-[#8c3451]' : 'bg-white text-[#6a625d]'
+                    }`}
+                    style={{ borderColor: active ? '#e8bfd0' : 'rgba(17,16,21,0.08)' }}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => void generateLessonQuestions(true)}
+              disabled={questionGenerating}
+              className="theme-button px-5 py-3 text-[14px] disabled:opacity-50"
+            >
+              {questionGenerating ? 'Đang tạo bộ câu hỏi...' : 'Sinh lại theo thiết lập này'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void generateLessonQuestions(false)}
+              disabled={questionGenerating}
+              className="theme-button-secondary px-5 py-3 text-[14px] disabled:opacity-50"
+            >
+              Dùng lại nếu đã có
+            </button>
+          </div>
+        </div>
+
+        <div className="soft-panel px-6 py-6">
+          <p className="text-[12px] font-semibold uppercase tracking-[0.22em] text-[#8c3451]/60">Tiến độ ôn tập</p>
+          <div className="mt-4 space-y-3">
+            <div className="rounded-[18px] bg-white/90 px-4 py-4 shadow-[0_12px_24px_rgba(114,62,83,0.06)]">
+              <p className="text-[13px] text-[#8b7f88]">Đã trả lời</p>
+              <p className="mt-1 text-[26px] font-semibold tracking-[-0.03em] text-[#141217]">
+                {answeredQuestionCount}/{quizStats.total || questionConfig.targetCount}
+              </p>
+            </div>
+            <div className="rounded-[18px] bg-white/90 px-4 py-4 shadow-[0_12px_24px_rgba(114,62,83,0.06)]">
+              <p className="text-[13px] text-[#8b7f88]">Độ tự tin</p>
+              <p className="mt-1 text-[26px] font-semibold tracking-[-0.03em] text-[#141217]">
+                {submitted ? `${quizStats.confidence}%` : '--'}
+              </p>
+            </div>
+            <div className="rounded-[18px] bg-white/90 px-4 py-4 shadow-[0_12px_24px_rgba(114,62,83,0.06)]">
+              <p className="text-[13px] text-[#8b7f88]">Đúng / Sai</p>
+              <p className="mt-1 text-[20px] font-semibold tracking-[-0.03em] text-[#141217]">
+                {submitted ? `${quizStats.correct} đúng · ${quizStats.wrong} sai` : 'Chưa nộp bài'}
+              </p>
+            </div>
+            <div className="rounded-[18px] bg-[linear-gradient(135deg,#fffafd_0%,#fdf2f6_100%)] px-4 py-4 text-[13px] leading-6 text-[#6a625d] shadow-[0_12px_24px_rgba(114,62,83,0.06)]">
+              Bài này hiện có <span className="font-semibold text-[#8c3451]">{lessonRecommendedChunks?.recommended_chunks?.length || 0} chunk</span> gợi ý để làm nguồn sinh câu hỏi.
+            </div>
+          </div>
+        </div>
       </div>
 
       {questionNotice && !questionError && (
@@ -2769,20 +3205,51 @@ export default function LearningPathDetail() {
       ) : questionError ? (
         <div className="rounded-[14px] border border-red-200 bg-red-50 px-4 py-4 text-[14px] text-red-700">
           <p>{questionError}</p>
-          <button onClick={() => void generateLessonQuestions()} className="theme-button mt-3 px-5 py-3 text-[14px]">
+          <button onClick={() => void generateLessonQuestions(true)} className="theme-button mt-3 px-5 py-3 text-[14px]">
             Tạo câu hỏi mới
           </button>
         </div>
       ) : !currentQuestion ? (
         <div className="py-16 text-center">
           <p className="text-[15px] text-[#8c3451]">Chưa có câu hỏi cho bài học này.</p>
-          <button onClick={() => void generateLessonQuestions()} className="theme-button mt-4 px-5 py-3 text-[14px]">
+          <button onClick={() => void generateLessonQuestions(true)} className="theme-button mt-4 px-5 py-3 text-[14px]">
             {questionGenerating ? 'Đang tạo...' : 'Tạo câu hỏi ôn tập'}
           </button>
         </div>
       ) : (
         <>
-          <div className="flex items-center justify-center gap-3 px-0 pt-10 sm:gap-6 sm:px-2">
+          <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-[#f6d6e0] px-4 py-2 text-[12px] font-semibold text-[#8c3451]">
+                {getQuestionTypeLabel(currentQuestion.question_type)}
+              </span>
+              <span className="rounded-full bg-white px-4 py-2 text-[12px] font-semibold text-[#6f5260]">
+                {getBloomLevelLabel(currentQuestion.bloom_level)}
+              </span>
+              <span className="rounded-full bg-white px-4 py-2 text-[12px] font-semibold text-[#6f5260]">
+                {getDifficultyLabel(currentQuestion.difficulty)}
+              </span>
+              {currentQuestionSources.length > 0 ? (
+                <span className="rounded-full bg-white px-4 py-2 text-[12px] font-semibold text-[#6f5260]">
+                  {currentQuestionSources
+                    .map((item) => (item.page_number ? `trang ${item.page_number}` : item.chunk_index + 1))
+                    .join(' · ')}
+                </span>
+              ) : null}
+            </div>
+            <p className="text-[13px] text-[#8b7f88]">
+              Câu {currentQuestionIndex + 1}/{quizQuestions.length}
+            </p>
+          </div>
+
+          <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#f7e8ee]">
+            <div
+              className="h-full rounded-full bg-[#8c3451] transition-all"
+              style={{ width: `${quizQuestions.length > 0 ? ((currentQuestionIndex + 1) / quizQuestions.length) * 100 : 0}%` }}
+            />
+          </div>
+
+          <div className="flex items-center justify-center gap-3 px-0 pt-8 sm:gap-6 sm:px-2">
             <button
               onClick={() => setCurrentQuestionIndex((value) => Math.max(value - 1, 0))}
               disabled={currentQuestionIndex === 0}
@@ -2795,43 +3262,76 @@ export default function LearningPathDetail() {
               <div className="absolute left-[42px] top-0 h-full w-full rounded-[28px] border border-black/10 bg-[#efc1cc]" />
               <div className="absolute left-[22px] top-0 h-full w-full rounded-[28px] border border-black/10 bg-[#efcddb]" />
               <div
-                className="relative z-[2] min-h-[320px] w-[min(700px,calc(100vw-140px))] rounded-[28px] border border-black/10 bg-[#f7d7de] px-5 py-6 sm:px-8 sm:py-7"
+                className="relative z-[2] min-h-[360px] w-[min(760px,calc(100vw-140px))] rounded-[28px] border border-black/10 bg-[#f7d7de] px-5 py-6 sm:px-8 sm:py-7"
                 style={{ boxShadow: '0 18px 36px rgba(45,31,17,0.12)' }}
               >
                 <h3 className="text-[22px] font-semibold tracking-[-0.03em] text-[#141217]">
                   Câu hỏi {currentQuestionIndex + 1}: <span className="font-normal">{currentQuestion.question}</span>
                 </h3>
 
-                <div className="mt-8 space-y-4">
-                  {buildQuestionChoices(currentQuestion).map((choice, index) => {
-                    const label = ['A', 'B', 'C', 'D'][index] || `${index + 1}`;
-                    const picked = selectedAnswers[currentQuestion.question_id] === choice;
-                    const isCorrect = submitted && choice === currentQuestion.correct_answer;
-                    const isWrong = submitted && picked && choice !== currentQuestion.correct_answer;
+                {currentQuestion.question_type === 'short_answer' ? (
+                  <div className="mt-8">
+                    <textarea
+                      value={selectedAnswers[currentQuestion.question_id] || ''}
+                      onChange={(event) => handleSelectAnswer(currentQuestion.question_id, event.target.value)}
+                      disabled={submitted}
+                      placeholder="Tự nhập câu trả lời ngắn của bạn..."
+                      className="min-h-[140px] w-full rounded-[22px] border border-white/80 bg-white/85 px-5 py-4 text-[16px] text-[#141217] outline-none placeholder:text-[#8b7f88] focus:border-[#8c3451]"
+                    />
+                    <p className="mt-3 text-[13px] leading-6 text-[#6a625d]">
+                      Câu trả lời ngắn sẽ được đối chiếu gần đúng theo từ khóa chính của đáp án mẫu.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-8 space-y-4">
+                    {buildQuestionChoices(currentQuestion).map((choice, index) => {
+                      const label = ['A', 'B', 'C', 'D'][index] || `${index + 1}`;
+                      const picked = selectedAnswers[currentQuestion.question_id] === choice;
+                      const isCorrect = submitted && isQuestionAnsweredCorrectly(currentQuestion, choice);
+                      const isWrong = submitted && picked && !isQuestionAnsweredCorrectly(currentQuestion, choice);
 
-                    return (
-                      <button
-                        key={`${currentQuestion.question_id}-${label}`}
-                        onClick={() => handleSelectAnswer(currentQuestion.question_id, choice)}
-                        className={`flex w-full items-center gap-3 rounded-[18px] px-2 py-1 text-left ${picked ? 'bg-white/50' : 'bg-transparent'}`}
-                      >
-                        <span
-                          className={`flex h-11 w-11 items-center justify-center rounded-full bg-white text-[18px] font-bold text-[#141217] ${
-                            isCorrect ? 'ring-2 ring-green-500' : isWrong ? 'ring-2 ring-red-400' : ''
-                          }`}
+                      return (
+                        <button
+                          key={`${currentQuestion.question_id}-${label}`}
+                          onClick={() => handleSelectAnswer(currentQuestion.question_id, choice)}
+                          className={`flex w-full items-center gap-3 rounded-[18px] px-2 py-1 text-left ${picked ? 'bg-white/50' : 'bg-transparent'}`}
                         >
-                          {label}
-                        </span>
-                        <span className="text-[16px] text-[#141217]">{choice}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                          <span
+                            className={`flex h-11 w-11 items-center justify-center rounded-full bg-white text-[18px] font-bold text-[#141217] ${
+                              isCorrect ? 'ring-2 ring-green-500' : isWrong ? 'ring-2 ring-red-400' : ''
+                            }`}
+                          >
+                            {label}
+                          </span>
+                          <span className="text-[16px] text-[#141217]">{getQuestionChoiceLabel(choice)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {submitted && (
                   <div className="mt-6 rounded-[18px] bg-white/70 px-4 py-4 text-[14px] text-[#141217]">
-                    <p className="font-semibold">Đáp án đúng: {currentQuestion.correct_answer}</p>
+                    {currentQuestion.question_type === 'short_answer' ? (
+                      <p className="font-semibold">
+                        Câu trả lời của bạn:{' '}
+                        <span className="font-normal">{selectedAnswers[currentQuestion.question_id] || 'Chưa trả lời'}</span>
+                      </p>
+                    ) : null}
+                    <p className="font-semibold">Đáp án đúng: {getQuestionChoiceLabel(currentQuestion.correct_answer)}</p>
                     <p className="mt-1">{currentQuestion.explanation || 'Chưa có giải thích chi tiết.'}</p>
+                    {currentQuestionSources.length > 0 ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {currentQuestionSources.map((item) => (
+                          <span
+                            key={`question-source-${item.chunk_id}`}
+                            className="rounded-full bg-white px-3 py-1 text-[12px] font-medium text-[#8c3451]"
+                          >
+                            {item.page_number ? `${item.resource_title || 'PDF'} · trang ${item.page_number}` : item.resource_title || `Chunk ${item.chunk_index + 1}`}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -2846,10 +3346,21 @@ export default function LearningPathDetail() {
             </button>
           </div>
 
-          <div className="mt-6 flex items-center justify-center gap-4">
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-4">
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedAnswers({});
+                setSubmitted(false);
+                setCurrentQuestionIndex(0);
+              }}
+              className="theme-button-secondary px-8 py-3 text-[15px] font-bold"
+            >
+              Làm lại lượt này
+            </button>
             <button
               onClick={() => setSubmitted(true)}
-              disabled={submitted || quizQuestions.length === 0}
+              disabled={submitted || quizQuestions.length === 0 || answeredQuestionCount === 0}
               className="theme-button px-12 py-3 text-[15px] font-bold disabled:opacity-50"
             >
               Nộp bài

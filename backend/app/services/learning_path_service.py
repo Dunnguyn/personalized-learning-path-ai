@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import logging
 import os
@@ -352,6 +352,133 @@ class HybridLearningPathService:
             "lesson_id": lesson_id,
             "status": status,
             "updated_at": updated_at,
+        }
+
+    def record_lesson_study_time(
+        self,
+        *,
+        path_id: str,
+        user_id: str,
+        lesson_id: str,
+        seconds_spent: int,
+    ) -> Dict[str, Any]:
+        """Persist aggregated lesson study time for the current day."""
+        document = self.learning_path_repository.get_by_path_id(path_id)
+        if not document or str(document.get("user_id") or "") != str(user_id):
+            raise ValueError("Learning path not found.")
+
+        normalized = self._serialize_learning_path(document)
+        known_lessons = {
+            lesson.get("lesson_id")
+            for chapter in normalized.get("chapters", [])
+            for lesson in chapter.get("lessons", [])
+            if lesson.get("lesson_id")
+        }
+        if lesson_id not in known_lessons:
+            raise ValueError("Lesson not found in learning path.")
+
+        clamped_seconds = max(1, min(int(seconds_spent), 86400))
+        now = datetime.utcnow()
+        tracked_date = now.date()
+        study_collection = self.learning_path_repository.db["lesson_study_time"]
+        study_collection.create_index(
+            [("user_id", 1), ("tracked_date", 1), ("path_id", 1), ("lesson_id", 1)],
+            unique=True,
+        )
+        study_collection.create_index([("user_id", 1), ("tracked_date", -1)])
+
+        study_collection.update_one(
+            {
+                "user_id": user_id,
+                "tracked_date": tracked_date.isoformat(),
+                "path_id": path_id,
+                "lesson_id": lesson_id,
+            },
+            {
+                "$inc": {
+                    "seconds_spent": clamped_seconds,
+                    "session_count": 1,
+                },
+                "$set": {
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
+
+        day_total = 0
+        for item in study_collection.find(
+            {
+                "user_id": user_id,
+                "tracked_date": tracked_date.isoformat(),
+            },
+            {"seconds_spent": 1},
+        ):
+            day_total += int(item.get("seconds_spent", 0) or 0)
+
+        return {
+            "path_id": path_id,
+            "lesson_id": lesson_id,
+            "seconds_spent": clamped_seconds,
+            "total_seconds": day_total,
+            "tracked_date": tracked_date,
+            "updated_at": now,
+        }
+
+    def get_study_summary(self, *, user_id: str, days: int = 7) -> Dict[str, Any]:
+        """Return total study time and a recent daily calendar for the user."""
+        safe_days = max(1, min(int(days), 90))
+        study_collection = self.learning_path_repository.db["lesson_study_time"]
+        study_collection.create_index([("user_id", 1), ("tracked_date", -1)])
+
+        now = datetime.utcnow()
+        today = now.date()
+        range_start = today - timedelta(days=safe_days - 1)
+
+        total_seconds = 0
+        last_updated: Optional[datetime] = None
+        for item in study_collection.find({"user_id": user_id}, {"seconds_spent": 1, "updated_at": 1}):
+            total_seconds += int(item.get("seconds_spent", 0) or 0)
+            updated_at = item.get("updated_at")
+            if isinstance(updated_at, datetime) and (last_updated is None or updated_at > last_updated):
+                last_updated = updated_at
+
+        seconds_by_day: Dict[str, int] = {}
+        for item in study_collection.find(
+            {
+                "user_id": user_id,
+                "tracked_date": {
+                    "$gte": range_start.isoformat(),
+                    "$lte": today.isoformat(),
+                },
+            },
+            {"tracked_date": 1, "seconds_spent": 1},
+        ):
+            day_key = str(item.get("tracked_date") or "")
+            seconds_by_day[day_key] = seconds_by_day.get(day_key, 0) + int(item.get("seconds_spent", 0) or 0)
+
+        last_7_days: List[Dict[str, Any]] = []
+        for offset in range(safe_days):
+            day = range_start + timedelta(days=offset)
+            day_key = day.isoformat()
+            seconds = seconds_by_day.get(day_key, 0)
+            last_7_days.append(
+                {
+                    "date": day,
+                    "seconds": seconds,
+                    "hours": round(seconds / 3600, 2),
+                }
+            )
+
+        return {
+            "user_id": user_id,
+            "total_seconds": total_seconds,
+            "total_hours": round(total_seconds / 3600, 2),
+            "last_7_days": last_7_days,
+            "updated_at": last_updated,
         }
 
     @staticmethod

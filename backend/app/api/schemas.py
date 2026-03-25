@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, ConfigDict, model_validator
 from typing import List, Optional, Literal
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
 
@@ -42,6 +42,8 @@ class BloomLevelEnum(str, Enum):
     understand = "understand"
     apply = "apply"
     analyze = "analyze"
+    evaluate = "evaluate"
+    create = "create"
 
 
 class LessonQuestionTypeEnum(str, Enum):
@@ -531,6 +533,35 @@ class LessonProgressResponse(BaseModel):
     updated_at: datetime
 
 
+class LessonStudyTimeUpdate(BaseModel):
+    path_id: str = Field(..., description="Learning path UUID")
+    lesson_id: str = Field(..., description="Lesson identifier")
+    seconds_spent: int = Field(..., ge=1, le=86400, description="Accumulated study time in seconds")
+
+
+class LessonStudyTimeResponse(BaseModel):
+    path_id: str
+    lesson_id: str
+    seconds_spent: int
+    total_seconds: int
+    tracked_date: date
+    updated_at: datetime
+
+
+class StudySummaryDayItem(BaseModel):
+    date: date
+    seconds: int
+    hours: float
+
+
+class StudySummaryResponse(BaseModel):
+    user_id: str
+    total_seconds: int
+    total_hours: float
+    last_7_days: List[StudySummaryDayItem] = Field(default_factory=list)
+    updated_at: Optional[datetime] = None
+
+
 class UserConfidenceOverviewResponse(BaseModel):
     success: bool = True
     user_id: str
@@ -579,6 +610,7 @@ class AssessmentQuestionItem(BaseModel):
     question_type: str
     concept: str
     source_excerpt: str
+    options: List[str] = Field(default_factory=list)
 
 
 class GenerateAssessmentQuestionsRequest(BaseModel):

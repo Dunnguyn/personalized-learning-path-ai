@@ -10,12 +10,14 @@ import type {
   LearningPathLlmStatus,
   LearningPathSubjectId,
   LessonProgressApiResponse,
+  LessonStudyTimeResponse,
   LessonQuestion,
   LessonQuestionBank,
   LessonQuestionGenerationResponse,
   LessonQuestionType,
   LessonRecommendedChunks,
   LessonStatus,
+  StudySummary,
 } from '../../types/learningPath';
 
 const DEFAULT_GENERATED_AT = () => new Date().toISOString();
@@ -309,6 +311,41 @@ export const normalizeLessonProgressResponse = (
     lesson_id: String(response.lesson_id ?? fallback.lesson_id),
     status: normalizeLessonStatus(response.status),
     updated_at: String(response.updated_at ?? DEFAULT_GENERATED_AT()),
+  };
+};
+
+export const normalizeLessonStudyTimeResponse = (
+  payload: unknown,
+  fallback: { path_id: string; lesson_id: string; seconds_spent: number }
+): LessonStudyTimeResponse => {
+  const response = asRecord(payload);
+  return {
+    path_id: String(response.path_id ?? fallback.path_id),
+    lesson_id: String(response.lesson_id ?? fallback.lesson_id),
+    seconds_spent: typeof response.seconds_spent === 'number' ? response.seconds_spent : fallback.seconds_spent,
+    total_seconds: typeof response.total_seconds === 'number' ? response.total_seconds : fallback.seconds_spent,
+    tracked_date: String(response.tracked_date ?? DEFAULT_GENERATED_AT()),
+    updated_at: String(response.updated_at ?? DEFAULT_GENERATED_AT()),
+  };
+};
+
+export const normalizeStudySummary = (payload: unknown): StudySummary => {
+  const response = asRecord(payload);
+  return {
+    user_id: String(response.user_id ?? ''),
+    total_seconds: typeof response.total_seconds === 'number' ? response.total_seconds : 0,
+    total_hours: typeof response.total_hours === 'number' ? response.total_hours : 0,
+    last_7_days: Array.isArray(response.last_7_days)
+      ? response.last_7_days.map((item) => {
+          const itemRecord = asRecord(item);
+          return {
+            date: String(itemRecord.date ?? DEFAULT_GENERATED_AT()),
+            seconds: typeof itemRecord.seconds === 'number' ? itemRecord.seconds : 0,
+            hours: typeof itemRecord.hours === 'number' ? itemRecord.hours : 0,
+          };
+        })
+      : [],
+    updated_at: response.updated_at ? String(response.updated_at) : null,
   };
 };
 

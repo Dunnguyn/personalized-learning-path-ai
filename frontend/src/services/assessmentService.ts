@@ -10,6 +10,7 @@ export interface AssessmentQuestion {
   question_type: string;
   concept: string;
   source_excerpt: string;
+  options?: string[];
 }
 
 interface GenerateAssessmentRequest {

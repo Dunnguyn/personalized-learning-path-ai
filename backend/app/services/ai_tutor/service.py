@@ -447,12 +447,25 @@ class AITutorService:
 
         for index in range(num_questions):
             excerpt = excerpts[index % len(excerpts)]
+            answer = self._build_assessment_answer(
+                question_type=normalized_type,
+                excerpt=excerpt,
+                concept=concept,
+                question_index=index,
+            )
+            options = self._build_assessment_options(
+                question_type=normalized_type,
+                concept=concept,
+                excerpt=excerpt,
+                answer=answer,
+            )
             question = self._build_grounded_question(
                 lesson_title=lesson_label,
                 concept=concept,
                 difficulty=difficulty,
                 question_type=normalized_type,
                 excerpt=excerpt,
+                answer=answer,
             )
 
             if question.lower() in used_questions:
@@ -461,12 +474,13 @@ class AITutorService:
 
             results.append({
                 "question": question,
-                "answer": self._build_short_answer(excerpt),
+                "answer": answer,
                 "explanation": self._build_explanation(concept, excerpt),
                 "difficulty": difficulty,
                 "question_type": normalized_type,
                 "concept": concept,
                 "source_excerpt": excerpt,
+                "options": options,
             })
 
         return results
@@ -561,13 +575,22 @@ class AITutorService:
         difficulty: str,
         question_type: str,
         excerpt: str,
+        answer: str,
     ) -> str:
         keyword = " ".join(excerpt.split()[:10]).strip(" ,.;:")
+        normalized_type = (question_type or "").lower()
+        if normalized_type == "true_false":
+            statement = self._build_true_false_statement(
+                concept=concept,
+                excerpt=excerpt,
+                answer=answer,
+            )
+            return f"Danh gia dung hay sai cho nhan dinh sau ve {concept}: {statement}"
         if difficulty == "easy":
             return f"Trong bai hoc '{lesson_title}', doan trich nao cho biet thong tin chinh ve {concept}?"
         if difficulty == "medium":
             return f"Dua tren doan trich cua bai '{lesson_title}', hay neu y nghia cua '{keyword}' trong concept {concept}."
-        if "multiple" in question_type.lower():
+        if "multiple" in normalized_type:
             return f"Tu doan trich cua bai '{lesson_title}', nhan dinh nao phu hop nhat voi concept {concept}?"
         return f"Dua tren doan trich cua bai '{lesson_title}', hay phan tich ngan vai tro cua '{keyword}' doi voi concept {concept}."
 
@@ -583,6 +606,66 @@ class AITutorService:
     def _build_explanation(concept: str, excerpt: str) -> str:
         keyword = " ".join(excerpt.split()[:8]).strip(" ,.;:")
         return f"Cau tra loi bam truc tiep vao doan trich neu ve {concept}: '{keyword}'."
+
+    def _build_assessment_answer(
+        self,
+        *,
+        question_type: str,
+        excerpt: str,
+        concept: str,
+        question_index: int,
+    ) -> str:
+        normalized_type = (question_type or "").lower()
+        if normalized_type == "true_false":
+            if question_index % 2 == 0:
+                return "Dung"
+            keyword = " ".join(excerpt.split()[:8]).strip(" ,.;:")
+            return f"{concept} khong lien quan den '{keyword}'"
+        return self._build_short_answer(excerpt)
+
+    def _build_assessment_options(
+        self,
+        *,
+        question_type: str,
+        concept: str,
+        excerpt: str,
+        answer: str,
+    ) -> List[str]:
+        normalized_type = (question_type or "").lower()
+        if normalized_type == "true_false":
+            return ["Dung", "Sai"]
+        if "multiple" not in normalized_type:
+            return []
+
+        keyword = " ".join(excerpt.split()[:8]).strip(" ,.;:")
+        distractors = [
+            f"{concept} chi la phan bo sung, khong gan voi '{keyword}'.",
+            f"Doan trich cho rang can bo qua '{keyword}' khi hoc {concept}.",
+            f"{concept} duoc nhac den nhung khong co vai tro cu the trong noi dung nay.",
+        ]
+
+        unique_options: List[str] = []
+        seen = set()
+        for item in [answer, *distractors]:
+            cleaned = re.sub(r"\s+", " ", str(item or "")).strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_options.append(cleaned)
+
+        return unique_options[:4]
+
+    def _build_true_false_statement(self, *, concept: str, excerpt: str, answer: str) -> str:
+        normalized_answer = re.sub(r"\s+", " ", answer or "").strip().lower()
+        if normalized_answer == "dung":
+            statement = self._build_short_answer(excerpt)
+        else:
+            keyword = " ".join(excerpt.split()[:8]).strip(" ,.;:")
+            statement = f"{concept} khong lien quan den '{keyword}' trong bai hoc nay."
+        return re.sub(r"\s+", " ", statement).strip()
 
     def _get_rag_answer(
         self,

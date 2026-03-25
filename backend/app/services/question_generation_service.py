@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, List
 import unicodedata
@@ -12,6 +13,7 @@ from backend.app.repositories import (
     LessonRepository,
     QuestionBankRepository,
     ResourceChunkRepository,
+    ResourceRepository,
 )
 from backend.app.services.lesson_service import lesson_structure_service
 from backend.app.services.lesson_chunk_service import lesson_chunk_service
@@ -20,6 +22,8 @@ from backend.app.services.question_validator import (
     LessonScopedQuestionValidator,
     ValidatedLessonQuestion,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class LessonScopedQuestionGenerationService:
@@ -141,12 +145,14 @@ class LessonScopedQuestionGenerationService:
         self.recommendation_repository = LessonRecommendedChunkRepository()
         self.lesson_repository = LessonRepository()
         self.chunk_repository = ResourceChunkRepository()
+        self.resource_repository = ResourceRepository()
         self.question_repository = QuestionBankRepository()
         self.prompt_builder = LessonScopedPromptBuilder()
         self.validator = LessonScopedQuestionValidator()
         self.llm_client = LessonQuestionLLMClient()
 
         self.recommendation_repository.ensure_indexes()
+        self.resource_repository.ensure_indexes()
         self.question_repository.ensure_indexes()
 
     def generate_questions_for_lesson(
@@ -170,6 +176,32 @@ class LessonScopedQuestionGenerationService:
             context=context,
             recommendation=recommendation,
         )
+        if not overwrite and existing_count > 0:
+            self._log_generation_outcome(
+                lesson_id=lesson_id,
+                status="reused_existing",
+                generation_mode="reused_existing",
+                question_count=existing_count,
+                chunk_count=len(chunk_ids),
+                covered_chunk_count=0,
+                llm_error=self.llm_client.get_last_error(),
+                message=f"Reusing existing question bank with {existing_count} questions.",
+            )
+            return {
+                "lesson_id": lesson_id,
+                "status": "reused_existing",
+                "generated_count": 0,
+                "question_ids": [],
+                "chunks_used": chunk_ids,
+                "insufficient_data": False,
+                "reused_existing": True,
+                "existing_count": existing_count,
+                "message": f"Đang dùng lại {existing_count} câu hỏi đã tạo trước đó cho bài học này.",
+            }
+        context = {
+            **context,
+            "recommendation_scores": recommendation.get("metadata", {}).get("scores", {}),
+        }
         validation = self._run_generation(
             context=context,
             chunks=chunks,
@@ -191,6 +223,10 @@ class LessonScopedQuestionGenerationService:
                     context=context,
                     recommendation=refreshed,
                 )
+                context = {
+                    **context,
+                    "recommendation_scores": refreshed.get("metadata", {}).get("scores", {}),
+                }
                 validation = self._run_generation(
                     context=context,
                     chunks=chunks,
@@ -202,6 +238,16 @@ class LessonScopedQuestionGenerationService:
                 )
 
         if validation is None:
+            self._log_generation_outcome(
+                lesson_id=lesson_id,
+                status="insufficient_context",
+                generation_mode="llm_error",
+                question_count=0,
+                chunk_count=len(chunk_ids),
+                covered_chunk_count=0,
+                llm_error=self.llm_client.get_last_error(),
+                message="Question generation returned no valid validation payload.",
+            )
             return self._build_existing_or_insufficient_response(
                 lesson_id=lesson_id,
                 chunk_ids=chunk_ids,
@@ -209,6 +255,16 @@ class LessonScopedQuestionGenerationService:
                 default_message="Không thể nhận phản hồi hợp lệ từ dịch vụ tạo câu hỏi.",
             )
         if validation.status == "insufficient_context":
+            self._log_generation_outcome(
+                lesson_id=lesson_id,
+                status="insufficient_context",
+                generation_mode="insufficient_context",
+                question_count=0,
+                chunk_count=len(chunk_ids),
+                covered_chunk_count=0,
+                llm_error=self.llm_client.get_last_error(),
+                message=validation.message,
+            )
             return {
                 "lesson_id": lesson_id,
                 "status": "insufficient_context",
@@ -234,6 +290,10 @@ class LessonScopedQuestionGenerationService:
                     context=context,
                     recommendation=refreshed,
                 )
+                context = {
+                    **context,
+                    "recommendation_scores": refreshed.get("metadata", {}).get("scores", {}),
+                }
             fallback_questions = self._build_fallback_questions(
                 context=context,
                 chunks=chunks,
@@ -257,16 +317,60 @@ class LessonScopedQuestionGenerationService:
                 ),
             )
 
+        finalized_questions, finalized_message = self._finalize_questions(
+            context=context,
+            chunks=chunks,
+            questions=validation.questions,
+            target_count=target_count,
+            question_types=question_types,
+            difficulty=difficulty,
+            bloom_levels=bloom_levels,
+            base_message=validation.message,
+        )
+        if not finalized_questions:
+            self._log_generation_outcome(
+                lesson_id=lesson_id,
+                status="insufficient_context",
+                generation_mode="quality_filter_empty",
+                question_count=0,
+                chunk_count=len(chunk_ids),
+                covered_chunk_count=0,
+                llm_error=self.llm_client.get_last_error(),
+                message="Quality filtering removed all generated questions.",
+            )
+            return self._build_existing_or_insufficient_response(
+                lesson_id=lesson_id,
+                chunk_ids=chunk_ids,
+                existing_count=existing_count,
+                default_message="Không đủ dữ liệu phù hợp để tạo bộ câu hỏi chất lượng cho bài học này.",
+            )
+
         if overwrite:
             self.question_repository.delete_by_lesson(lesson_id)
 
         chunk_map = {str(chunk["_id"]): chunk for chunk in chunks}
         resource_ids = [str(item) for item in recommendation.get("resource_ids", [])]
         documents = []
-        for question in validation.questions:
+        for question in finalized_questions:
             question_resource_ids = sorted(
                 {
                     str(chunk_map[chunk_id]["resource_id"])
+                    for chunk_id in question.chunk_ids
+                    if chunk_id in chunk_map
+                }
+            )
+            question_page_numbers = sorted(
+                {
+                    page_number
+                    for chunk_id in question.chunk_ids
+                    if chunk_id in chunk_map
+                    for page_number in [self.lesson_chunk_service._resolve_page_number(chunk_map[chunk_id])]
+                    if isinstance(page_number, int)
+                }
+            )
+            question_chunk_indexes = sorted(
+                {
+                    int(chunk_map[chunk_id].get("chunk_index", 0))
                     for chunk_id in question.chunk_ids
                     if chunk_id in chunk_map
                 }
@@ -296,11 +400,26 @@ class LessonScopedQuestionGenerationService:
                         "lesson_recommendation_id": str(recommendation["_id"]),
                         "allowed_resource_ids": resource_ids,
                         "resolved_resource_ids": question_resource_ids,
+                        "resolved_page_numbers": question_page_numbers,
+                        "resolved_chunk_indexes": question_chunk_indexes,
+                        "coverage_chunk_count": len(question.chunk_ids),
                     },
                 }
             )
 
         inserted_ids = self.question_repository.insert_many(documents)
+        generation_mode = self._determine_generation_mode(finalized_questions)
+        covered_chunk_count = len({chunk_id for question in finalized_questions for chunk_id in question.chunk_ids})
+        self._log_generation_outcome(
+            lesson_id=lesson_id,
+            status="ok",
+            generation_mode=generation_mode,
+            question_count=len(inserted_ids),
+            chunk_count=len(chunk_ids),
+            covered_chunk_count=covered_chunk_count,
+            llm_error=self.llm_client.get_last_error(),
+            message=finalized_message,
+        )
         return {
             "lesson_id": lesson_id,
             "status": "ok",
@@ -310,7 +429,7 @@ class LessonScopedQuestionGenerationService:
             "insufficient_data": False,
             "reused_existing": False,
             "existing_count": existing_count,
-            "message": validation.message,
+            "message": finalized_message,
         }
 
     def get_questions_for_lesson(self, lesson_id: str) -> Dict[str, Any]:
@@ -344,6 +463,347 @@ class LessonScopedQuestionGenerationService:
             "total": len(serialized),
             "questions": serialized,
         }
+
+    def _finalize_questions(
+        self,
+        *,
+        context: Dict[str, Any],
+        chunks: List[Dict[str, Any]],
+        questions: List[ValidatedLessonQuestion],
+        target_count: int,
+        question_types: List[str],
+        difficulty: str,
+        bloom_levels: List[str],
+        base_message: str,
+    ) -> tuple[List[ValidatedLessonQuestion], str]:
+        chunk_order = [str(chunk["_id"]) for chunk in chunks]
+        chunk_map = {str(chunk["_id"]): chunk for chunk in chunks}
+        resource_ids = [str(chunk.get("resource_id")) for chunk in chunks if chunk.get("resource_id")]
+        resources = self.resource_repository.get_many(resource_ids) if resource_ids else []
+        resource_map = {str(resource["_id"]): resource for resource in resources if resource.get("_id")}
+        score_map = context.get("recommendation_scores", {}) if isinstance(context.get("recommendation_scores"), dict) else {}
+
+        ordered_questions = self._round_robin_questions_by_chunk_order(
+            questions=questions,
+            preferred_chunk_order=chunk_order,
+            chunk_map=chunk_map,
+            score_map=score_map,
+        )
+        fallback_questions: List[ValidatedLessonQuestion] = []
+
+        finalized: List[ValidatedLessonQuestion] = []
+        seen_signatures: set[str] = set()
+        for candidate in ordered_questions:
+            signature = self._question_signature(candidate)
+            if not signature or signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            finalized.append(
+                self._enrich_question_metadata(
+                    question=candidate,
+                    chunk_map=chunk_map,
+                    resource_map=resource_map,
+                    score_map=score_map,
+                    quality_score=self._score_question_quality(candidate, chunk_map=chunk_map, score_map=score_map),
+                )
+            )
+            if len(finalized) >= target_count:
+                break
+
+        if len(finalized) < target_count:
+            fallback_questions = self._build_fallback_questions(
+                context=context,
+                chunks=chunks,
+                target_count=max(target_count + 4, target_count * 2),
+                question_types=question_types,
+                difficulty=difficulty,
+                bloom_levels=bloom_levels,
+            )
+            for candidate in fallback_questions:
+                signature = self._question_signature(candidate)
+                if not signature or signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                finalized.append(
+                    self._enrich_question_metadata(
+                        question=candidate,
+                        chunk_map=chunk_map,
+                        resource_map=resource_map,
+                        score_map=score_map,
+                        quality_score=self._score_question_quality(candidate, chunk_map=chunk_map, score_map=score_map),
+                    )
+                )
+                if len(finalized) >= target_count:
+                    break
+
+        if not finalized:
+            return [], base_message or "Không thể tạo câu hỏi hợp lệ từ lesson này."
+
+        covered_chunk_count = len({chunk_id for item in finalized for chunk_id in item.chunk_ids})
+        used_local_fallback = any(item.metadata.get("generation_mode") == "local_fallback" for item in finalized)
+        average_quality_score = round(
+            sum(float(item.metadata.get("quality_score", 0.0)) for item in finalized) / max(len(finalized), 1),
+            4,
+        )
+        message = base_message or f"Đã tạo {len(finalized)} câu hỏi bám trên {covered_chunk_count} chunk."
+        if "Điểm chất lượng" not in message:
+            message = f"{message} Điểm chất lượng trung bình: {average_quality_score}."
+        if used_local_fallback and "cục bộ" not in message.lower():
+            message = f"{message} Hệ thống đã bổ sung thêm câu hỏi cục bộ để tăng độ phủ lesson."
+        return finalized, message
+
+    def _round_robin_questions_by_chunk_order(
+        self,
+        *,
+        questions: List[ValidatedLessonQuestion],
+        preferred_chunk_order: List[str],
+        chunk_map: Dict[str, Dict[str, Any]],
+        score_map: Dict[str, float],
+    ) -> List[ValidatedLessonQuestion]:
+        buckets: Dict[str, List[ValidatedLessonQuestion]] = {chunk_id: [] for chunk_id in preferred_chunk_order}
+        overflow: List[ValidatedLessonQuestion] = []
+        for question in questions:
+            primary_chunk_id = next((chunk_id for chunk_id in question.chunk_ids if chunk_id in buckets), None)
+            if primary_chunk_id is None:
+                overflow.append(question)
+                continue
+            buckets[primary_chunk_id].append(question)
+
+        for bucket in buckets.values():
+            bucket.sort(
+                key=lambda item: self._score_question_quality(item, chunk_map=chunk_map, score_map=score_map),
+                reverse=True,
+            )
+        overflow.sort(
+            key=lambda item: self._score_question_quality(item, chunk_map=chunk_map, score_map=score_map),
+            reverse=True,
+        )
+
+        ordered: List[ValidatedLessonQuestion] = []
+        progress = True
+        while progress:
+            progress = False
+            for chunk_id in preferred_chunk_order:
+                bucket = buckets.get(chunk_id) or []
+                if not bucket:
+                    continue
+                ordered.append(bucket.pop(0))
+                progress = True
+
+        ordered.extend(overflow)
+        for chunk_id in preferred_chunk_order:
+            ordered.extend(buckets.get(chunk_id) or [])
+        return ordered
+
+    def _enrich_question_metadata(
+        self,
+        *,
+        question: ValidatedLessonQuestion,
+        chunk_map: Dict[str, Dict[str, Any]],
+        resource_map: Dict[str, Dict[str, Any]],
+        score_map: Dict[str, float],
+        quality_score: float,
+    ) -> ValidatedLessonQuestion:
+        metadata = dict(question.metadata or {})
+        source_page_numbers = sorted(
+            {
+                page_number
+                for chunk_id in question.chunk_ids
+                if chunk_id in chunk_map
+                for page_number in [self.lesson_chunk_service._resolve_page_number(chunk_map[chunk_id])]
+                if isinstance(page_number, int)
+            }
+        )
+        source_chunk_indexes = sorted(
+            {
+                int(chunk_map[chunk_id].get("chunk_index", 0))
+                for chunk_id in question.chunk_ids
+                if chunk_id in chunk_map
+            }
+        )
+        source_resource_ids = sorted(
+            {
+                str(chunk_map[chunk_id]["resource_id"])
+                for chunk_id in question.chunk_ids
+                if chunk_id in chunk_map and chunk_map[chunk_id].get("resource_id")
+            }
+        )
+        source_resource_titles = [
+            str(resource_map[resource_id].get("title") or "").strip()
+            for resource_id in source_resource_ids
+            if resource_id in resource_map and str(resource_map[resource_id].get("title") or "").strip()
+        ]
+        source_resource_sources = [
+            str(resource_map[resource_id].get("source") or "").strip()
+            for resource_id in source_resource_ids
+            if resource_id in resource_map and str(resource_map[resource_id].get("source") or "").strip()
+        ]
+        source_scores = {
+            chunk_id: round(float(score_map.get(chunk_id, 0.0)), 4)
+            for chunk_id in question.chunk_ids
+            if chunk_id in score_map
+        }
+
+        if "question_focus" not in metadata or not str(metadata.get("question_focus") or "").strip():
+            metadata["question_focus"] = self._extract_question_focus(question.question)
+        if source_page_numbers:
+            metadata.setdefault("source_page_number", source_page_numbers[0])
+            metadata["source_page_numbers"] = source_page_numbers
+        if source_chunk_indexes:
+            metadata.setdefault("source_chunk_index", source_chunk_indexes[0])
+            metadata["source_chunk_indexes"] = source_chunk_indexes
+        if source_resource_ids:
+            metadata.setdefault("source_resource_id", source_resource_ids[0])
+            metadata["source_resource_ids"] = source_resource_ids
+        if source_resource_titles:
+            metadata.setdefault("source_resource_title", source_resource_titles[0])
+            metadata["source_resource_titles"] = source_resource_titles
+        if source_resource_sources:
+            metadata["source_resource_sources"] = source_resource_sources
+        if source_scores:
+            metadata.setdefault("source_score", max(source_scores.values()))
+            metadata["source_scores"] = source_scores
+        metadata["quality_score"] = round(float(quality_score), 4)
+        metadata.setdefault("reasoning_note", "Question grounded on recommended lesson chunk(s).")
+
+        return ValidatedLessonQuestion(
+            question_type=question.question_type,
+            question=question.question,
+            correct_answer=question.correct_answer,
+            distractors=question.distractors,
+            explanation=question.explanation,
+            difficulty=question.difficulty,
+            bloom_level=question.bloom_level,
+            chunk_ids=question.chunk_ids,
+            metadata=metadata,
+        )
+
+    def _score_question_quality(
+        self,
+        question: ValidatedLessonQuestion,
+        *,
+        chunk_map: Dict[str, Dict[str, Any]],
+        score_map: Dict[str, float],
+    ) -> float:
+        score = 0.0
+        normalized_question = self._normalize_text(question.question)
+        normalized_answer = self._normalize_text(question.correct_answer)
+        source_excerpt = str(question.metadata.get("source_excerpt") or "").strip()
+        question_focus = str(question.metadata.get("question_focus") or self._extract_question_focus(question.question)).strip()
+        max_chunk_score = max(
+            (float(score_map.get(chunk_id, 0.0)) for chunk_id in question.chunk_ids if chunk_id in score_map),
+            default=0.0,
+        )
+
+        score += max_chunk_score * 2.4
+        score += min(len(question.chunk_ids), 2) * 0.2
+
+        if 40 <= len(question.question.strip()) <= 220:
+            score += 0.8
+        elif len(question.question.strip()) < 28:
+            score -= 0.8
+        else:
+            score += 0.2
+
+        if 25 <= len(question.explanation.strip()) <= 240:
+            score += 0.45
+        elif len(question.explanation.strip()) < 12:
+            score -= 0.4
+
+        if 70 <= len(source_excerpt) <= 260:
+            score += 0.75
+        elif len(source_excerpt) < 45:
+            score -= 0.65
+
+        if question_focus:
+            score += 0.35
+            if self._normalize_text(question_focus) in self._AMBIGUOUS_TERMS:
+                score -= 0.3
+
+        if question.question_type == "multiple_choice":
+            unique_choices = {
+                self._normalize_text(item)
+                for item in [question.correct_answer, *question.distractors]
+                if self._normalize_text(item)
+            }
+            if len(unique_choices) == 4:
+                score += 0.55
+            if all(3 <= len(str(item).strip()) <= 80 for item in [question.correct_answer, *question.distractors]):
+                score += 0.2
+        elif question.question_type == "short_answer":
+            if len(question.correct_answer.strip()) >= 18:
+                score += 0.35
+        elif question.question_type == "true_false":
+            score += 0.1
+
+        if normalized_question and normalized_answer and normalized_answer in normalized_question:
+            score -= 0.9
+
+        if any(chunk_id in chunk_map for chunk_id in question.chunk_ids):
+            page_numbers = [
+                self.lesson_chunk_service._resolve_page_number(chunk_map[chunk_id])
+                for chunk_id in question.chunk_ids
+                if chunk_id in chunk_map
+            ]
+            if any(isinstance(page_number, int) and page_number > 0 for page_number in page_numbers):
+                score += 0.2
+
+        return round(score, 4)
+
+    def _extract_question_focus(self, question_text: str) -> str:
+        quoted = re.findall(r"'([^']+)'|\"([^\"]+)\"", question_text or "")
+        for left, right in quoted:
+            phrase = (left or right).strip()
+            if phrase:
+                return phrase
+        normalized = self._normalize_text(question_text)
+        for token in re.findall(r"\b[a-z][a-z0-9_]{3,}\b", normalized):
+            if token not in self._FALLBACK_STOP_WORDS:
+                return token
+        return ""
+
+    def _question_signature(self, question: ValidatedLessonQuestion) -> str:
+        stem = self._normalize_text(question.question)
+        answer = self._normalize_text(question.correct_answer)
+        if not stem:
+            return ""
+        return f"{stem}::{answer}"
+
+    @staticmethod
+    def _determine_generation_mode(questions: List[ValidatedLessonQuestion]) -> str:
+        if not questions:
+            return "empty"
+        generation_modes = {str(question.metadata.get("generation_mode") or "llm") for question in questions}
+        if generation_modes == {"local_fallback"}:
+            return "local_fallback"
+        if "local_fallback" in generation_modes:
+            return "hybrid"
+        return "llm"
+
+    def _log_generation_outcome(
+        self,
+        *,
+        lesson_id: str,
+        status: str,
+        generation_mode: str,
+        question_count: int,
+        chunk_count: int,
+        covered_chunk_count: int,
+        llm_error: str | None,
+        message: str,
+    ) -> None:
+        extra_error = f" | llm_error={llm_error}" if llm_error else ""
+        logger.info(
+            "lesson_question_generation | lesson_id=%s | status=%s | mode=%s | questions=%s | chunks=%s | covered_chunks=%s | message=%s%s",
+            lesson_id,
+            status,
+            generation_mode,
+            question_count,
+            chunk_count,
+            covered_chunk_count,
+            message,
+            extra_error,
+        )
 
     def _resolve_recommendation(self, lesson_id: str, context: Dict[str, Any]) -> Dict[str, Any] | None:
         recommendation = self.recommendation_repository.get_by_lesson(lesson_id)
@@ -407,11 +867,22 @@ class LessonScopedQuestionGenerationService:
         difficulty: str,
         bloom_levels: List[str],
     ):
+        resource_ids = [str(chunk.get("resource_id")) for chunk in chunks if chunk.get("resource_id")]
+        resources = self.resource_repository.get_many(resource_ids) if resource_ids else []
+        resource_map = {str(resource["_id"]): resource for resource in resources if resource.get("_id")}
         chunk_payload = [
             {
                 "chunk_id": str(chunk["_id"]),
                 "resource_id": str(chunk["resource_id"]),
                 "chunk_index": int(chunk.get("chunk_index", 0)),
+                "page_number": self.lesson_chunk_service._resolve_page_number(chunk),
+                "resource_title": str(resource_map.get(str(chunk["resource_id"]), {}).get("title") or ""),
+                "resource_source": str(resource_map.get(str(chunk["resource_id"]), {}).get("source") or ""),
+                "score": float(
+                    context.get("recommendation_scores", {}).get(str(chunk["_id"]), 0.0)
+                    if isinstance(context.get("recommendation_scores"), dict)
+                    else 0.0
+                ),
                 "content": str(chunk.get("content") or ""),
             }
             for chunk in chunks
@@ -434,20 +905,40 @@ class LessonScopedQuestionGenerationService:
 
         validation = None
         retry_prompt = None
-        for _ in range(2):
+        for attempt in range(3):
             raw_text = self.llm_client.generate(retry_prompt or prompt)
             validation = self.validator.parse_and_validate(
                 raw_text=raw_text,
                 allowed_chunk_ids=chunk_ids,
                 chunk_text_by_id=chunk_text_by_id,
                 target_count=target_count,
+                default_difficulty=difficulty,
+                default_bloom_levels=bloom_levels,
             )
             if validation.status in {"ok", "insufficient_context"}:
                 break
+            logger.warning(
+                "lesson_question_generation_validation_retry | lesson_id=%s | attempt=%s | errors=%s | raw_preview=%s",
+                str(context["lesson"]["_id"]),
+                attempt + 1,
+                validation.errors,
+                (raw_text or "")[:400].replace("\n", " "),
+            )
+            repair_hint = (
+                "Retry and return only valid JSON following the required schema. "
+                "Normalize question_type to one of: multiple_choice, short_answer, true_false. "
+                "If source_excerpt is missing, copy a short direct excerpt from the cited chunk. "
+                "If difficulty or bloom_level is missing, fill them from the requested lesson context. "
+                "For true_false, use correct_answer exactly True or False."
+            )
             retry_prompt = (
                 f"{prompt}\n\nPrevious output was invalid for these reasons: {validation.errors}. "
-                "Retry and return only valid JSON following the required schema."
+                f"{repair_hint}"
             )
+            if attempt == 1:
+                retry_prompt += (
+                    "\nKeep the wording concise, avoid duplicate questions, and ensure every question has chunk_ids and metadata.source_excerpt."
+                )
         return validation
 
     def _refresh_recommendation(self, *, lesson_id: str, metadata: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -541,7 +1032,7 @@ class LessonScopedQuestionGenerationService:
                     question=question["question"],
                     correct_answer=question["correct_answer"],
                     distractors=question["distractors"],
-                    explanation=f"Cau hoi duoc tao truc tiep tu doan trich cua bai hoc '{lesson_title}'.",
+                    explanation=f"Câu hỏi được tạo trực tiếp từ đoạn trích của bài học '{lesson_title}'.",
                     difficulty=difficulty,
                     bloom_level=bloom_level,
                     chunk_ids=[str(chunk["_id"])],
@@ -729,7 +1220,7 @@ class LessonScopedQuestionGenerationService:
         if question_type == "true_false":
             statement = self._summarize_excerpt(excerpt=excerpt, focus_term=focus_term)
             return {
-                "question": f"Phat bieu sau la dung hay sai theo doan trich cua bai '{lesson_title}'? \"{statement}\"",
+                "question": f"Phát biểu sau là đúng hay sai theo đoạn trích của bài '{lesson_title}'? \"{statement}\"",
                 "correct_answer": "True",
                 "distractors": ["False"],
             }
@@ -875,8 +1366,8 @@ class LessonScopedQuestionGenerationService:
     @staticmethod
     def _build_short_answer_prompt(*, lesson_title: str, focus_term: str) -> str:
         if focus_term:
-            return f"Dua tren doan trich cua bai '{lesson_title}', hay tom tat vai tro hoac y nghia cua '{focus_term}'."
-        return f"Dua tren doan trich cua bai '{lesson_title}', hay neu y chinh cua noi dung nay."
+            return f"Dựa trên đoạn trích của bài '{lesson_title}', hãy tóm tắt vai trò hoặc ý nghĩa của '{focus_term}'."
+        return f"Dựa trên đoạn trích của bài '{lesson_title}', hãy nêu ý chính của nội dung này."
 
     @staticmethod
     def _summarize_excerpt(*, excerpt: str, focus_term: str) -> str:

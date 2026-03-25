@@ -14,6 +14,9 @@ from backend.app.api.schemas import (
     LearningPathGenerateRequest,
     LessonProgressResponse,
     LessonProgressUpdate,
+    LessonStudyTimeResponse,
+    LessonStudyTimeUpdate,
+    StudySummaryResponse,
 )
 from backend.app.services.learning_path_service import learning_path_service
 
@@ -101,6 +104,43 @@ def update_lesson_progress(payload: LessonProgressUpdate, current_user=Depends(g
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not update lesson progress.",
+        ) from exc
+
+
+@router.post("/study-time", response_model=LessonStudyTimeResponse, status_code=status.HTTP_200_OK)
+def record_lesson_study_time(payload: LessonStudyTimeUpdate, current_user=Depends(get_current_user)):
+    """Record accumulated lesson study time for the current user."""
+    user_id = str(current_user.get("_id", ""))
+    try:
+        result = learning_path_service.record_lesson_study_time(
+            path_id=payload.path_id,
+            user_id=user_id,
+            lesson_id=payload.lesson_id,
+            seconds_spent=payload.seconds_spent,
+        )
+        return LessonStudyTimeResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to record lesson study time: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not record lesson study time.",
+        ) from exc
+
+
+@router.get("/study-summary", response_model=StudySummaryResponse, status_code=status.HTTP_200_OK)
+def get_study_summary(current_user=Depends(get_current_user)):
+    """Return aggregated study time and recent calendar data for the current user."""
+    user_id = str(current_user.get("_id", ""))
+    try:
+        result = learning_path_service.get_study_summary(user_id=user_id, days=7)
+        return StudySummaryResponse(**result)
+    except Exception as exc:
+        logger.exception("Failed to load study summary: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load study summary.",
         ) from exc
 
 

@@ -29,6 +29,10 @@ class LessonScopedPromptBuilder:
                 "chunk_id": chunk["chunk_id"],
                 "resource_id": chunk["resource_id"],
                 "chunk_index": chunk["chunk_index"],
+                "page_number": chunk.get("page_number"),
+                "resource_title": chunk.get("resource_title"),
+                "resource_source": chunk.get("resource_source"),
+                "score": chunk.get("score"),
                 "content": chunk["content"],
             }
             for chunk in chunks
@@ -43,6 +47,11 @@ Boundary rules:
 - Do NOT use any chunk that is not in the provided list.
 - If the provided chunks are insufficient, return status "insufficient_context".
 - Question generation is limited to this lesson scope only.
+- Write learner-facing questions and explanations in Vietnamese.
+- Preserve technical terms from the source material when needed.
+- Prefer covering different chunks before reusing the same chunk repeatedly.
+- Prefer the most relevant chunks first, using `score` when available.
+- Avoid near-duplicate questions, repeated stems, or repeated correct answers unless the lesson scope truly requires it.
 
 Lesson context:
 {json.dumps({
@@ -74,11 +83,17 @@ Output rules:
       "distractors": ["string", "string", "string"],
       "explanation": "string",
       "difficulty": "beginner" | "intermediate" | "advanced",
-      "bloom_level": "remember" | "understand" | "apply" | "analyze",
+      "bloom_level": "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create",
       "chunk_ids": ["chunk_id"],
       "metadata": {{
         "source_excerpt": "string",
-        "reasoning_note": "short string"
+        "reasoning_note": "short string",
+        "question_focus": "string",
+        "source_page_number": 1,
+        "source_resource_title": "string",
+        "source_resource_id": "string",
+        "source_chunk_index": 0,
+        "source_score": 0.0
       }}
     }}
   ]
@@ -87,9 +102,12 @@ Output rules:
 Validation requirements:
 - Every question must cite only chunk_ids from the provided chunk list.
 - `source_excerpt` must be copied from the cited chunk text.
+- `question_focus` should name the core concept/skill being tested.
+- If page_number/resource_title exists for the cited chunk, copy it into metadata.
 - For `multiple_choice`, provide exactly 3 distractors and none may equal `correct_answer`.
 - For `true_false`, set `correct_answer` to exactly "True" or "False".
 - For `short_answer`, `distractors` must be an empty array.
+- Use `bloom_level` from the requested list whenever possible.
 - Do not generate more than {context.target_count} questions.
 - If the chunks are not enough to support faithful questions, return:
   {{"status":"insufficient_context","message":"...","questions":[]}}

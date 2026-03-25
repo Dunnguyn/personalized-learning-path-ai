@@ -79,6 +79,29 @@ export interface LessonProgressApiResponse {
   updated_at: string;
 }
 
+export interface LessonStudyTimeResponse {
+  path_id: string;
+  lesson_id: string;
+  seconds_spent: number;
+  total_seconds: number;
+  tracked_date: string;
+  updated_at: string;
+}
+
+export interface StudySummaryDay {
+  date: string;
+  seconds: number;
+  hours: number;
+}
+
+export interface StudySummary {
+  user_id: string;
+  total_seconds: number;
+  total_hours: number;
+  last_7_days: StudySummaryDay[];
+  updated_at?: string | null;
+}
+
 export interface LessonQuestion {
   question_id: string;
   subject_id: string;
