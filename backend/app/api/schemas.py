@@ -60,26 +60,29 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=100)
     level: LevelEnum = LevelEnum.beginner
-    
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "name": "John Doe",
-            "email": "john@example.com",
-            "password": "securepassword123",
-            "level": "beginner"
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "John Doe",
+                "email": "john@example.com",
+                "password": "securepassword123",
+                "level": "beginner",
+            }
         }
-    })
+    )
 
 
 class UserResponse(BaseModel):
     """User response with MongoDB ObjectId as string."""
+
     user_id: str = Field(..., description="MongoDB ObjectId as string")
     name: str
     email: EmailStr
     level: LevelEnum
     learning_goal: Optional[str] = None
     created_at: datetime
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -116,7 +119,9 @@ class ConceptCreate(BaseModel):
 
 
 class ConceptResponse(ConceptCreate):
-    concept_id: int = Field(..., description="Integer ID for concepts (can be auto-increment or ObjectId)")
+    concept_id: int = Field(
+        ..., description="Integer ID for concepts (can be auto-increment or ObjectId)"
+    )
 
 
 # =========================
@@ -193,21 +198,25 @@ class ResourceImportRequest(BaseModel):
 # YOUTUBE IMPORT
 # =========================
 class YouTubeImportRequest(BaseModel):
-    url: str = Field(..., min_length=10, max_length=500, description="YouTube video URL")
+    url: str = Field(
+        ..., min_length=10, max_length=500, description="YouTube video URL"
+    )
     title: str = Field(..., min_length=3, max_length=500, description="Resource title")
     topic: str = Field(..., min_length=2, max_length=200, description="Learning topic")
     level: LevelEnum = Field(default=LevelEnum.beginner, description="Difficulty level")
     concept_id: Optional[int] = Field(None, ge=1, description="Associated concept ID")
-    
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "url": "https://www.youtube.com/watch?v=rfscVS0vtbw",
-            "title": "Learn Python - Full Course for Beginners",
-            "topic": "python",
-            "level": "beginner",
-            "concept_id": 1
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "url": "https://www.youtube.com/watch?v=rfscVS0vtbw",
+                "title": "Learn Python - Full Course for Beginners",
+                "topic": "python",
+                "level": "beginner",
+                "concept_id": 1,
+            }
         }
-    })    
+    )
 
 
 class SubjectCreate(BaseModel):
@@ -283,7 +292,19 @@ class LessonListResponse(BaseModel):
 
 class LessonRecommendedChunksRequest(BaseModel):
     max_chunks: int = Field(default=8, ge=1, le=30)
-    selection_strategy: str = Field(default="local_semantic_lesson_scope_v1", min_length=3, max_length=100)
+    selection_strategy: str = Field(
+        default="local_semantic_lesson_scope_v1", min_length=3, max_length=100
+    )
+    enable_diversity_reranking: bool = Field(
+        default=True,
+        description="Enable diversity-aware reranking after initial semantic/lexical scoring",
+    )
+    diversity_lambda: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="MMR relevance weight for diversity reranking (0..1). If omitted, service default is used.",
+    )
     resource_ids: List[str] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
 
@@ -403,6 +424,7 @@ class IngestionJobStatusResponse(BaseModel):
 # =========================
 class ProgressUpdate(BaseModel):
     """Update learner progress on a concept."""
+
     user_id: str = Field(..., description="MongoDB ObjectId as string")
     concept_id: int = Field(..., ge=1)
     mastery: float = Field(..., ge=0, le=1)
@@ -475,6 +497,8 @@ class GeneratedLearningPathLessonResponse(BaseModel):
     summary: Optional[str] = None
     recommended_chunk_ids: List[str] = Field(default_factory=list)
     status: Optional[str] = None
+    last_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    confidence_updated_at: Optional[datetime] = None
 
 
 class GeneratedLearningPathChapterResponse(BaseModel):
@@ -520,23 +544,54 @@ class LearningPathDeleteResponse(BaseModel):
     removed_questions: int = 0
 
 
+class LessonAnsweredQuestion(BaseModel):
+    question_id: str
+    question: str
+    question_type: LessonQuestionTypeEnum
+    user_answer: str
+    correct_answer: str
+    is_correct: bool
+    difficulty: LevelEnum
+    bloom_level: BloomLevelEnum
+
+
 class LessonProgressUpdate(BaseModel):
     path_id: str = Field(..., description="Learning path UUID")
     lesson_id: str = Field(..., description="Lesson identifier")
-    status: Literal["not_started", "in_progress", "complete"]
+    status: Literal["not_started", "in_progress", "completed"] = Field(
+        ..., description="Desired lesson status"
+    )
+    confidence: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score (0.0-1.0). If >= 0.75, auto-completes lesson; if < 0.75, blocks completion",
+    )
+    questions_answered: Optional[List[LessonAnsweredQuestion]] = Field(
+        default=None,
+        description="Array of answered questions with details for attempt logging",
+    )
 
 
 class LessonProgressResponse(BaseModel):
     path_id: str
     lesson_id: str
     status: str
+    is_locked: bool = False
+    reason_locked: Optional[str] = None
+    blocking_lesson_id: Optional[str] = None
+    auto_completed: bool = False
+    last_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    confidence_updated_at: Optional[datetime] = None
     updated_at: datetime
 
 
 class LessonStudyTimeUpdate(BaseModel):
     path_id: str = Field(..., description="Learning path UUID")
     lesson_id: str = Field(..., description="Lesson identifier")
-    seconds_spent: int = Field(..., ge=1, le=86400, description="Accumulated study time in seconds")
+    seconds_spent: int = Field(
+        ..., ge=1, le=86400, description="Accumulated study time in seconds"
+    )
 
 
 class LessonStudyTimeResponse(BaseModel):
@@ -580,6 +635,7 @@ class UserConfidenceOverviewResponse(BaseModel):
 # =========================
 class AskRequest(BaseModel):
     """Main Q&A request."""
+
     user_id: str = Field(..., description="MongoDB ObjectId as string")
     question: str = Field(..., min_length=5, max_length=2000)
     goal: str = Field(..., min_length=3, max_length=500)
@@ -620,8 +676,12 @@ class GenerateAssessmentQuestionsRequest(BaseModel):
     difficulty: AssessmentDifficultyEnum
     question_type: str = Field(default="short_answer", min_length=2, max_length=100)
     num_questions: int = Field(..., ge=1, le=20)
-    chapter_content: Optional[str] = Field(default=None, min_length=50, max_length=50000)
-    retrieved_context: Optional[str] = Field(default=None, min_length=50, max_length=50000)
+    chapter_content: Optional[str] = Field(
+        default=None, min_length=50, max_length=50000
+    )
+    retrieved_context: Optional[str] = Field(
+        default=None, min_length=50, max_length=50000
+    )
 
     @model_validator(mode="after")
     def validate_context(self):

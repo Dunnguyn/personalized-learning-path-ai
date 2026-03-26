@@ -9,6 +9,8 @@ import type {
   LessonProgressApiResponse,
   LessonStudyTimeResponse,
   LessonQuestionBank,
+  LessonAnsweredQuestion,
+  LessonAttemptStatistics,
   LessonQuestionGenerationResponse,
   LessonQuestionType,
   LessonRecommendedChunks,
@@ -42,6 +44,8 @@ export type {
   LessonProgressApiResponse,
   LessonStudyTimeResponse,
   LessonQuestion,
+  LessonAnsweredQuestion,
+  LessonAttemptStatistics,
   LessonQuestionBank,
   LessonQuestionGenerationResponse,
   LessonQuestionType,
@@ -95,8 +99,15 @@ export const learningPathService = {
     path_id: string;
     lesson_id: string;
     status: LessonStatus;
+    confidence?: number;
+    questions_answered?: LessonAnsweredQuestion[];
   }): Promise<LessonProgressApiResponse> {
-    const response = await apiClient.post('/learning-paths/lesson-progress', data);
+    const payload = {
+      ...data,
+      // Backend expects "completed" while frontend uses "complete".
+      status: data.status === 'complete' ? 'completed' : data.status,
+    };
+    const response = await apiClient.post('/learning-paths/lesson-progress', payload);
     return normalizeLessonProgressResponse(response, {
       path_id: data.path_id,
       lesson_id: data.lesson_id,
@@ -122,6 +133,20 @@ export const learningPathService = {
     return normalizeLessonQuestionBank(response);
   },
 
+  async getLessonAttemptStatistics(lessonId: string): Promise<LessonAttemptStatistics> {
+    const response = asRecord(await apiClient.get(`/lessons/${lessonId}/statistics`));
+    return {
+      total_attempts: Number(response.total_attempts ?? 0),
+      passed_attempts: Number(response.passed_attempts ?? 0),
+      best_confidence: response.best_confidence == null ? null : Number(response.best_confidence),
+      avg_confidence: response.avg_confidence == null ? null : Number(response.avg_confidence),
+      latest_confidence:
+        response.latest_confidence == null ? null : Number(response.latest_confidence),
+      improvement: response.improvement == null ? null : Number(response.improvement),
+      success_rate: Number(response.success_rate ?? 0),
+    };
+  },
+
   async generateLessonQuestions(
     lessonId: string,
     payload?: {
@@ -131,7 +156,7 @@ export const learningPathService = {
       bloom_levels?: BloomLevel[];
       overwrite?: boolean;
       metadata?: Record<string, unknown>;
-    }
+    },
   ): Promise<LessonQuestionGenerationResponse> {
     const response = await apiClient.post(`/lessons/${lessonId}/generate-questions`, {
       target_count: payload?.target_count ?? 4,
@@ -157,7 +182,7 @@ export const learningPathService = {
       selection_strategy?: string;
       resource_ids?: string[];
       metadata?: Record<string, unknown>;
-    }
+    },
   ): Promise<LessonRecommendedChunks> {
     const response = await apiClient.post(`/lessons/${lessonId}/recommended-chunks`, {
       max_chunks: payload?.max_chunks ?? 6,

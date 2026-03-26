@@ -35,7 +35,10 @@ class LessonRepository:
         document.setdefault("created_at", now)
         document.setdefault("updated_at", now)
         result = self.collection.insert_one(document)
-        return self.collection.find_one({"_id": result.inserted_id}) or {**document, "_id": result.inserted_id}
+        return self.collection.find_one({"_id": result.inserted_id}) or {
+            **document,
+            "_id": result.inserted_id,
+        }
 
     def get(self, lesson_id: str | ObjectId) -> Optional[Dict[str, Any]]:
         return self.collection.find_one({"_id": self._to_object_id(lesson_id)})
@@ -77,7 +80,9 @@ class LessonRepository:
         skip = max(page - 1, 0) * size
         items = list(
             self.collection.find(query)
-            .sort([("subject_id", 1), ("chapter_id", 1), ("order", 1), ("created_at", -1)])
+            .sort(
+                [("subject_id", 1), ("chapter_id", 1), ("order", 1), ("created_at", -1)]
+            )
             .skip(skip)
             .limit(size)
         )
@@ -89,14 +94,18 @@ class LessonRepository:
             "pages": (total + size - 1) // size if size else 0,
         }
 
-    def update(self, lesson_id: str | ObjectId, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def update(
+        self, lesson_id: str | ObjectId, updates: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
         self.collection.update_one(
             {"_id": self._to_object_id(lesson_id)},
             {"$set": {**updates, "updated_at": datetime.utcnow()}},
         )
         return self.get(lesson_id)
 
-    def update_many(self, lesson_ids: List[str | ObjectId], updates: Dict[str, Any]) -> int:
+    def update_many(
+        self, lesson_ids: List[str | ObjectId], updates: Dict[str, Any]
+    ) -> int:
         if not lesson_ids:
             return 0
         object_ids = [self._to_object_id(item) for item in lesson_ids]
@@ -115,7 +124,9 @@ class LessonRepository:
 
     def list_by_chapter(self, chapter_id: str | ObjectId) -> List[Dict[str, Any]]:
         return list(
-            self.collection.find({"chapter_id": self._to_object_id(chapter_id)}).sort("order", 1)
+            self.collection.find({"chapter_id": self._to_object_id(chapter_id)}).sort(
+                "order", 1
+            )
         )
 
     def list_by_learning_path(self, learning_path_id: str) -> List[Dict[str, Any]]:

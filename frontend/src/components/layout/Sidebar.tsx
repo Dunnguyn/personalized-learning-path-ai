@@ -35,7 +35,8 @@ export default function Sidebar() {
 
           <div className="flex flex-col gap-5">
             {navItems.map((item) => {
-              const isActive = location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
+              const isActive =
+                location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
 
               return (
                 <Link

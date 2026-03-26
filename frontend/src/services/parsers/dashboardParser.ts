@@ -103,7 +103,9 @@ const normalizeProgressSummary = (value: unknown): ProgressSummary => {
   };
 };
 
-export const normalizeRecommendedConceptsResponse = (value: unknown): RecommendedConceptsResponse => {
+export const normalizeRecommendedConceptsResponse = (
+  value: unknown,
+): RecommendedConceptsResponse => {
   const record = asRecord(value);
 
   return {
@@ -142,7 +144,7 @@ export const normalizeConfidenceOverview = (value: unknown): ConfidenceOverview 
 };
 
 export const normalizeProgressSummaryResponse = (
-  value: unknown
+  value: unknown,
 ): { success: boolean; user_id: string; summary: ProgressSummary } => {
   const record = asRecord(value);
 
@@ -155,7 +157,7 @@ export const normalizeProgressSummaryResponse = (
 
 export const normalizeAdaptiveRecommendation = (
   concept: RecommendedConceptApiItem,
-  index: number
+  index: number,
 ): AdaptiveRecommendation => ({
   concept_id: concept.concept_id,
   concept_name: concept.concept_name,
@@ -215,7 +217,7 @@ export const normalizeResourceSearchResponse = (value: unknown): ResourceSearchR
 };
 
 export const normalizePersonalizedRecommendationResponse = (
-  value: unknown
+  value: unknown,
 ): PersonalizedRecommendationResponse => {
   const record = asRecord(value);
 
@@ -245,7 +247,9 @@ export const normalizeGoalLearningProgressResponse = (value: unknown): GoalProgr
         ? record.user_id
         : '',
     goal: asString(record.goal),
-    concepts: Array.isArray(record.concepts) ? record.concepts.map(normalizeGoalProgressConcept) : [],
+    concepts: Array.isArray(record.concepts)
+      ? record.concepts.map(normalizeGoalProgressConcept)
+      : [],
     overall_mastery: asNumber(record.overall_mastery),
     message: asString(record.message),
   };

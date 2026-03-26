@@ -54,12 +54,14 @@ export const normalizeResource = (resource: unknown): Resource => {
     resource_id: resourceRecord.resource_id
       ? String(resourceRecord.resource_id)
       : resourceRecord._id
-      ? String(resourceRecord._id)
-      : undefined,
+        ? String(resourceRecord._id)
+        : undefined,
     _id: resourceRecord._id ? String(resourceRecord._id) : undefined,
     title: String(resourceRecord.title ?? 'Tài nguyên'),
     content: resourceRecord.content ? String(resourceRecord.content) : undefined,
-    content_summary: resourceRecord.content_summary ? String(resourceRecord.content_summary) : undefined,
+    content_summary: resourceRecord.content_summary
+      ? String(resourceRecord.content_summary)
+      : undefined,
     url: (resourceRecord.url as string | undefined) ?? (metadata.url as string | undefined),
     source: String(resourceRecord.source ?? 'manual'),
     type: resourceRecord.type ? String(resourceRecord.type) : undefined,
@@ -69,13 +71,17 @@ export const normalizeResource = (resource: unknown): Resource => {
       typeof resourceRecord.concept_id === 'number'
         ? resourceRecord.concept_id
         : typeof metadata.concept_id === 'number'
-        ? metadata.concept_id
-        : undefined,
-    thumbnail: (resourceRecord.thumbnail as string | undefined) ?? (metadata.thumbnail as string | undefined),
+          ? metadata.concept_id
+          : undefined,
+    thumbnail:
+      (resourceRecord.thumbnail as string | undefined) ??
+      (metadata.thumbnail as string | undefined),
     pdf_file_path:
-      (resourceRecord.pdf_file_path as string | undefined) ?? (metadata.pdf_file_path as string | undefined),
+      (resourceRecord.pdf_file_path as string | undefined) ??
+      (metadata.pdf_file_path as string | undefined),
     created_at: resourceRecord.created_at ? String(resourceRecord.created_at) : undefined,
-    video_id: (resourceRecord.video_id as string | undefined) ?? (metadata.video_id as string | undefined),
+    video_id:
+      (resourceRecord.video_id as string | undefined) ?? (metadata.video_id as string | undefined),
     youtube_url:
       (resourceRecord.youtube_url as string | undefined) ??
       (metadata.youtube_url as string | undefined) ??
@@ -102,7 +108,8 @@ export const transformToSearchResponse = (response: unknown): SearchResponse => 
   }
 
   const responseRecord = asRecord(response);
-  const rawResults = responseRecord.resources || responseRecord.results || responseRecord.data || [];
+  const rawResults =
+    responseRecord.resources || responseRecord.results || responseRecord.data || [];
 
   return {
     results: Array.isArray(rawResults) ? rawResults.map(normalizeResource) : [],
@@ -110,8 +117,8 @@ export const transformToSearchResponse = (response: unknown): SearchResponse => 
       typeof responseRecord.total === 'number'
         ? responseRecord.total
         : typeof responseRecord.result_count === 'number'
-        ? responseRecord.result_count
-        : 0,
+          ? responseRecord.result_count
+          : 0,
     page: typeof responseRecord.page === 'number' ? responseRecord.page : 1,
     size: typeof responseRecord.size === 'number' ? responseRecord.size : DEFAULT_PAGE_SIZE,
   };

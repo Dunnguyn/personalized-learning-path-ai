@@ -54,7 +54,9 @@ class SemanticRetrievalService:
                         "resource_id": metadata.get("resource_id"),
                         "chunk_index": metadata.get("chunk_index"),
                         "content": hit.get("content", ""),
-                        "score": round(max(0.0, 1.0 - float(hit.get("distance", 1.0))), 4),
+                        "score": round(
+                            max(0.0, 1.0 - float(hit.get("distance", 1.0))), 4
+                        ),
                     }
                 )
         else:
@@ -103,7 +105,9 @@ class SemanticRetrievalService:
         topic: Optional[str],
         level: Optional[str],
     ) -> List[Dict[str, Any]]:
-        candidates = self.chunk_repository.candidate_chunks(topic=topic, level=level, limit=max(k, 100))
+        candidates = self.chunk_repository.candidate_chunks(
+            topic=topic, level=level, limit=max(k, 100)
+        )
         scored: List[Dict[str, Any]] = []
         for chunk in candidates:
             embedding = np.array(chunk.get("embedding") or [], dtype=float)

@@ -29,6 +29,9 @@ from backend.app.services.learning_path_prompt_builder import (
     get_subject_label,
     normalize_curriculum,
 )
+from backend.app.services.lesson_completion_engine import lesson_completion_engine
+
+from backend.app.services.exercise_logging_service import exercise_logging_service
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +48,9 @@ class HybridLearningPathService:
         self.question_repository = QuestionBankRepository()
         self.lesson_chunk_service = lesson_chunk_service
         self.llm_client = CurriculumLLMClient()
-        self.max_chunks_per_lesson = int(os.getenv("LEARNING_PATH_MAX_CHUNKS_PER_LESSON", "8"))
+        self.max_chunks_per_lesson = int(
+            os.getenv("LEARNING_PATH_MAX_CHUNKS_PER_LESSON", "8")
+        )
 
         self.subject_repository.ensure_indexes()
         self.chapter_repository.ensure_indexes()
@@ -102,8 +107,11 @@ class HybridLearningPathService:
 
         chapter_responses: List[Dict[str, Any]] = []
         lesson_progress: Dict[str, str] = {}
+        lesson_confidence_log: Dict[str, Dict[str, Any]] = {}
         total_lessons = 0
-        for chapter_index, chapter_payload in enumerate(curriculum["chapters"], start=1):
+        for chapter_index, chapter_payload in enumerate(
+            curriculum["chapters"], start=1
+        ):
             chapter = self.chapter_repository.create(
                 {
                     "subject_id": subject["_id"],
@@ -122,7 +130,9 @@ class HybridLearningPathService:
             )
 
             lesson_responses: List[Dict[str, Any]] = []
-            for lesson_index, lesson_payload in enumerate(chapter_payload["lessons"], start=1):
+            for lesson_index, lesson_payload in enumerate(
+                chapter_payload["lessons"], start=1
+            ):
                 lesson = self.lesson_repository.create(
                     {
                         "subject_id": subject["_id"],
@@ -171,6 +181,10 @@ class HybridLearningPathService:
 
                 total_lessons += 1
                 lesson_progress[str(lesson["_id"])] = "not_started"
+                lesson_confidence_log[str(lesson["_id"])] = {
+                    "confidence": 0.0,
+                    "updated_at": None,
+                }
                 logger.info(
                     "Lesson recommendation ready: lesson_id=%s chunks=%s resources=%s",
                     lesson["_id"],
@@ -208,6 +222,7 @@ class HybridLearningPathService:
                 "curriculum_source": curriculum_source,
                 "llm_status": llm_status,
                 "lesson_progress": lesson_progress,
+                "lesson_confidence_log": lesson_confidence_log,
                 "metadata": {
                     "pipeline": "hybrid_subject_lesson_v1",
                     "chapter_count": len(chapter_responses),
@@ -235,7 +250,9 @@ class HybridLearningPathService:
             "message": f"Generated learning path with {len(chapter_responses)} chapters and {total_lessons} lessons.",
         }
 
-    def get_learning_path(self, *, path_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_learning_path(
+        self, *, path_id: str, user_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Load a generated learning path with optional ownership validation."""
         normalized_path_id = (path_id or "").strip()
         if not normalized_path_id:
@@ -251,9 +268,13 @@ class HybridLearningPathService:
 
         return self._serialize_learning_path(document)
 
-    def list_learning_paths(self, *, user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def list_learning_paths(
+        self, *, user_id: str, limit: int = 10
+    ) -> List[Dict[str, Any]]:
         """List learning paths for the current user across legacy and hybrid documents."""
-        documents = list(self.learning_path_repository.collection.find({"user_id": user_id}))
+        documents = list(
+            self.learning_path_repository.collection.find({"user_id": user_id})
+        )
         documents.sort(
             key=lambda item: self._resolve_generated_at(item),
             reverse=True,
@@ -283,20 +304,36 @@ class HybridLearningPathService:
             if chapter.get("chapter_id")
         }
 
-        generated_lessons = self.lesson_repository.list_by_learning_path(normalized_path_id)
-        lesson_ids.update(str(item["_id"]) for item in generated_lessons if item.get("_id"))
+        generated_lessons = self.lesson_repository.list_by_learning_path(
+            normalized_path_id
+        )
+        lesson_ids.update(
+            str(item["_id"]) for item in generated_lessons if item.get("_id")
+        )
 
-        generated_chapters = self.chapter_repository.list_by_learning_path(normalized_path_id)
-        chapter_ids.update(str(item["_id"]) for item in generated_chapters if item.get("_id"))
+        generated_chapters = self.chapter_repository.list_by_learning_path(
+            normalized_path_id
+        )
+        chapter_ids.update(
+            str(item["_id"]) for item in generated_chapters if item.get("_id")
+        )
 
         lesson_id_list = sorted(lesson_ids)
         chapter_id_list = sorted(chapter_ids)
 
-        removed_recommendations = self.lesson_recommended_chunk_repository.delete_by_lesson_ids(lesson_id_list)
-        removed_questions = self.question_repository.delete_by_lesson_ids(lesson_id_list)
+        removed_recommendations = (
+            self.lesson_recommended_chunk_repository.delete_by_lesson_ids(
+                lesson_id_list
+            )
+        )
+        removed_questions = self.question_repository.delete_by_lesson_ids(
+            lesson_id_list
+        )
         removed_lessons = self.lesson_repository.delete_many(lesson_id_list)
         removed_chapters = self.chapter_repository.delete_many(chapter_id_list)
-        deleted_paths = self.learning_path_repository.delete_by_path_id(normalized_path_id, user_id=user_id)
+        deleted_paths = self.learning_path_repository.delete_by_path_id(
+            normalized_path_id, user_id=user_id
+        )
 
         if deleted_paths == 0:
             raise ValueError("Learning path not found.")
@@ -317,42 +354,304 @@ class HybridLearningPathService:
         user_id: str,
         lesson_id: str,
         status: str,
+        confidence: Optional[float] = None,
+        questions_answered: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Update lesson progress for a stored learning path document."""
+        """
+        Update lesson progress with auto-completion and prerequisite enforcement.
+
+        Args:
+            path_id: Learning path ID
+            user_id: User ID
+            lesson_id: Lesson ID
+            status: Desired status (will be overridden by auto-completion if applicable)
+            confidence: Optional confidence score (triggers auto-completion if > 0.7)
+
+        Returns:
+            Dict with:
+            - path_id: str
+            - lesson_id: str
+            - status: str (final status)
+            - is_locked: bool
+            - auto_completed: bool
+            - reason_locked: Optional[str]
+            - blocking_lesson_id: Optional[str]
+            - updated_at: datetime
+        """
         document = self.learning_path_repository.get_by_path_id(path_id)
         if not document or str(document.get("user_id") or "") != str(user_id):
             raise ValueError("Learning path not found.")
 
         normalized = self._serialize_learning_path(document)
-        known_lessons = {
-            lesson.get("lesson_id")
-            for chapter in normalized.get("chapters", [])
-            for lesson in chapter.get("lessons", [])
-            if lesson.get("lesson_id")
-        }
-        if lesson_id not in known_lessons:
+
+        # Build lesson position map
+        lesson_positions = {}  # lesson_id -> (chapter_idx, lesson_idx)
+        for chapter_idx, chapter in enumerate(normalized.get("chapters", [])):
+            for lesson_idx, lesson in enumerate(chapter.get("lessons", [])):
+                lid = lesson.get("lesson_id")
+                if lid:
+                    lesson_positions[lid] = (chapter_idx, lesson_idx)
+
+        if lesson_id not in lesson_positions:
             raise ValueError("Lesson not found in learning path.")
 
+        chapter_idx, lesson_idx = lesson_positions[lesson_id]
+        has_submitted_exercise = bool(questions_answered)
+
+        lesson_confidence_log = document.get("lesson_confidence_log", {}) or {}
+        stored_record = (
+            lesson_confidence_log.get(lesson_id, {})
+            if isinstance(lesson_confidence_log, dict)
+            else {}
+        )
+        stored_confidence = 0.0
+        if isinstance(stored_record, dict):
+            try:
+                stored_confidence = float(stored_record.get("confidence", 0.0) or 0.0)
+            except Exception:
+                stored_confidence = 0.0
+
+        # Confidence is lesson-scoped and can only change after submitting lesson exercises.
+        if not has_submitted_exercise:
+            confidence = None
+
+        # If confidence not provided, try to fetch from stored confidence log
+        if confidence is None and status == "completed":
+            if isinstance(stored_record, dict) and "confidence" in stored_record:
+                confidence = stored_confidence
+                logger.info(
+                    f"Using stored confidence for completion check: "
+                    f"path={path_id}, lesson={lesson_id}, confidence={confidence:.2%}"
+                )
+
+        confidence_updated_at = (
+            datetime.utcnow()
+            if confidence is not None and has_submitted_exercise
+            else None
+        )
+
+        def _persist_confidence_if_present() -> None:
+            if confidence is None or not has_submitted_exercise:
+                return
+            self.learning_path_repository.collection.update_one(
+                {"_id": document["_id"]},
+                {
+                    "$set": {
+                        f"lesson_confidence_log.{lesson_id}.confidence": float(
+                            confidence
+                        ),
+                        f"lesson_confidence_log.{lesson_id}.updated_at": confidence_updated_at,
+                        "updated_at": confidence_updated_at,
+                    }
+                },
+            )
+            logger.info(
+                "Saved latest confidence score: path=%s lesson=%s confidence=%.4f",
+                path_id,
+                lesson_id,
+                float(confidence),
+            )
+
+        # Check if lesson is locked
+        access_result = lesson_completion_engine.can_access_lesson(
+            path_id=path_id,
+            lesson_id=lesson_id,
+            chapter_index=chapter_idx,
+            lesson_index=lesson_idx,
+        )
+
+        # If locked, cannot start or complete
+        if access_result["is_locked"]:
+            _persist_confidence_if_present()
+            logger.warning(
+                f"Cannot access locked lesson: path={path_id}, lesson={lesson_id}, "
+                f"reason={access_result['reason']}, status_attempted={status}"
+            )
+            return {
+                "path_id": path_id,
+                "lesson_id": lesson_id,
+                "status": "locked",
+                "is_locked": True,
+                "auto_completed": False,
+                "last_confidence": stored_confidence,
+                "confidence_updated_at": (
+                    stored_record.get("updated_at")
+                    if isinstance(stored_record, dict)
+                    else None
+                ),
+                "reason_locked": access_result["reason"],
+                "blocking_lesson_id": access_result.get("blocking_lesson_id"),
+                "updated_at": datetime.utcnow(),
+            }
+
+        # Handle auto-completion with confidence score
+        # Requirement: confidence must be >= 75% to complete
+        final_status = status
+        auto_completed = False
+
+        if confidence is not None and confidence >= 0.75:
+            final_status = "completed"
+            auto_completed = True
+            logger.info(
+                f"Auto-completing lesson due to high confidence: "
+                f"path={path_id}, lesson={lesson_id}, confidence={confidence:.2%}"
+            )
+        elif status == "completed":
+            # Block manual completion if confidence is insufficient
+            if confidence is None:
+                # No confidence data - cannot complete
+                _persist_confidence_if_present()
+                logger.warning(
+                    f"Blocking completion without confidence data: "
+                    f"path={path_id}, lesson={lesson_id}"
+                )
+                return {
+                    "path_id": path_id,
+                    "lesson_id": lesson_id,
+                    "status": "in_progress",
+                    "is_locked": False,
+                    "auto_completed": False,
+                    "last_confidence": None,
+                    "confidence_updated_at": None,
+                    "reason_locked": (
+                        "Cannot complete lesson without completing exercises. "
+                        "Complete the lesson activities to assess your confidence level."
+                    ),
+                    "blocking_lesson_id": None,
+                    "updated_at": datetime.utcnow(),
+                }
+            elif confidence < 0.75:
+                # Low confidence - cannot complete
+                _persist_confidence_if_present()
+                logger.info(
+                    f"Blocking completion with low confidence: "
+                    f"path={path_id}, lesson={lesson_id}, confidence={confidence:.2%}"
+                )
+                return {
+                    "path_id": path_id,
+                    "lesson_id": lesson_id,
+                    "status": "in_progress",
+                    "is_locked": False,
+                    "auto_completed": False,
+                    "last_confidence": confidence,
+                    "confidence_updated_at": confidence_updated_at,
+                    "reason_locked": (
+                        f"Cannot complete with confidence {confidence:.2%} < 75%. "
+                        f"Continue learning to reach the required 75% confidence level."
+                    ),
+                    "blocking_lesson_id": None,
+                    "updated_at": datetime.utcnow(),
+                }
+
+        # Update database
         updated_at = datetime.utcnow()
         lesson_progress = dict(document.get("lesson_progress") or {})
-        lesson_progress[lesson_id] = status
+        lesson_progress[lesson_id] = final_status
+
+        update_payload = {
+            "lesson_progress": lesson_progress,
+            "updated_at": updated_at,
+        }
+        if confidence is not None and has_submitted_exercise:
+            update_payload[f"lesson_confidence_log.{lesson_id}.confidence"] = float(
+                confidence
+            )
+            update_payload[f"lesson_confidence_log.{lesson_id}.updated_at"] = (
+                confidence_updated_at
+            )
 
         self.learning_path_repository.collection.update_one(
             {"_id": document["_id"]},
-            {
-                "$set": {
-                    "lesson_progress": lesson_progress,
-                    "updated_at": updated_at,
-                }
-            },
+            {"$set": update_payload},
         )
+        if confidence is not None and has_submitted_exercise:
+            logger.info(
+                "Saved latest confidence score: path=%s lesson=%s confidence=%.4f",
+                path_id,
+                lesson_id,
+                float(confidence),
+            )
+
+        result_confidence = (
+            float(confidence) if confidence is not None else stored_confidence
+        )
+        result_confidence_updated_at = confidence_updated_at
+        if result_confidence_updated_at is None and isinstance(stored_record, dict):
+            result_confidence_updated_at = stored_record.get("updated_at")
+
+        # Log metrics
+        logger.info(
+            f"Lesson progress updated: path={path_id}, lesson={lesson_id}, "
+            f"status={final_status}, auto_completed={auto_completed}, "
+            f"confidence={confidence}"
+        )
+
+        # Log exercise attempt if confidence was provided
+        if confidence is not None and has_submitted_exercise and questions_answered:
+            try:
+                exercise_logging_service.log_quiz_attempt(
+                    user_id=user_id,
+                    path_id=path_id,
+                    lesson_id=lesson_id,
+                    questions_data=questions_answered,
+                    confidence=confidence,
+                    auto_completed=auto_completed,
+                    lesson_status_after=final_status,
+                )
+                logger.info(
+                    f"Exercise attempt logged: path={path_id}, lesson={lesson_id}, "
+                    f"user={user_id}, confidence={confidence:.4f}, auto_completed={auto_completed}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to log exercise attempt: path={path_id}, lesson={lesson_id}, "
+                    f"user={user_id}, error={str(e)}",
+                    exc_info=True,
+                )
+                # Don't fail the entire operation - continue with progress update
 
         return {
             "path_id": path_id,
             "lesson_id": lesson_id,
-            "status": status,
+            "status": final_status,
+            "is_locked": False,
+            "auto_completed": auto_completed,
+            "last_confidence": result_confidence,
+            "confidence_updated_at": result_confidence_updated_at,
+            "reason_locked": None,
+            "blocking_lesson_id": None,
             "updated_at": updated_at,
         }
+
+    def get_lesson_lock_statuses(
+        self,
+        *,
+        path_id: str,
+        user_id: str,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Get lock status for all lessons in a learning path.
+
+        Args:
+            path_id: Learning path ID
+            user_id: User ID
+
+        Returns:
+            Dict mapping lesson_id -> lock status info
+        """
+        document = self.learning_path_repository.get_by_path_id(path_id)
+        if not document or str(document.get("user_id") or "") != str(user_id):
+            raise ValueError("Learning path not found.")
+
+        normalized = self._serialize_learning_path(document)
+        lesson_ids = [
+            lesson.get("lesson_id")
+            for chapter in normalized.get("chapters", [])
+            for lesson in chapter.get("lessons", [])
+            if lesson.get("lesson_id")
+        ]
+
+        return lesson_completion_engine.get_lesson_lock_status(path_id, lesson_ids)
 
     def record_lesson_study_time(
         self,
@@ -440,10 +739,14 @@ class HybridLearningPathService:
 
         total_seconds = 0
         last_updated: Optional[datetime] = None
-        for item in study_collection.find({"user_id": user_id}, {"seconds_spent": 1, "updated_at": 1}):
+        for item in study_collection.find(
+            {"user_id": user_id}, {"seconds_spent": 1, "updated_at": 1}
+        ):
             total_seconds += int(item.get("seconds_spent", 0) or 0)
             updated_at = item.get("updated_at")
-            if isinstance(updated_at, datetime) and (last_updated is None or updated_at > last_updated):
+            if isinstance(updated_at, datetime) and (
+                last_updated is None or updated_at > last_updated
+            ):
                 last_updated = updated_at
 
         seconds_by_day: Dict[str, int] = {}
@@ -458,7 +761,9 @@ class HybridLearningPathService:
             {"tracked_date": 1, "seconds_spent": 1},
         ):
             day_key = str(item.get("tracked_date") or "")
-            seconds_by_day[day_key] = seconds_by_day.get(day_key, 0) + int(item.get("seconds_spent", 0) or 0)
+            seconds_by_day[day_key] = seconds_by_day.get(day_key, 0) + int(
+                item.get("seconds_spent", 0) or 0
+            )
 
         last_7_days: List[Dict[str, Any]] = []
         for offset in range(safe_days):
@@ -490,7 +795,9 @@ class HybridLearningPathService:
         if len(goal.strip()) < 3:
             raise ValueError("goal must be at least 3 characters")
 
-    def _ensure_subject(self, *, subject_id: str, subject_label: str, level: str) -> Dict[str, Any]:
+    def _ensure_subject(
+        self, *, subject_id: str, subject_label: str, level: str
+    ) -> Dict[str, Any]:
         subject = self.subject_repository.get_by_slug(subject_id)
         if subject:
             return subject
@@ -522,21 +829,31 @@ class HybridLearningPathService:
         goal: str,
         level: str,
     ) -> Dict[str, Any]:
-        fallback = build_fallback_curriculum(subject_id=subject_id, goal=goal, level=level)
+        fallback = build_fallback_curriculum(
+            subject_id=subject_id, goal=goal, level=level
+        )
         llm_status = self.llm_client.status()
         if not self.llm_client.is_available():
-            logger.warning("Curriculum LLM unavailable, using fallback curriculum for subject_id=%s", subject_id)
+            logger.warning(
+                "Curriculum LLM unavailable, using fallback curriculum for subject_id=%s",
+                subject_id,
+            )
             return {
                 "chapters": fallback,
                 "source": "fallback",
                 "llm_status": llm_status,
             }
 
-        prompt = build_learning_path_prompt(subject_label=subject_label, goal=goal, level=level)
+        prompt = build_learning_path_prompt(
+            subject_label=subject_label, goal=goal, level=level
+        )
         raw_text = self.llm_client.generate(prompt)
         json_text = extract_json_object(raw_text)
         if not json_text:
-            logger.warning("Curriculum LLM returned no JSON, using fallback curriculum for subject_id=%s", subject_id)
+            logger.warning(
+                "Curriculum LLM returned no JSON, using fallback curriculum for subject_id=%s",
+                subject_id,
+            )
             return {
                 "chapters": fallback,
                 "source": "fallback",
@@ -546,7 +863,9 @@ class HybridLearningPathService:
         try:
             parsed = json.loads(json_text)
         except json.JSONDecodeError as exc:
-            logger.warning("Curriculum JSON parse failed for subject_id=%s: %s", subject_id, exc)
+            logger.warning(
+                "Curriculum JSON parse failed for subject_id=%s: %s", subject_id, exc
+            )
             return {
                 "chapters": fallback,
                 "source": "fallback",
@@ -555,7 +874,10 @@ class HybridLearningPathService:
 
         normalized = normalize_curriculum(parsed)
         if not normalized:
-            logger.warning("Curriculum normalization produced no chapters, using fallback for subject_id=%s", subject_id)
+            logger.warning(
+                "Curriculum normalization produced no chapters, using fallback for subject_id=%s",
+                subject_id,
+            )
             return {
                 "chapters": fallback,
                 "source": "fallback",
@@ -596,6 +918,8 @@ class HybridLearningPathService:
                 lesson_id=str(lesson["_id"]),
                 max_chunks=self.max_chunks_per_lesson,
                 selection_strategy="local_semantic_lesson_scope_v1",
+                enable_diversity_reranking=True,
+                diversity_lambda=None,
                 resource_ids=[],
                 metadata=metadata,
             )
@@ -628,13 +952,17 @@ class HybridLearningPathService:
             limit=self.max_chunks_per_lesson,
         )
         if not candidate_chunks:
-            candidate_chunks = self.lesson_chunk_service.chunk_repository.candidate_chunks(
-                level=level,
-                limit=self.max_chunks_per_lesson,
+            candidate_chunks = (
+                self.lesson_chunk_service.chunk_repository.candidate_chunks(
+                    level=level,
+                    limit=self.max_chunks_per_lesson,
+                )
             )
         if not candidate_chunks:
-            candidate_chunks = self.lesson_chunk_service.chunk_repository.candidate_chunks(
-                limit=self.max_chunks_per_lesson,
+            candidate_chunks = (
+                self.lesson_chunk_service.chunk_repository.candidate_chunks(
+                    limit=self.max_chunks_per_lesson,
+                )
             )
 
         selected_chunks = [
@@ -649,26 +977,32 @@ class HybridLearningPathService:
             for chunk in candidate_chunks[: self.max_chunks_per_lesson]
         ]
         chunk_object_ids = [ObjectId(item["chunk_id"]) for item in selected_chunks]
-        resource_object_ids = [ObjectId(item["resource_id"]) for item in selected_chunks]
+        resource_object_ids = [
+            ObjectId(item["resource_id"]) for item in selected_chunks
+        ]
 
-        recommendation = self.lesson_chunk_service.recommendation_repository.upsert_for_lesson(
-            lesson["_id"],
-            {
-                "subject_id": subject["_id"],
-                "chapter_id": chapter["_id"],
-                "lesson_id": lesson["_id"],
-                "chunk_ids": chunk_object_ids,
-                "resource_ids": resource_object_ids,
-                "selection_strategy": "fallback_top_chunks_v1",
-                "metadata": {
-                    **metadata,
-                    "fallback": True,
-                    "selected_count": len(selected_chunks),
-                    "candidate_count": len(candidate_chunks),
+        recommendation = (
+            self.lesson_chunk_service.recommendation_repository.upsert_for_lesson(
+                lesson["_id"],
+                {
+                    "subject_id": subject["_id"],
+                    "chapter_id": chapter["_id"],
+                    "lesson_id": lesson["_id"],
+                    "chunk_ids": chunk_object_ids,
+                    "resource_ids": resource_object_ids,
+                    "selection_strategy": "fallback_top_chunks_v1",
+                    "metadata": {
+                        **metadata,
+                        "fallback": True,
+                        "selected_count": len(selected_chunks),
+                        "candidate_count": len(candidate_chunks),
+                    },
                 },
-            },
+            )
         )
-        return self.lesson_chunk_service._serialize_recommendation(recommendation, selected_chunks)
+        return self.lesson_chunk_service._serialize_recommendation(
+            recommendation, selected_chunks
+        )
 
     @staticmethod
     def _build_keywords(
@@ -689,6 +1023,7 @@ class HybridLearningPathService:
         chapters = self._normalize_chapters(
             chapters=document.get("chapters") or document.get("curriculum") or [],
             lesson_progress=document.get("lesson_progress") or {},
+            lesson_confidence_log=document.get("lesson_confidence_log") or {},
         )
         return {
             "path_id": str(document.get("path_id") or ""),
@@ -707,21 +1042,30 @@ class HybridLearningPathService:
         *,
         chapters: List[Dict[str, Any]],
         lesson_progress: Dict[str, str],
+        lesson_confidence_log: Dict[str, Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []
         for chapter in chapters or []:
             lessons_payload = []
             for lesson in chapter.get("lessons", []) or []:
                 lesson_id = str(lesson.get("lesson_id") or "")
+                confidence_entry = lesson_confidence_log.get(lesson_id) or {}
                 lessons_payload.append(
                     {
                         "lesson_id": lesson_id,
                         "title": lesson.get("title", ""),
                         "summary": lesson.get("summary"),
                         "recommended_chunk_ids": [
-                            str(item) for item in lesson.get("recommended_chunk_ids", []) or []
+                            str(item)
+                            for item in lesson.get("recommended_chunk_ids", []) or []
                         ],
-                        "status": lesson_progress.get(lesson_id, lesson.get("status", "not_started")),
+                        "status": lesson_progress.get(
+                            lesson_id, lesson.get("status", "not_started")
+                        ),
+                        "last_confidence": float(
+                            confidence_entry.get("confidence", 0.0) or 0.0
+                        ),
+                        "confidence_updated_at": confidence_entry.get("updated_at"),
                     }
                 )
             normalized.append(

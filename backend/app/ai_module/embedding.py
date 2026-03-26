@@ -18,7 +18,7 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 EMBEDDING_CACHE_SIZE = int(os.getenv("EMBEDDING_CACHE_SIZE", "2048"))
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 USE_EXTERNAL_EMBEDDING = os.getenv("USE_EXTERNAL_EMBEDDING", "false").lower() == "true"
-CHROMA_PATH = os.getenv("CHROMA_PATH", "backend/.chroma")
+CHROMA_PATH = os.getenv("CHROMA_PATH", "backend/.runtime/chroma")
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "learning_resource_chunks")
 
 
@@ -137,7 +137,9 @@ class ChromaVectorStore:
             metadatas = results.get("metadatas", [[]])[0]
             documents = results.get("documents", [[]])[0]
             payload = []
-            for item_id, distance, metadata, document in zip(ids, distances, metadatas, documents):
+            for item_id, distance, metadata, document in zip(
+                ids, distances, metadatas, documents
+            ):
                 payload.append(
                     {
                         "id": item_id,
@@ -198,7 +200,9 @@ class EmbeddingService:
                             "External embedding failed, using local fallback: %s",
                             exc,
                         )
-                        vectors = [self._fallback_embedding(text) for text in batch_texts]
+                        vectors = [
+                            self._fallback_embedding(text) for text in batch_texts
+                        ]
                 else:
                     vectors = [self._fallback_embedding(text) for text in batch_texts]
 

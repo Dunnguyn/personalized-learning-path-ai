@@ -1,9 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
-  ],
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
@@ -18,9 +15,9 @@ export default {
         sans: ['Inter', 'system-ui', 'sans-serif'],
       },
       boxShadow: {
-        'pink': '0px 0px 4px 0px rgba(253,171,181,0.2)',
+        pink: '0px 0px 4px 0px rgba(253,171,181,0.2)',
       },
     },
   },
   plugins: [],
-}
+};

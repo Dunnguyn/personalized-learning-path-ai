@@ -23,7 +23,9 @@ class LessonQuestionPromptContext:
 class LessonScopedPromptBuilder:
     """Build a strict prompt that only allows generation from recommended chunks."""
 
-    def build(self, *, context: LessonQuestionPromptContext, chunks: Sequence[Dict[str, str]]) -> str:
+    def build(
+        self, *, context: LessonQuestionPromptContext, chunks: Sequence[Dict[str, str]]
+    ) -> str:
         payload = [
             {
                 "chunk_id": chunk["chunk_id"],

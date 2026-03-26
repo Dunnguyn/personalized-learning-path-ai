@@ -17,7 +17,10 @@ from backend.app.repositories import (
 )
 from backend.app.services.lesson_service import lesson_structure_service
 from backend.app.services.lesson_chunk_service import lesson_chunk_service
-from backend.app.services.prompt_builder import LessonQuestionPromptContext, LessonScopedPromptBuilder
+from backend.app.services.prompt_builder import (
+    LessonQuestionPromptContext,
+    LessonScopedPromptBuilder,
+)
 from backend.app.services.question_validator import (
     LessonScopedQuestionValidator,
     ValidatedLessonQuestion,
@@ -31,11 +34,44 @@ class LessonScopedQuestionGenerationService:
 
     _CONCEPT_ALIASES = {
         "bien": ["variable", "variables", "assignment", "value"],
-        "kieu du lieu": ["data type", "type", "types", "string", "integer", "float", "boolean"],
-        "toan tu": ["operator", "operators", "expression", "arithmetic", "comparison", "logical"],
+        "kieu du lieu": [
+            "data type",
+            "type",
+            "types",
+            "string",
+            "integer",
+            "float",
+            "boolean",
+        ],
+        "toan tu": [
+            "operator",
+            "operators",
+            "expression",
+            "arithmetic",
+            "comparison",
+            "logical",
+        ],
         "list": ["list", "lists", "append", "sort", "index", "slice"],
-        "dict": ["dict", "dictionary", "dictionaries", "key", "value", "keys", "values", "items"],
-        "dictionary": ["dict", "dictionary", "dictionaries", "key", "value", "keys", "values", "items"],
+        "dict": [
+            "dict",
+            "dictionary",
+            "dictionaries",
+            "key",
+            "value",
+            "keys",
+            "values",
+            "items",
+        ],
+        "dictionary": [
+            "dict",
+            "dictionary",
+            "dictionaries",
+            "key",
+            "value",
+            "keys",
+            "values",
+            "items",
+        ],
         "tuple": ["tuple", "tuples", "pair", "pairs"],
         "set": ["set", "sets", "unique"],
         "ham": ["function", "functions", "method", "methods", "def", "return"],
@@ -43,15 +79,45 @@ class LessonScopedQuestionGenerationService:
         "dieu kien": ["condition", "conditional", "if", "elif", "else", "boolean"],
         "chuoi": ["string", "strings", "split", "strip", "text"],
         "tep": ["file", "files", "open", "read", "write"],
-        "xu ly du lieu": ["data", "processing", "analysis", "count", "parse", "extract"],
+        "xu ly du lieu": [
+            "data",
+            "processing",
+            "analysis",
+            "count",
+            "parse",
+            "extract",
+        ],
     }
     _STRICT_CONCEPT_ALIASES = {
         "bien": ["variable", "variables", "assignment"],
-        "kieu du lieu": ["data type", "type", "types", "string", "integer", "float", "boolean"],
-        "toan tu": ["operator", "operators", "expression", "arithmetic", "comparison", "logical"],
+        "kieu du lieu": [
+            "data type",
+            "type",
+            "types",
+            "string",
+            "integer",
+            "float",
+            "boolean",
+        ],
+        "toan tu": [
+            "operator",
+            "operators",
+            "expression",
+            "arithmetic",
+            "comparison",
+            "logical",
+        ],
         "list": ["list", "lists", "append", "sort", "slice"],
         "dict": ["dict", "dictionary", "dictionaries", "key", "keys", "item", "items"],
-        "dictionary": ["dict", "dictionary", "dictionaries", "key", "keys", "item", "items"],
+        "dictionary": [
+            "dict",
+            "dictionary",
+            "dictionaries",
+            "key",
+            "keys",
+            "item",
+            "items",
+        ],
         "tuple": ["tuple", "tuples", "pair", "pairs"],
         "set": ["set", "sets", "unique"],
         "ham": ["function", "functions", "method", "methods", "def", "return"],
@@ -121,11 +187,55 @@ class LessonScopedQuestionGenerationService:
         r"\bglossary\b",
     )
     _CATEGORY_POOLS = {
-        "data_structure": ["list", "dict", "tuple", "set", "dictionary", "keys", "values", "items"],
-        "method": ["append", "sort", "items", "keys", "values", "split", "strip", "findall", "open", "read"],
-        "data_type": ["string", "integer", "float", "boolean", "value", "variable", "expression"],
-        "operator": ["operator", "arithmetic", "comparison", "logical", "expression", "assignment"],
-        "general": ["variable", "value", "expression", "function", "loop", "string", "module", "class"],
+        "data_structure": [
+            "list",
+            "dict",
+            "tuple",
+            "set",
+            "dictionary",
+            "keys",
+            "values",
+            "items",
+        ],
+        "method": [
+            "append",
+            "sort",
+            "items",
+            "keys",
+            "values",
+            "split",
+            "strip",
+            "findall",
+            "open",
+            "read",
+        ],
+        "data_type": [
+            "string",
+            "integer",
+            "float",
+            "boolean",
+            "value",
+            "variable",
+            "expression",
+        ],
+        "operator": [
+            "operator",
+            "arithmetic",
+            "comparison",
+            "logical",
+            "expression",
+            "assignment",
+        ],
+        "general": [
+            "variable",
+            "value",
+            "expression",
+            "function",
+            "loop",
+            "string",
+            "module",
+            "class",
+        ],
     }
     _AMBIGUOUS_TERMS = {
         "data",
@@ -200,7 +310,9 @@ class LessonScopedQuestionGenerationService:
             }
         context = {
             **context,
-            "recommendation_scores": recommendation.get("metadata", {}).get("scores", {}),
+            "recommendation_scores": recommendation.get("metadata", {}).get(
+                "scores", {}
+            ),
         }
         validation = self._run_generation(
             context=context,
@@ -225,7 +337,9 @@ class LessonScopedQuestionGenerationService:
                 )
                 context = {
                     **context,
-                    "recommendation_scores": refreshed.get("metadata", {}).get("scores", {}),
+                    "recommendation_scores": refreshed.get("metadata", {}).get(
+                        "scores", {}
+                    ),
                 }
                 validation = self._run_generation(
                     context=context,
@@ -292,7 +406,9 @@ class LessonScopedQuestionGenerationService:
                 )
                 context = {
                     **context,
-                    "recommendation_scores": refreshed.get("metadata", {}).get("scores", {}),
+                    "recommendation_scores": refreshed.get("metadata", {}).get(
+                        "scores", {}
+                    ),
                 }
             fallback_questions = self._build_fallback_questions(
                 context=context,
@@ -364,7 +480,11 @@ class LessonScopedQuestionGenerationService:
                     page_number
                     for chunk_id in question.chunk_ids
                     if chunk_id in chunk_map
-                    for page_number in [self.lesson_chunk_service._resolve_page_number(chunk_map[chunk_id])]
+                    for page_number in [
+                        self.lesson_chunk_service._resolve_page_number(
+                            chunk_map[chunk_id]
+                        )
+                    ]
                     if isinstance(page_number, int)
                 }
             )
@@ -380,9 +500,15 @@ class LessonScopedQuestionGenerationService:
                     "subject_id": context["subject"]["_id"],
                     "chapter_id": context["chapter"]["_id"],
                     "lesson_id": context["lesson"]["_id"],
-                    "chunk_ids": [chunk_map[chunk_id]["_id"] for chunk_id in question.chunk_ids if chunk_id in chunk_map],
+                    "chunk_ids": [
+                        chunk_map[chunk_id]["_id"]
+                        for chunk_id in question.chunk_ids
+                        if chunk_id in chunk_map
+                    ],
                     "resource_ids": [
-                        chunk_map[chunk_id]["resource_id"] for chunk_id in question.chunk_ids if chunk_id in chunk_map
+                        chunk_map[chunk_id]["resource_id"]
+                        for chunk_id in question.chunk_ids
+                        if chunk_id in chunk_map
                     ],
                     "question_type": question.question_type,
                     "question": question.question,
@@ -391,9 +517,18 @@ class LessonScopedQuestionGenerationService:
                     "explanation": question.explanation,
                     "difficulty": question.difficulty,
                     "bloom_level": question.bloom_level,
-                    "is_ai_generated": question.metadata.get("generation_mode") != "local_fallback",
-                    "llm_provider": self.llm_client.provider if question.metadata.get("generation_mode") != "local_fallback" else "local_fallback",
-                    "llm_model": self.llm_client.model if question.metadata.get("generation_mode") != "local_fallback" else None,
+                    "is_ai_generated": question.metadata.get("generation_mode")
+                    != "local_fallback",
+                    "llm_provider": (
+                        self.llm_client.provider
+                        if question.metadata.get("generation_mode") != "local_fallback"
+                        else "local_fallback"
+                    ),
+                    "llm_model": (
+                        self.llm_client.model
+                        if question.metadata.get("generation_mode") != "local_fallback"
+                        else None
+                    ),
                     "metadata": {
                         **metadata,
                         **question.metadata,
@@ -409,7 +544,13 @@ class LessonScopedQuestionGenerationService:
 
         inserted_ids = self.question_repository.insert_many(documents)
         generation_mode = self._determine_generation_mode(finalized_questions)
-        covered_chunk_count = len({chunk_id for question in finalized_questions for chunk_id in question.chunk_ids})
+        covered_chunk_count = len(
+            {
+                chunk_id
+                for question in finalized_questions
+                for chunk_id in question.chunk_ids
+            }
+        )
         self._log_generation_outcome(
             lesson_id=lesson_id,
             status="ok",
@@ -443,7 +584,9 @@ class LessonScopedQuestionGenerationService:
                     "chapter_id": str(question["chapter_id"]),
                     "lesson_id": str(question["lesson_id"]),
                     "chunk_ids": [str(item) for item in question.get("chunk_ids", [])],
-                    "resource_ids": [str(item) for item in question.get("resource_ids", [])],
+                    "resource_ids": [
+                        str(item) for item in question.get("resource_ids", [])
+                    ],
                     "question_type": question.get("question_type"),
                     "question": question.get("question"),
                     "correct_answer": question.get("correct_answer"),
@@ -478,10 +621,24 @@ class LessonScopedQuestionGenerationService:
     ) -> tuple[List[ValidatedLessonQuestion], str]:
         chunk_order = [str(chunk["_id"]) for chunk in chunks]
         chunk_map = {str(chunk["_id"]): chunk for chunk in chunks}
-        resource_ids = [str(chunk.get("resource_id")) for chunk in chunks if chunk.get("resource_id")]
-        resources = self.resource_repository.get_many(resource_ids) if resource_ids else []
-        resource_map = {str(resource["_id"]): resource for resource in resources if resource.get("_id")}
-        score_map = context.get("recommendation_scores", {}) if isinstance(context.get("recommendation_scores"), dict) else {}
+        resource_ids = [
+            str(chunk.get("resource_id"))
+            for chunk in chunks
+            if chunk.get("resource_id")
+        ]
+        resources = (
+            self.resource_repository.get_many(resource_ids) if resource_ids else []
+        )
+        resource_map = {
+            str(resource["_id"]): resource
+            for resource in resources
+            if resource.get("_id")
+        }
+        score_map = (
+            context.get("recommendation_scores", {})
+            if isinstance(context.get("recommendation_scores"), dict)
+            else {}
+        )
 
         ordered_questions = self._round_robin_questions_by_chunk_order(
             questions=questions,
@@ -504,7 +661,9 @@ class LessonScopedQuestionGenerationService:
                     chunk_map=chunk_map,
                     resource_map=resource_map,
                     score_map=score_map,
-                    quality_score=self._score_question_quality(candidate, chunk_map=chunk_map, score_map=score_map),
+                    quality_score=self._score_question_quality(
+                        candidate, chunk_map=chunk_map, score_map=score_map
+                    ),
                 )
             )
             if len(finalized) >= target_count:
@@ -530,7 +689,9 @@ class LessonScopedQuestionGenerationService:
                         chunk_map=chunk_map,
                         resource_map=resource_map,
                         score_map=score_map,
-                        quality_score=self._score_question_quality(candidate, chunk_map=chunk_map, score_map=score_map),
+                        quality_score=self._score_question_quality(
+                            candidate, chunk_map=chunk_map, score_map=score_map
+                        ),
                     )
                 )
                 if len(finalized) >= target_count:
@@ -539,13 +700,22 @@ class LessonScopedQuestionGenerationService:
         if not finalized:
             return [], base_message or "Không thể tạo câu hỏi hợp lệ từ lesson này."
 
-        covered_chunk_count = len({chunk_id for item in finalized for chunk_id in item.chunk_ids})
-        used_local_fallback = any(item.metadata.get("generation_mode") == "local_fallback" for item in finalized)
+        covered_chunk_count = len(
+            {chunk_id for item in finalized for chunk_id in item.chunk_ids}
+        )
+        used_local_fallback = any(
+            item.metadata.get("generation_mode") == "local_fallback"
+            for item in finalized
+        )
         average_quality_score = round(
-            sum(float(item.metadata.get("quality_score", 0.0)) for item in finalized) / max(len(finalized), 1),
+            sum(float(item.metadata.get("quality_score", 0.0)) for item in finalized)
+            / max(len(finalized), 1),
             4,
         )
-        message = base_message or f"Đã tạo {len(finalized)} câu hỏi bám trên {covered_chunk_count} chunk."
+        message = (
+            base_message
+            or f"Đã tạo {len(finalized)} câu hỏi bám trên {covered_chunk_count} chunk."
+        )
         if "Điểm chất lượng" not in message:
             message = f"{message} Điểm chất lượng trung bình: {average_quality_score}."
         if used_local_fallback and "cục bộ" not in message.lower():
@@ -560,10 +730,15 @@ class LessonScopedQuestionGenerationService:
         chunk_map: Dict[str, Dict[str, Any]],
         score_map: Dict[str, float],
     ) -> List[ValidatedLessonQuestion]:
-        buckets: Dict[str, List[ValidatedLessonQuestion]] = {chunk_id: [] for chunk_id in preferred_chunk_order}
+        buckets: Dict[str, List[ValidatedLessonQuestion]] = {
+            chunk_id: [] for chunk_id in preferred_chunk_order
+        }
         overflow: List[ValidatedLessonQuestion] = []
         for question in questions:
-            primary_chunk_id = next((chunk_id for chunk_id in question.chunk_ids if chunk_id in buckets), None)
+            primary_chunk_id = next(
+                (chunk_id for chunk_id in question.chunk_ids if chunk_id in buckets),
+                None,
+            )
             if primary_chunk_id is None:
                 overflow.append(question)
                 continue
@@ -571,11 +746,15 @@ class LessonScopedQuestionGenerationService:
 
         for bucket in buckets.values():
             bucket.sort(
-                key=lambda item: self._score_question_quality(item, chunk_map=chunk_map, score_map=score_map),
+                key=lambda item: self._score_question_quality(
+                    item, chunk_map=chunk_map, score_map=score_map
+                ),
                 reverse=True,
             )
         overflow.sort(
-            key=lambda item: self._score_question_quality(item, chunk_map=chunk_map, score_map=score_map),
+            key=lambda item: self._score_question_quality(
+                item, chunk_map=chunk_map, score_map=score_map
+            ),
             reverse=True,
         )
 
@@ -610,7 +789,9 @@ class LessonScopedQuestionGenerationService:
                 page_number
                 for chunk_id in question.chunk_ids
                 if chunk_id in chunk_map
-                for page_number in [self.lesson_chunk_service._resolve_page_number(chunk_map[chunk_id])]
+                for page_number in [
+                    self.lesson_chunk_service._resolve_page_number(chunk_map[chunk_id])
+                ]
                 if isinstance(page_number, int)
             }
         )
@@ -631,12 +812,14 @@ class LessonScopedQuestionGenerationService:
         source_resource_titles = [
             str(resource_map[resource_id].get("title") or "").strip()
             for resource_id in source_resource_ids
-            if resource_id in resource_map and str(resource_map[resource_id].get("title") or "").strip()
+            if resource_id in resource_map
+            and str(resource_map[resource_id].get("title") or "").strip()
         ]
         source_resource_sources = [
             str(resource_map[resource_id].get("source") or "").strip()
             for resource_id in source_resource_ids
-            if resource_id in resource_map and str(resource_map[resource_id].get("source") or "").strip()
+            if resource_id in resource_map
+            and str(resource_map[resource_id].get("source") or "").strip()
         ]
         source_scores = {
             chunk_id: round(float(score_map.get(chunk_id, 0.0)), 4)
@@ -644,7 +827,10 @@ class LessonScopedQuestionGenerationService:
             if chunk_id in score_map
         }
 
-        if "question_focus" not in metadata or not str(metadata.get("question_focus") or "").strip():
+        if (
+            "question_focus" not in metadata
+            or not str(metadata.get("question_focus") or "").strip()
+        ):
             metadata["question_focus"] = self._extract_question_focus(question.question)
         if source_page_numbers:
             metadata.setdefault("source_page_number", source_page_numbers[0])
@@ -664,7 +850,9 @@ class LessonScopedQuestionGenerationService:
             metadata.setdefault("source_score", max(source_scores.values()))
             metadata["source_scores"] = source_scores
         metadata["quality_score"] = round(float(quality_score), 4)
-        metadata.setdefault("reasoning_note", "Question grounded on recommended lesson chunk(s).")
+        metadata.setdefault(
+            "reasoning_note", "Question grounded on recommended lesson chunk(s)."
+        )
 
         return ValidatedLessonQuestion(
             question_type=question.question_type,
@@ -689,9 +877,16 @@ class LessonScopedQuestionGenerationService:
         normalized_question = self._normalize_text(question.question)
         normalized_answer = self._normalize_text(question.correct_answer)
         source_excerpt = str(question.metadata.get("source_excerpt") or "").strip()
-        question_focus = str(question.metadata.get("question_focus") or self._extract_question_focus(question.question)).strip()
+        question_focus = str(
+            question.metadata.get("question_focus")
+            or self._extract_question_focus(question.question)
+        ).strip()
         max_chunk_score = max(
-            (float(score_map.get(chunk_id, 0.0)) for chunk_id in question.chunk_ids if chunk_id in score_map),
+            (
+                float(score_map.get(chunk_id, 0.0))
+                for chunk_id in question.chunk_ids
+                if chunk_id in score_map
+            ),
             default=0.0,
         )
 
@@ -728,7 +923,10 @@ class LessonScopedQuestionGenerationService:
             }
             if len(unique_choices) == 4:
                 score += 0.55
-            if all(3 <= len(str(item).strip()) <= 80 for item in [question.correct_answer, *question.distractors]):
+            if all(
+                3 <= len(str(item).strip()) <= 80
+                for item in [question.correct_answer, *question.distractors]
+            ):
                 score += 0.2
         elif question.question_type == "short_answer":
             if len(question.correct_answer.strip()) >= 18:
@@ -736,7 +934,11 @@ class LessonScopedQuestionGenerationService:
         elif question.question_type == "true_false":
             score += 0.1
 
-        if normalized_question and normalized_answer and normalized_answer in normalized_question:
+        if (
+            normalized_question
+            and normalized_answer
+            and normalized_answer in normalized_question
+        ):
             score -= 0.9
 
         if any(chunk_id in chunk_map for chunk_id in question.chunk_ids):
@@ -745,7 +947,10 @@ class LessonScopedQuestionGenerationService:
                 for chunk_id in question.chunk_ids
                 if chunk_id in chunk_map
             ]
-            if any(isinstance(page_number, int) and page_number > 0 for page_number in page_numbers):
+            if any(
+                isinstance(page_number, int) and page_number > 0
+                for page_number in page_numbers
+            ):
                 score += 0.2
 
         return round(score, 4)
@@ -773,7 +978,10 @@ class LessonScopedQuestionGenerationService:
     def _determine_generation_mode(questions: List[ValidatedLessonQuestion]) -> str:
         if not questions:
             return "empty"
-        generation_modes = {str(question.metadata.get("generation_mode") or "llm") for question in questions}
+        generation_modes = {
+            str(question.metadata.get("generation_mode") or "llm")
+            for question in questions
+        }
         if generation_modes == {"local_fallback"}:
             return "local_fallback"
         if "local_fallback" in generation_modes:
@@ -805,7 +1013,9 @@ class LessonScopedQuestionGenerationService:
             extra_error,
         )
 
-    def _resolve_recommendation(self, lesson_id: str, context: Dict[str, Any]) -> Dict[str, Any] | None:
+    def _resolve_recommendation(
+        self, lesson_id: str, context: Dict[str, Any]
+    ) -> Dict[str, Any] | None:
         recommendation = self.recommendation_repository.get_by_lesson(lesson_id)
         if recommendation:
             return recommendation
@@ -831,7 +1041,9 @@ class LessonScopedQuestionGenerationService:
                 "selected_count": len(chunk_ids),
             },
         }
-        return self.recommendation_repository.upsert_for_lesson(lesson_id, fallback_payload)
+        return self.recommendation_repository.upsert_for_lesson(
+            lesson_id, fallback_payload
+        )
 
     def _load_generation_scope(
         self,
@@ -841,7 +1053,9 @@ class LessonScopedQuestionGenerationService:
         recommendation: Dict[str, Any] | None,
     ) -> tuple[Dict[str, Any], List[str], List[Dict[str, Any]]]:
         if not recommendation:
-            raise ValueError("Lesson has no recommended chunks. Generate recommended chunks first.")
+            raise ValueError(
+                "Lesson has no recommended chunks. Generate recommended chunks first."
+            )
 
         chunk_ids = [str(item) for item in recommendation.get("chunk_ids", [])]
         if not chunk_ids:
@@ -867,17 +1081,31 @@ class LessonScopedQuestionGenerationService:
         difficulty: str,
         bloom_levels: List[str],
     ):
-        resource_ids = [str(chunk.get("resource_id")) for chunk in chunks if chunk.get("resource_id")]
-        resources = self.resource_repository.get_many(resource_ids) if resource_ids else []
-        resource_map = {str(resource["_id"]): resource for resource in resources if resource.get("_id")}
+        resource_ids = [
+            str(chunk.get("resource_id"))
+            for chunk in chunks
+            if chunk.get("resource_id")
+        ]
+        resources = (
+            self.resource_repository.get_many(resource_ids) if resource_ids else []
+        )
+        resource_map = {
+            str(resource["_id"]): resource
+            for resource in resources
+            if resource.get("_id")
+        }
         chunk_payload = [
             {
                 "chunk_id": str(chunk["_id"]),
                 "resource_id": str(chunk["resource_id"]),
                 "chunk_index": int(chunk.get("chunk_index", 0)),
                 "page_number": self.lesson_chunk_service._resolve_page_number(chunk),
-                "resource_title": str(resource_map.get(str(chunk["resource_id"]), {}).get("title") or ""),
-                "resource_source": str(resource_map.get(str(chunk["resource_id"]), {}).get("source") or ""),
+                "resource_title": str(
+                    resource_map.get(str(chunk["resource_id"]), {}).get("title") or ""
+                ),
+                "resource_source": str(
+                    resource_map.get(str(chunk["resource_id"]), {}).get("source") or ""
+                ),
                 "score": float(
                     context.get("recommendation_scores", {}).get(str(chunk["_id"]), 0.0)
                     if isinstance(context.get("recommendation_scores"), dict)
@@ -936,17 +1164,19 @@ class LessonScopedQuestionGenerationService:
                 f"{repair_hint}"
             )
             if attempt == 1:
-                retry_prompt += (
-                    "\nKeep the wording concise, avoid duplicate questions, and ensure every question has chunk_ids and metadata.source_excerpt."
-                )
+                retry_prompt += "\nKeep the wording concise, avoid duplicate questions, and ensure every question has chunk_ids and metadata.source_excerpt."
         return validation
 
-    def _refresh_recommendation(self, *, lesson_id: str, metadata: Dict[str, Any]) -> Dict[str, Any] | None:
+    def _refresh_recommendation(
+        self, *, lesson_id: str, metadata: Dict[str, Any]
+    ) -> Dict[str, Any] | None:
         try:
             refreshed = self.lesson_chunk_service.recommend_chunks(
                 lesson_id=lesson_id,
                 max_chunks=8,
                 selection_strategy="local_semantic_lexical_refresh_v2",
+                enable_diversity_reranking=True,
+                diversity_lambda=None,
                 resource_ids=[],
                 metadata={
                     **metadata,
@@ -1052,12 +1282,16 @@ class LessonScopedQuestionGenerationService:
         message: str,
         status: str = "ok",
     ):
-        return type("FallbackValidationPayload", (), {
-            "status": status,
-            "message": message,
-            "questions": questions,
-            "errors": [],
-        })()
+        return type(
+            "FallbackValidationPayload",
+            (),
+            {
+                "status": status,
+                "message": message,
+                "questions": questions,
+                "errors": [],
+            },
+        )()
 
     def _build_existing_or_insufficient_response(
         self,
@@ -1097,7 +1331,11 @@ class LessonScopedQuestionGenerationService:
         raw_error = (self.llm_client.get_last_error() or "").lower()
         if not raw_error:
             return default_message
-        if "resource_exhausted" in raw_error or "quota exceeded" in raw_error or "429" in raw_error:
+        if (
+            "resource_exhausted" in raw_error
+            or "quota exceeded" in raw_error
+            or "429" in raw_error
+        ):
             return (
                 "Dịch vụ AI đang vượt giới hạn quota tạm thời. "
                 "Hệ thống đã chuyển sang phương án dự phòng cục bộ nếu có thể. "
@@ -1111,7 +1349,9 @@ class LessonScopedQuestionGenerationService:
         return default_message
 
     @staticmethod
-    def _select_excerpt(*, content: str, strict_keywords: List[str], broad_keywords: List[str]) -> str:
+    def _select_excerpt(
+        *, content: str, strict_keywords: List[str], broad_keywords: List[str]
+    ) -> str:
         normalized = re.sub(r"\s+", " ", content or "").strip()
         if not normalized:
             return ""
@@ -1119,10 +1359,12 @@ class LessonScopedQuestionGenerationService:
         scored_segments = []
         for segment in segments:
             if 60 <= len(segment) <= 260:
-                score = LessonScopedQuestionGenerationService._score_excerpt_for_fallback(
-                    excerpt=segment,
-                    strict_keywords=strict_keywords,
-                    broad_keywords=broad_keywords,
+                score = (
+                    LessonScopedQuestionGenerationService._score_excerpt_for_fallback(
+                        excerpt=segment,
+                        strict_keywords=strict_keywords,
+                        broad_keywords=broad_keywords,
+                    )
                 )
                 if score > 0:
                     scored_segments.append((score, segment))
@@ -1194,7 +1436,9 @@ class LessonScopedQuestionGenerationService:
         )
         if not focus_term:
             return None
-        if focus_term in self._AMBIGUOUS_TERMS and not self._has_context_anchor(excerpt=excerpt_lower, focus_term=focus_term):
+        if focus_term in self._AMBIGUOUS_TERMS and not self._has_context_anchor(
+            excerpt=excerpt_lower, focus_term=focus_term
+        ):
             return None
         category = self._classify_term(focus_term)
         if question_type == "multiple_choice":
@@ -1229,14 +1473,20 @@ class LessonScopedQuestionGenerationService:
                 lesson_title=lesson_title,
                 focus_term=focus_term,
             ),
-            "correct_answer": self._summarize_excerpt(excerpt=excerpt, focus_term=focus_term),
+            "correct_answer": self._summarize_excerpt(
+                excerpt=excerpt, focus_term=focus_term
+            ),
             "distractors": [],
         }
 
-    def _build_distractors(self, *, answer: str, keywords: List[str], category: str) -> List[str]:
+    def _build_distractors(
+        self, *, answer: str, keywords: List[str], category: str
+    ) -> List[str]:
         normalized_answer = answer.strip().lower()
         candidates = list(self._CATEGORY_POOLS.get(category, []))
-        candidates.extend(item for item in keywords if item.strip().lower() != normalized_answer)
+        candidates.extend(
+            item for item in keywords if item.strip().lower() != normalized_answer
+        )
         candidates.extend(self._FALLBACK_DISTRACTORS)
         unique: List[str] = []
         seen = {normalized_answer}
@@ -1293,14 +1543,37 @@ class LessonScopedQuestionGenerationService:
     @classmethod
     def _has_context_anchor(cls, *, excerpt: str, focus_term: str) -> bool:
         if focus_term in {"value", "values", "item", "items", "key", "keys"}:
-            anchors = {"dict", "dictionary", "dictionaries", "list", "lists", "tuple", "tuples"}
-            return any(re.search(rf"\b{re.escape(anchor)}\b", excerpt) for anchor in anchors)
+            anchors = {
+                "dict",
+                "dictionary",
+                "dictionaries",
+                "list",
+                "lists",
+                "tuple",
+                "tuples",
+            }
+            return any(
+                re.search(rf"\b{re.escape(anchor)}\b", excerpt) for anchor in anchors
+            )
         if focus_term in {"type", "types"}:
             anchors = {"variable", "variables", "string", "integer", "float", "boolean"}
-            return any(re.search(rf"\b{re.escape(anchor)}\b", excerpt) for anchor in anchors)
+            return any(
+                re.search(rf"\b{re.escape(anchor)}\b", excerpt) for anchor in anchors
+            )
         if focus_term == "data":
-            anchors = {"list", "dict", "dictionary", "variable", "operator", "string", "float", "integer"}
-            return any(re.search(rf"\b{re.escape(anchor)}\b", excerpt) for anchor in anchors)
+            anchors = {
+                "list",
+                "dict",
+                "dictionary",
+                "variable",
+                "operator",
+                "string",
+                "float",
+                "integer",
+            }
+            return any(
+                re.search(rf"\b{re.escape(anchor)}\b", excerpt) for anchor in anchors
+            )
         return True
 
     @classmethod
@@ -1332,7 +1605,19 @@ class LessonScopedQuestionGenerationService:
             score += 0.8
         if ">>>" in excerpt or "def " in excerpt:
             score += 0.4
-        if any(token in normalized for token in ("list", "dict", "dictionary", "variable", "operator", "string", "float", "integer")):
+        if any(
+            token in normalized
+            for token in (
+                "list",
+                "dict",
+                "dictionary",
+                "variable",
+                "operator",
+                "string",
+                "float",
+                "integer",
+            )
+        ):
             score += 0.8
         if len(normalized) < 60:
             score -= 0.5
@@ -1341,18 +1626,45 @@ class LessonScopedQuestionGenerationService:
     @classmethod
     def _classify_term(cls, term: str) -> str:
         normalized = cls._normalize_text(term)
-        if normalized in {"list", "dict", "dictionary", "tuple", "set", "keys", "values", "items"}:
+        if normalized in {
+            "list",
+            "dict",
+            "dictionary",
+            "tuple",
+            "set",
+            "keys",
+            "values",
+            "items",
+        }:
             return "data_structure"
-        if normalized in {"append", "sort", "split", "strip", "findall", "open", "read", "write"}:
+        if normalized in {
+            "append",
+            "sort",
+            "split",
+            "strip",
+            "findall",
+            "open",
+            "read",
+            "write",
+        }:
             return "method"
         if normalized in {"string", "integer", "float", "boolean", "variable", "value"}:
             return "data_type"
-        if normalized in {"operator", "arithmetic", "comparison", "logical", "expression", "assignment"}:
+        if normalized in {
+            "operator",
+            "arithmetic",
+            "comparison",
+            "logical",
+            "expression",
+            "assignment",
+        }:
             return "operator"
         return "general"
 
     @staticmethod
-    def _build_multiple_choice_prompt(*, lesson_title: str, category: str, focus_term: str) -> str:
+    def _build_multiple_choice_prompt(
+        *, lesson_title: str, category: str, focus_term: str
+    ) -> str:
         if category == "data_structure":
             return f"Theo doan trich cua bai '{lesson_title}', cau truc du lieu nao duoc nhac den truc tiep?"
         if category == "method":
@@ -1372,14 +1684,24 @@ class LessonScopedQuestionGenerationService:
     @staticmethod
     def _summarize_excerpt(*, excerpt: str, focus_term: str) -> str:
         cleaned = re.sub(r"\s+", " ", excerpt or "").strip().strip('"')
-        sentences = [item.strip() for item in re.split(r"(?<=[\.\!\?])\s+", cleaned) if item.strip()]
+        sentences = [
+            item.strip()
+            for item in re.split(r"(?<=[\.\!\?])\s+", cleaned)
+            if item.strip()
+        ]
         if focus_term:
             for sentence in sentences:
-                if focus_term in LessonScopedQuestionGenerationService._normalize_text(sentence):
-                    return sentence[:220].rstrip(" ,;:") + ("..." if len(sentence) > 220 else "")
+                if focus_term in LessonScopedQuestionGenerationService._normalize_text(
+                    sentence
+                ):
+                    return sentence[:220].rstrip(" ,;:") + (
+                        "..." if len(sentence) > 220 else ""
+                    )
         if sentences:
             sentence = sentences[0]
-            return sentence[:220].rstrip(" ,;:") + ("..." if len(sentence) > 220 else "")
+            return sentence[:220].rstrip(" ,;:") + (
+                "..." if len(sentence) > 220 else ""
+            )
         return cleaned[:220].rstrip(" ,;:") + ("..." if len(cleaned) > 220 else "")
 
 

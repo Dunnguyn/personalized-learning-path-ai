@@ -44,11 +44,15 @@ class QuestionBankRepository:
 
     def list_by_lesson(self, lesson_id: str | ObjectId) -> List[Dict[str, Any]]:
         return list(
-            self.collection.find({"lesson_id": self._to_object_id(lesson_id)}).sort("created_at", -1)
+            self.collection.find({"lesson_id": self._to_object_id(lesson_id)}).sort(
+                "created_at", -1
+            )
         )
 
     def delete_by_lesson(self, lesson_id: str | ObjectId) -> int:
-        result = self.collection.delete_many({"lesson_id": self._to_object_id(lesson_id)})
+        result = self.collection.delete_many(
+            {"lesson_id": self._to_object_id(lesson_id)}
+        )
         return result.deleted_count
 
     def delete_by_lesson_ids(self, lesson_ids: List[str | ObjectId]) -> int:
@@ -66,9 +70,17 @@ class QuestionBankRepository:
     ) -> int:
         clauses: List[Dict[str, Any]] = []
         if resource_ids:
-            clauses.append({"resource_ids": {"$in": [self._to_object_id(item) for item in resource_ids]}})
+            clauses.append(
+                {
+                    "resource_ids": {
+                        "$in": [self._to_object_id(item) for item in resource_ids]
+                    }
+                }
+            )
         if chunk_ids:
-            clauses.append({"chunk_ids": {"$in": [self._to_object_id(item) for item in chunk_ids]}})
+            clauses.append(
+                {"chunk_ids": {"$in": [self._to_object_id(item) for item in chunk_ids]}}
+            )
         if not clauses:
             return 0
         result = self.collection.delete_many({"$or": clauses})

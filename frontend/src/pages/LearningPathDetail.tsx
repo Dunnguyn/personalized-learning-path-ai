@@ -17,6 +17,7 @@ import DashboardLayout from '../components/layout/DashboardLayout';
 import PDFViewer from '../components/PDFViewer';
 import { useAuth } from '../contexts/AuthContext';
 import { learningPathService } from '../services';
+import { recommendationInteractionService } from '../services/recommendationInteractionService';
 import type {
   BloomLevel,
   LearningPath,
@@ -95,7 +96,11 @@ const LESSON_RESOURCE_STOP_WORDS = new Set([
 ]);
 
 const QUESTION_COUNT_OPTIONS = [4, 6, 8];
-const QUESTION_TYPE_OPTIONS: Array<{ value: LessonQuestionType; label: string; description: string }> = [
+const QUESTION_TYPE_OPTIONS: Array<{
+  value: LessonQuestionType;
+  label: string;
+  description: string;
+}> = [
   { value: 'multiple_choice', label: 'Trắc nghiệm', description: 'Chọn 1 đáp án đúng' },
   { value: 'true_false', label: 'Đúng / Sai', description: 'Kiểm tra nhận định nhanh' },
   { value: 'short_answer', label: 'Trả lời ngắn', description: 'Tự gõ câu trả lời' },
@@ -162,7 +167,8 @@ const CHAPTER_ACCENTS = [
   { solid: '#f59e0b', soft: '#fff5e3', border: '#fde6bb', text: '#d08700' },
 ];
 
-const getChapterAccent = (chapterIndex: number) => CHAPTER_ACCENTS[(chapterIndex - 1) % CHAPTER_ACCENTS.length];
+const getChapterAccent = (chapterIndex: number) =>
+  CHAPTER_ACCENTS[(chapterIndex - 1) % CHAPTER_ACCENTS.length];
 
 const getLessonStatusMeta = (status?: LessonStatus) => {
   switch (status) {
@@ -214,8 +220,8 @@ const LearningMapNodeCard = ({ data }: NodeProps<MapLessonNodeData>) => {
         boxShadow: isSelected
           ? `0 24px 48px ${accent.border}`
           : isInPath
-          ? `0 20px 42px ${accent.soft}`
-          : '0 20px 40px rgba(114,62,83,0.08)',
+            ? `0 20px 42px ${accent.soft}`
+            : '0 20px 40px rgba(114,62,83,0.08)',
         background: isInPath ? 'rgba(255,255,255,1)' : 'rgba(255,255,255,0.95)',
       }}
     >
@@ -240,7 +246,9 @@ const LearningMapNodeCard = ({ data }: NodeProps<MapLessonNodeData>) => {
             >
               Chương {lesson.chapter_index}
             </span>
-            <span className={`rounded-full px-3 py-1 text-[11px] font-semibold ${statusMeta.pillClass}`}>
+            <span
+              className={`rounded-full px-3 py-1 text-[11px] font-semibold ${statusMeta.pillClass}`}
+            >
               {statusMeta.label}
             </span>
           </div>
@@ -251,7 +259,8 @@ const LearningMapNodeCard = ({ data }: NodeProps<MapLessonNodeData>) => {
       </div>
 
       <p className="max-h-[72px] overflow-hidden text-[13px] leading-6 text-[#6a625d]">
-        {lesson.summary?.trim() || 'Bài học này giúp bạn tiến thêm một bước trong lộ trình hiện tại.'}
+        {lesson.summary?.trim() ||
+          'Bài học này giúp bạn tiến thêm một bước trong lộ trình hiện tại.'}
       </p>
 
       <div className="mt-5 flex items-center justify-between gap-3">
@@ -266,9 +275,7 @@ const LearningMapNodeCard = ({ data }: NodeProps<MapLessonNodeData>) => {
           }}
           disabled={!canOpenLesson}
           className={`rounded-full px-4 py-2 text-[12px] font-semibold transition ${
-            canOpenLesson
-              ? 'bg-[#8c3451] text-white'
-              : 'bg-slate-100 text-slate-500'
+            canOpenLesson ? 'bg-[#8c3451] text-white' : 'bg-slate-100 text-slate-500'
           }`}
         >
           {canOpenLesson ? 'Mở bài' : 'Đang khóa'}
@@ -346,7 +353,11 @@ const buildLessonCollection = (chapters: LearningPathChapter[]): LessonNode[] =>
   return lessons;
 };
 
-const updateLessonStatusInPath = (currentPath: LearningPath, lessonId: string, status: LessonStatus): LearningPath => {
+const updateLessonStatusInPath = (
+  currentPath: LearningPath,
+  lessonId: string,
+  status: LessonStatus,
+): LearningPath => {
   const updateChapters = (chapters: LearningPathChapter[]) =>
     chapters.map((chapter) => ({
       ...chapter,
@@ -356,11 +367,13 @@ const updateLessonStatusInPath = (currentPath: LearningPath, lessonId: string, s
               ...lesson,
               status,
             }
-          : lesson
+          : lesson,
       ),
     }));
 
-  const nextChapters = updateChapters(currentPath.curriculum?.length ? currentPath.curriculum : currentPath.chapters);
+  const nextChapters = updateChapters(
+    currentPath.curriculum?.length ? currentPath.curriculum : currentPath.chapters,
+  );
 
   return {
     ...currentPath,
@@ -411,10 +424,12 @@ const getDisplayGoal = (subjectId?: string, goal?: string) => {
 };
 
 const getChapterDescription = (chapter: LearningPathChapter) =>
-  chapter.lessons.find((lesson) => lesson.summary?.trim())?.summary?.trim() || 'Nội dung chương trình';
+  chapter.lessons.find((lesson) => lesson.summary?.trim())?.summary?.trim() ||
+  'Nội dung chương trình';
 
 const cleanChapterTitle = (title: string) => title.replace(/^chương\s*\d+\s*:\s*/i, '').trim();
-const cleanLessonTitle = (title: string) => title.replace(/^bài\s*\d+(?:\.\d+)?\s*:\s*/i, '').trim();
+const cleanLessonTitle = (title: string) =>
+  title.replace(/^bài\s*\d+(?:\.\d+)?\s*:\s*/i, '').trim();
 
 const getResourceSource = (resource: string) => {
   const normalized = resource.toLowerCase();
@@ -502,6 +517,15 @@ const getLessonResourceHint = (resource: LessonResourceCard) => {
   return 'Mở nguồn tài liệu gốc để đọc đầy đủ nội dung tham khảo.';
 };
 
+const toNumericResourceId = (value?: string) => {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
 const extractLessonResourceTerms = (lesson?: LessonNode | null) => {
   const sources = [cleanLessonTitle(lesson?.title || ''), lesson?.summary || ''];
   const tokens = new Set<string>();
@@ -572,7 +596,10 @@ const isShortAnswerMatch = (picked: string, correct: string) => {
     return true;
   }
 
-  if (normalizedCorrect.includes(normalizedPicked) || normalizedPicked.includes(normalizedCorrect)) {
+  if (
+    normalizedCorrect.includes(normalizedPicked) ||
+    normalizedPicked.includes(normalizedCorrect)
+  ) {
     return true;
   }
 
@@ -610,22 +637,33 @@ export default function LearningPathDetail() {
   const [screenMode, setScreenMode] = useState<ScreenMode>('subject');
   const [lessonTab, setLessonTab] = useState<LessonTab>('lesson');
   const [selectedLesson, setSelectedLesson] = useState<LessonNode | null>(null);
-  const [lessonRecommendedChunks, setLessonRecommendedChunks] = useState<LessonRecommendedChunks | null>(null);
+  const [lessonRecommendedChunks, setLessonRecommendedChunks] =
+    useState<LessonRecommendedChunks | null>(null);
   const [lessonResourcesLoading, setLessonResourcesLoading] = useState(false);
   const [questionBank, setQuestionBank] = useState<LessonQuestionBank | null>(null);
   const [questionLoading, setQuestionLoading] = useState(false);
   const [questionGenerating, setQuestionGenerating] = useState(false);
   const [questionError, setQuestionError] = useState<string | null>(null);
   const [questionNotice, setQuestionNotice] = useState<string | null>(null);
+  const [bestLessonConfidence, setBestLessonConfidence] = useState<number | null>(null);
   const [questionConfig, setQuestionConfig] = useState<QuestionGenerationConfig>({
     targetCount: 6,
     difficulty: 'beginner',
     questionTypes: ['multiple_choice', 'true_false'],
     bloomLevels: ['remember', 'understand', 'apply'],
   });
-  const [viewingPDF, setViewingPDF] = useState<{ key: string; title: string; resourceId: string; initialPage?: number } | null>(null);
-  const [currentReadingResource, setCurrentReadingResource] = useState<LessonResourceCard | null>(null);
-  const [pinnedLessonResource, setPinnedLessonResource] = useState<PinnedLessonResource | null>(null);
+  const [viewingPDF, setViewingPDF] = useState<{
+    key: string;
+    title: string;
+    resourceId: string;
+    initialPage?: number;
+  } | null>(null);
+  const [currentReadingResource, setCurrentReadingResource] = useState<LessonResourceCard | null>(
+    null,
+  );
+  const [pinnedLessonResource, setPinnedLessonResource] = useState<PinnedLessonResource | null>(
+    null,
+  );
   const [pendingDeletePath, setPendingDeletePath] = useState(false);
   const [deletingPath, setDeletingPath] = useState(false);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -652,6 +690,7 @@ export default function LearningPathDetail() {
   const studyTrackingStartedAtRef = useRef<number | null>(null);
   const trackedLessonIdRef = useRef<string | null>(null);
   const trackedPathIdRef = useRef<string | null>(null);
+  const lastSubmittedAttemptKeyRef = useRef<string | null>(null);
 
   const statePath = (location.state as PathState | null)?.path;
 
@@ -696,19 +735,25 @@ export default function LearningPathDetail() {
 
   const chapters = useMemo(
     () => (path?.curriculum && path.curriculum.length > 0 ? path.curriculum : path?.chapters || []),
-    [path]
+    [path],
   );
   const lessons = useMemo(() => buildLessonCollection(chapters), [chapters]);
   const curriculumNotice = useMemo(() => getLearningPathNotice(path), [path]);
   const subjectLabel = getSubjectLabel(path?.subject_id, path?.goal);
-  const displayGoal = useMemo(() => getDisplayGoal(path?.subject_id, path?.goal), [path?.goal, path?.subject_id]);
-  const collapsedChapterKey = useMemo(() => collapsedChapterIds.slice().sort().join(','), [collapsedChapterIds]);
+  const displayGoal = useMemo(
+    () => getDisplayGoal(path?.subject_id, path?.goal),
+    [path?.goal, path?.subject_id],
+  );
+  const collapsedChapterKey = useMemo(
+    () => collapsedChapterIds.slice().sort().join(','),
+    [collapsedChapterIds],
+  );
   const mapViewportStorageKey = useMemo(
     () =>
       path?.path_id
         ? `learning-path-map-viewport:${path.path_id}:${mapLayoutMode}:${mapStatusFilter}:${collapsedChapterKey}`
         : null,
-    [collapsedChapterKey, mapLayoutMode, mapStatusFilter, path?.path_id]
+    [collapsedChapterKey, mapLayoutMode, mapStatusFilter, path?.path_id],
   );
   const mapLessons = useMemo(
     () =>
@@ -716,19 +761,22 @@ export default function LearningPathDetail() {
         (lesson) =>
           (mapStatusFilter === 'all' ? true : lesson.status === mapStatusFilter) &&
           (!mapFocusedChapterId || lesson.chapter_id === mapFocusedChapterId) &&
-          !collapsedChapterIds.includes(lesson.chapter_id)
+          !collapsedChapterIds.includes(lesson.chapter_id),
       ),
-    [collapsedChapterIds, lessons, mapFocusedChapterId, mapStatusFilter]
+    [collapsedChapterIds, lessons, mapFocusedChapterId, mapStatusFilter],
   );
   const selectedLessonGlobalIndex = useMemo(
     () => lessons.findIndex((lesson) => lesson.lesson_id === selectedLesson?.lesson_id),
-    [lessons, selectedLesson?.lesson_id]
+    [lessons, selectedLesson?.lesson_id],
   );
   const selectedLessonVisibleIndex = useMemo(
     () => mapLessons.findIndex((lesson) => lesson.lesson_id === selectedLesson?.lesson_id),
-    [mapLessons, selectedLesson?.lesson_id]
+    [mapLessons, selectedLesson?.lesson_id],
   );
-  const lessonResourceHighlightTerms = useMemo(() => extractLessonResourceTerms(selectedLesson), [selectedLesson]);
+  const lessonResourceHighlightTerms = useMemo(
+    () => extractLessonResourceTerms(selectedLesson),
+    [selectedLesson],
+  );
   const pinnedLessonResourceStorageKey = useMemo(() => {
     if (!selectedLesson) {
       return null;
@@ -770,13 +818,19 @@ export default function LearningPathDetail() {
       return;
     }
 
-    if (!selectedLesson || !mapLessons.some((lesson) => lesson.lesson_id === selectedLesson.lesson_id)) {
-              setSelectedLesson(mapLessons[0]);
+    if (
+      !selectedLesson ||
+      !mapLessons.some((lesson) => lesson.lesson_id === selectedLesson.lesson_id)
+    ) {
+      setSelectedLesson(mapLessons[0]);
     }
   }, [mapLessons, selectedLesson]);
 
   useEffect(() => {
-    if (hoveredLesson && !mapLessons.some((lesson) => lesson.lesson_id === hoveredLesson.lesson_id)) {
+    if (
+      hoveredLesson &&
+      !mapLessons.some((lesson) => lesson.lesson_id === hoveredLesson.lesson_id)
+    ) {
       setHoveredLesson(null);
     }
   }, [hoveredLesson, mapLessons]);
@@ -812,12 +866,13 @@ export default function LearningPathDetail() {
   }, [pinnedLessonResourceStorageKey]);
 
   useEffect(() => {
-    if (!selectedLesson) {
+    if (!selectedLesson?.lesson_id) {
       setLessonRecommendedChunks(null);
       setLessonResourcesLoading(false);
       return;
     }
 
+    const lessonId = selectedLesson.lesson_id;
     let active = true;
 
     const loadRecommendedChunks = async () => {
@@ -825,13 +880,13 @@ export default function LearningPathDetail() {
         if (active) {
           setLessonResourcesLoading(true);
         }
-        const existing = await learningPathService.getLessonRecommendedChunks(selectedLesson.lesson_id);
+        const existing = await learningPathService.getLessonRecommendedChunks(lessonId);
         if (active) {
           setLessonRecommendedChunks(existing);
         }
       } catch {
         try {
-          const generated = await learningPathService.recommendLessonChunks(selectedLesson.lesson_id, {
+          const generated = await learningPathService.recommendLessonChunks(lessonId, {
             max_chunks: 6,
             metadata: { source: 'learning_path_detail' },
           });
@@ -855,7 +910,7 @@ export default function LearningPathDetail() {
     return () => {
       active = false;
     };
-  }, [selectedLesson]);
+  }, [selectedLesson?.lesson_id]);
 
   useEffect(() => {
     if (screenMode !== 'map' || mapPresentationMode) {
@@ -916,7 +971,8 @@ export default function LearningPathDetail() {
         resourceId: chunk.resource_id || undefined,
         resourceUrl: chunk.resource_url || undefined,
         pageNumber: chunk.page_number,
-        actionLabel: (chunk.resource_source || '').toLowerCase() === 'pdf' ? 'Đọc tài liệu' : 'Mở tài liệu',
+        actionLabel:
+          (chunk.resource_source || '').toLowerCase() === 'pdf' ? 'Đọc tài liệu' : 'Mở tài liệu',
       }));
     }
 
@@ -956,7 +1012,9 @@ export default function LearningPathDetail() {
       return null;
     }
 
-    const matchedResource = currentLessonResources.find((resource) => resource.key === pinnedLessonResource.key);
+    const matchedResource = currentLessonResources.find(
+      (resource) => resource.key === pinnedLessonResource.key,
+    );
     if (!matchedResource) {
       return pinnedLessonResource;
     }
@@ -973,7 +1031,9 @@ export default function LearningPathDetail() {
       return null;
     }
 
-    const matchedResource = currentLessonResources.find((resource) => resource.key === currentReadingResource.key);
+    const matchedResource = currentLessonResources.find(
+      (resource) => resource.key === currentReadingResource.key,
+    );
     if (!matchedResource) {
       return currentReadingResource;
     }
@@ -1003,7 +1063,7 @@ export default function LearningPathDetail() {
         // Ignore storage write issues so the lesson experience still works in-memory.
       }
     },
-    [pinnedLessonResourceStorageKey]
+    [pinnedLessonResourceStorageKey],
   );
 
   const buildLessonResourceOpenUrl = useCallback((resource: LessonResourceCard) => {
@@ -1036,39 +1096,62 @@ export default function LearningPathDetail() {
         pinnedAt: new Date().toISOString(),
       });
     },
-    [persistPinnedLessonResource, resolvedPinnedLessonResource?.key]
+    [persistPinnedLessonResource, resolvedPinnedLessonResource?.key],
   );
 
-  const handleOpenLessonResource = useCallback(
-    (resource: LessonResourceCard) => {
-      const resourceSnapshot = {
-        ...resource,
-      };
+  const handleOpenLessonResource = useCallback((resource: LessonResourceCard) => {
+    const resourceSnapshot = {
+      ...resource,
+    };
 
-      setCurrentReadingResource(resourceSnapshot);
+    setCurrentReadingResource(resourceSnapshot);
 
-      if (!resource.resourceId) {
-        if (resource.resourceUrl) {
-          window.open(resource.resourceUrl, '_blank', 'noopener,noreferrer');
-        }
-        return;
-      }
-
-      if (resource.source === 'PDF') {
-        setViewingPDF({
-          key: resource.key,
-          title: resource.title,
-          resourceId: resource.resourceId,
-          initialPage: resource.pageNumber,
-        });
-        return;
-      }
-
+    if (!resource.resourceId) {
       if (resource.resourceUrl) {
         window.open(resource.resourceUrl, '_blank', 'noopener,noreferrer');
       }
+      return;
+    }
+
+    if (resource.source === 'PDF') {
+      setViewingPDF({
+        key: resource.key,
+        title: resource.title,
+        resourceId: resource.resourceId,
+        initialPage: resource.pageNumber,
+      });
+      return;
+    }
+
+    if (resource.resourceUrl) {
+      window.open(resource.resourceUrl, '_blank', 'noopener,noreferrer');
+    }
+  }, []);
+
+  const handleMarkLessonResourceCompleted = useCallback(
+    async (resource: LessonResourceCard, context: string = 'resource_card') => {
+      try {
+        await recommendationInteractionService.trackResourceCompleted({
+          resource_id: toNumericResourceId(resource.resourceId),
+          lesson_id: selectedLesson?.lesson_id,
+          goal: path?.goal,
+          level: path?.level,
+          metadata: {
+            source_screen: 'learning_path_detail',
+            completion_context: context,
+            path_id: path?.path_id,
+            lesson_id: selectedLesson?.lesson_id,
+            resource_key: resource.key,
+            resource_source: resource.source,
+            resource_identifier: resource.resourceId || resource.resourceUrl,
+            page_number: resource.pageNumber,
+          },
+        });
+      } catch (completionError) {
+        console.error('Failed to track lesson resource completion:', completionError);
+      }
     },
-    []
+    [path?.goal, path?.level, path?.path_id, selectedLesson?.lesson_id],
   );
 
   const handleOpenAllLessonResources = useCallback(() => {
@@ -1089,7 +1172,7 @@ export default function LearningPathDetail() {
               ...previous,
               pageNumber: page,
             }
-          : previous
+          : previous,
       );
 
       if (!viewingPDF) {
@@ -1103,7 +1186,7 @@ export default function LearningPathDetail() {
         });
       }
     },
-    [persistPinnedLessonResource, resolvedPinnedLessonResource, viewingPDF]
+    [persistPinnedLessonResource, resolvedPinnedLessonResource, viewingPDF],
   );
 
   const handleTogglePinnedViewingPDF = useCallback(
@@ -1114,7 +1197,9 @@ export default function LearningPathDetail() {
 
       const resourceToPin =
         currentLessonResources.find((resource) => resource.key === viewingPDF.key) ||
-        (resolvedCurrentReadingResource?.key === viewingPDF.key ? resolvedCurrentReadingResource : null) ||
+        (resolvedCurrentReadingResource?.key === viewingPDF.key
+          ? resolvedCurrentReadingResource
+          : null) ||
         null;
 
       if (!resourceToPin) {
@@ -1127,7 +1212,12 @@ export default function LearningPathDetail() {
         pageNumber: page,
       });
     },
-    [currentLessonResources, handleTogglePinnedLessonResource, resolvedCurrentReadingResource, viewingPDF]
+    [
+      currentLessonResources,
+      handleTogglePinnedLessonResource,
+      resolvedCurrentReadingResource,
+      viewingPDF,
+    ],
   );
 
   const renderHighlightedPreview = useCallback(
@@ -1163,7 +1253,7 @@ export default function LearningPathDetail() {
         );
       });
     },
-    [lessonResourceHighlightTerms]
+    [lessonResourceHighlightTerms],
   );
 
   const quizQuestions = useMemo(() => {
@@ -1177,23 +1267,124 @@ export default function LearningPathDetail() {
     }
 
     return currentQuestion.chunk_ids
-      .map((chunkId) => lessonRecommendedChunks.recommended_chunks.find((item) => item.chunk_id === chunkId))
+      .map((chunkId) =>
+        lessonRecommendedChunks.recommended_chunks.find((item) => item.chunk_id === chunkId),
+      )
       .filter((item): item is NonNullable<typeof item> => Boolean(item));
   }, [currentQuestion, lessonRecommendedChunks]);
 
   const quizStats = useMemo(() => {
     const total = quizQuestions.length;
     const correct = quizQuestions.reduce((count, question) => {
-      return isQuestionAnsweredCorrectly(question, selectedAnswers[question.question_id]) ? count + 1 : count;
+      return isQuestionAnsweredCorrectly(question, selectedAnswers[question.question_id])
+        ? count + 1
+        : count;
     }, 0);
     const wrong = submitted ? Math.max(total - correct, 0) : 0;
     const confidence = total > 0 && submitted ? Math.round((correct / total) * 100) : 0;
     return { total, correct, wrong, confidence };
   }, [quizQuestions, selectedAnswers, submitted]);
   const answeredQuestionCount = useMemo(
-    () => quizQuestions.filter((question) => Boolean(selectedAnswers[question.question_id]?.trim())).length,
-    [quizQuestions, selectedAnswers]
+    () =>
+      quizQuestions.filter((question) => Boolean(selectedAnswers[question.question_id]?.trim()))
+        .length,
+    [quizQuestions, selectedAnswers],
   );
+
+  const loadLessonAttemptStatistics = useCallback(async (lessonId: string) => {
+    try {
+      const stats = await learningPathService.getLessonAttemptStatistics(lessonId);
+      if (stats.best_confidence == null) {
+        setBestLessonConfidence(null);
+        return;
+      }
+      setBestLessonConfidence(Math.round(stats.best_confidence * 100));
+    } catch {
+      setBestLessonConfidence(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedLesson?.lesson_id) {
+      setBestLessonConfidence(null);
+      return;
+    }
+    void loadLessonAttemptStatistics(selectedLesson.lesson_id);
+  }, [loadLessonAttemptStatistics, selectedLesson?.lesson_id]);
+
+  useEffect(() => {
+    if (!submitted) {
+      lastSubmittedAttemptKeyRef.current = null;
+    }
+  }, [submitted]);
+
+  // Send confidence score to backend when quiz is submitted
+  useEffect(() => {
+    if (!submitted || !selectedLesson?.lesson_id || !path?.path_id) {
+      return;
+    }
+
+    const lessonId = selectedLesson.lesson_id;
+    const confidenceDecimal = quizStats.confidence / 100;
+    const attemptKey = `${path.path_id}:${lessonId}:${quizStats.confidence}`;
+    if (lastSubmittedAttemptKeyRef.current === attemptKey) {
+      return;
+    }
+    lastSubmittedAttemptKeyRef.current = attemptKey;
+
+    const handleSubmitQuiz = async () => {
+      // Build questions_answered array with details
+      const questionsAnswered = quizQuestions.map((question) => ({
+        question_id: question.question_id,
+        question: question.question,
+        question_type: question.question_type,
+        user_answer: selectedAnswers[question.question_id] || '',
+        correct_answer: question.correct_answer,
+        is_correct:
+          selectedAnswers[question.question_id]?.toLowerCase() ===
+          question.correct_answer?.toLowerCase(),
+        difficulty: question.difficulty,
+        bloom_level: question.bloom_level,
+      }));
+
+      try {
+        const response = await learningPathService.updateLessonProgress({
+          path_id: path.path_id,
+          lesson_id: lessonId,
+          status: 'in_progress',
+          confidence: confidenceDecimal,
+          questions_answered: questionsAnswered,
+        });
+
+        // Update lesson status in path if auto-completed
+        if (response.auto_completed && response.status === 'complete') {
+          setPath((previousPath) => {
+            if (!previousPath) {
+              return previousPath;
+            }
+            return updateLessonStatusInPath(previousPath, lessonId, response.status);
+          });
+        }
+
+        void loadLessonAttemptStatistics(lessonId);
+      } catch (err) {
+        console.error('Failed to submit quiz confidence:', err);
+        if (lastSubmittedAttemptKeyRef.current === attemptKey) {
+          lastSubmittedAttemptKeyRef.current = null;
+        }
+      }
+    };
+
+    handleSubmitQuiz();
+  }, [
+    submitted,
+    selectedLesson?.lesson_id,
+    quizStats.confidence,
+    path?.path_id,
+    quizQuestions,
+    selectedAnswers,
+    loadLessonAttemptStatistics,
+  ]);
 
   const openLessonScreen = useCallback((lesson: LessonNode) => {
     setSelectedLesson(lesson);
@@ -1201,21 +1392,24 @@ export default function LearningPathDetail() {
     setScreenMode('lesson');
   }, []);
 
-  const handleMapLessonSelect = useCallback((lesson: LessonNode) => {
-    if (selectedLesson?.lesson_id === lesson.lesson_id && lesson.status !== 'not_started') {
-      openLessonScreen(lesson);
-      return;
-    }
-    setSelectedLesson(lesson);
-  }, [openLessonScreen, selectedLesson?.lesson_id]);
+  const handleMapLessonSelect = useCallback(
+    (lesson: LessonNode) => {
+      if (selectedLesson?.lesson_id === lesson.lesson_id && lesson.status !== 'not_started') {
+        openLessonScreen(lesson);
+        return;
+      }
+      setSelectedLesson(lesson);
+    },
+    [openLessonScreen, selectedLesson?.lesson_id],
+  );
 
-  const mapNodes = useMemo<Node[]>(
-    () => {
-      const visibleChapters = chapters
-        .map((chapter, chapterIndex) => ({ chapter, chapterIndex }))
-        .filter(({ chapter }) => !collapsedChapterIds.includes(chapter.chapter_id));
+  const mapNodes = useMemo<Node[]>(() => {
+    const visibleChapters = chapters
+      .map((chapter, chapterIndex) => ({ chapter, chapterIndex }))
+      .filter(({ chapter }) => !collapsedChapterIds.includes(chapter.chapter_id));
 
-      const chapterNodes: Node<MapChapterNodeData>[] = visibleChapters.map(({ chapter, chapterIndex }, visibleIndex) => ({
+    const chapterNodes: Node<MapChapterNodeData>[] = visibleChapters.map(
+      ({ chapter, chapterIndex }, visibleIndex) => ({
         id: `chapter-${chapter.chapter_id || chapterIndex + 1}`,
         type: 'chapterNode',
         position: {
@@ -1237,67 +1431,78 @@ export default function LearningPathDetail() {
           background: 'transparent',
           border: 'none',
         },
-      }));
+      }),
+    );
 
-      const lessonNodes: Node<MapLessonNodeData>[] = mapLessons.map((lesson, index) => {
-        const accent = getChapterAccent(lesson.chapter_index);
-        const chapterOffset = (lesson.chapter_index - 1) * CHAPTER_SPACING_X;
-        const rowOffset = (lesson.lesson_index - 1) * LESSON_SPACING_Y;
-        const chapterStagger = (lesson.chapter_index % 2) * 54;
-        const lessonStagger = ((lesson.lesson_index + index) % 2) * 34;
-        const journeyColumn = index % JOURNEY_COLUMNS;
-        const journeyRow = Math.floor(index / JOURNEY_COLUMNS);
-        const isZigzagRow = journeyRow % 2 === 1;
+    const lessonNodes: Node<MapLessonNodeData>[] = mapLessons.map((lesson, index) => {
+      const accent = getChapterAccent(lesson.chapter_index);
+      const chapterOffset = (lesson.chapter_index - 1) * CHAPTER_SPACING_X;
+      const rowOffset = (lesson.lesson_index - 1) * LESSON_SPACING_Y;
+      const chapterStagger = (lesson.chapter_index % 2) * 54;
+      const lessonStagger = ((lesson.lesson_index + index) % 2) * 34;
+      const journeyColumn = index % JOURNEY_COLUMNS;
+      const journeyRow = Math.floor(index / JOURNEY_COLUMNS);
+      const isZigzagRow = journeyRow % 2 === 1;
 
-        return {
-          id: lesson.lesson_id,
-          type: 'lessonNode',
-          position: {
-            x:
-              mapLayoutMode === 'chapter'
-                ? 80 + chapterOffset + lessonStagger
-                : 60 +
-                  (isZigzagRow ? JOURNEY_COLUMNS - 1 - journeyColumn : journeyColumn) * JOURNEY_SPACING_X,
-            y:
-              mapLayoutMode === 'chapter'
-                ? 92 + rowOffset + chapterStagger
-                : 100 + journeyRow * JOURNEY_SPACING_Y + (journeyColumn % 2) * 28,
-          },
-          data: {
-            lesson,
-            isSelected: selectedLesson?.lesson_id === lesson.lesson_id,
-            isInPath:
-              selectedLessonVisibleIndex >= 0 &&
-              mapLessons.findIndex((item) => item.lesson_id === lesson.lesson_id) <= selectedLessonVisibleIndex,
-            onSelect: handleMapLessonSelect,
-            onOpenLesson: openLessonScreen,
-            onHoverLesson: setHoveredLesson,
-            accent,
-          },
-          draggable: false,
-          selectable: false,
-          sourcePosition: Position.Bottom,
-          targetPosition: Position.Top,
-          style: {
-            width: MAP_NODE_WIDTH,
-            height: MAP_NODE_HEIGHT,
-            background: 'transparent',
-            border: 'none',
-          },
-        };
-      });
+      return {
+        id: lesson.lesson_id,
+        type: 'lessonNode',
+        position: {
+          x:
+            mapLayoutMode === 'chapter'
+              ? 80 + chapterOffset + lessonStagger
+              : 60 +
+                (isZigzagRow ? JOURNEY_COLUMNS - 1 - journeyColumn : journeyColumn) *
+                  JOURNEY_SPACING_X,
+          y:
+            mapLayoutMode === 'chapter'
+              ? 92 + rowOffset + chapterStagger
+              : 100 + journeyRow * JOURNEY_SPACING_Y + (journeyColumn % 2) * 28,
+        },
+        data: {
+          lesson,
+          isSelected: selectedLesson?.lesson_id === lesson.lesson_id,
+          isInPath:
+            selectedLessonVisibleIndex >= 0 &&
+            mapLessons.findIndex((item) => item.lesson_id === lesson.lesson_id) <=
+              selectedLessonVisibleIndex,
+          onSelect: handleMapLessonSelect,
+          onOpenLesson: openLessonScreen,
+          onHoverLesson: setHoveredLesson,
+          accent,
+        },
+        draggable: false,
+        selectable: false,
+        sourcePosition: Position.Bottom,
+        targetPosition: Position.Top,
+        style: {
+          width: MAP_NODE_WIDTH,
+          height: MAP_NODE_HEIGHT,
+          background: 'transparent',
+          border: 'none',
+        },
+      };
+    });
 
-      return [...chapterNodes, ...lessonNodes];
-    },
-    [chapters, collapsedChapterIds, handleMapLessonSelect, mapLayoutMode, mapLessons, openLessonScreen, selectedLesson?.lesson_id, selectedLessonVisibleIndex]
-  );
+    return [...chapterNodes, ...lessonNodes];
+  }, [
+    chapters,
+    collapsedChapterIds,
+    handleMapLessonSelect,
+    mapLayoutMode,
+    mapLessons,
+    openLessonScreen,
+    selectedLesson?.lesson_id,
+    selectedLessonVisibleIndex,
+  ]);
 
   const mapEdges = useMemo<Edge[]>(
     () =>
       mapLessons.slice(1).map((lesson, index) => {
         const previousLesson = mapLessons[index];
         const chapterChanged = previousLesson.chapter_id !== lesson.chapter_id;
-        const isHighlighted = selectedLessonVisibleIndex >= index + 1 && selectedLessonVisibleIndex >= 0;
+        const isHighlighted =
+          selectedLessonVisibleIndex >= index + 1 && selectedLessonVisibleIndex >= 0;
         const accent = getChapterAccent(previousLesson.chapter_index);
 
         return {
@@ -1308,10 +1513,10 @@ export default function LearningPathDetail() {
           label: chapterChanged
             ? 'Sang chương mới'
             : isHighlighted
-            ? 'Đường học hiện tại'
-            : previousLesson.status === 'complete' && lesson.status === 'not_started'
-            ? 'Mở khóa tiếp theo'
-            : 'Bước tiếp theo',
+              ? 'Đường học hiện tại'
+              : previousLesson.status === 'complete' && lesson.status === 'not_started'
+                ? 'Mở khóa tiếp theo'
+                : 'Bước tiếp theo',
           labelStyle: {
             fill: isHighlighted ? accent.solid : '#7a726c',
             fontWeight: 600,
@@ -1341,7 +1546,7 @@ export default function LearningPathDetail() {
           },
         };
       }),
-    [mapLessons, selectedLessonVisibleIndex]
+    [mapLessons, selectedLessonVisibleIndex],
   );
 
   const searchedLessons = useMemo(() => {
@@ -1358,7 +1563,12 @@ export default function LearningPathDetail() {
   }, [lessons, mapSearchTerm]);
 
   useEffect(() => {
-    if (screenMode !== 'map' || !mapInstance || !mapViewportStorageKey || hasRestoredViewportRef.current) {
+    if (
+      screenMode !== 'map' ||
+      !mapInstance ||
+      !mapViewportStorageKey ||
+      hasRestoredViewportRef.current
+    ) {
       return;
     }
 
@@ -1453,7 +1663,7 @@ export default function LearningPathDetail() {
 
     setMapStatusFilter('all');
     setMapFocusedChapterId((previous) =>
-      previous === selectedLesson.chapter_id ? null : selectedLesson.chapter_id
+      previous === selectedLesson.chapter_id ? null : selectedLesson.chapter_id,
     );
   };
 
@@ -1524,7 +1734,8 @@ export default function LearningPathDetail() {
     }
   };
 
-  const previousLesson = selectedLessonGlobalIndex > 0 ? lessons[selectedLessonGlobalIndex - 1] : null;
+  const previousLesson =
+    selectedLessonGlobalIndex > 0 ? lessons[selectedLessonGlobalIndex - 1] : null;
   const nextLesson =
     selectedLessonGlobalIndex >= 0 && selectedLessonGlobalIndex < lessons.length - 1
       ? lessons[selectedLessonGlobalIndex + 1]
@@ -1534,7 +1745,9 @@ export default function LearningPathDetail() {
     ? chapters.find((chapter) => chapter.chapter_id === selectedLesson.chapter_id)
     : null;
   const currentChapterLessons = currentChapterProgress?.lessons || [];
-  const currentChapterCompleted = currentChapterLessons.filter((lesson) => lesson.status === 'complete').length;
+  const currentChapterCompleted = currentChapterLessons.filter(
+    (lesson) => lesson.status === 'complete',
+  ).length;
 
   useEffect(() => {
     if (screenMode !== 'map') {
@@ -1617,48 +1830,45 @@ export default function LearningPathDetail() {
     handleFitCurrentChapter,
   ]);
 
-  const flushTrackedStudyTime = useCallback(
-    async (keepTracking = false) => {
-      const trackedPathId = trackedPathIdRef.current;
-      const trackedLessonId = trackedLessonIdRef.current;
-      const startedAt = studyTrackingStartedAtRef.current;
+  const flushTrackedStudyTime = useCallback(async (keepTracking = false) => {
+    const trackedPathId = trackedPathIdRef.current;
+    const trackedLessonId = trackedLessonIdRef.current;
+    const startedAt = studyTrackingStartedAtRef.current;
 
-      if (!trackedPathId || !trackedLessonId || !startedAt) {
-        return;
-      }
+    if (!trackedPathId || !trackedLessonId || !startedAt) {
+      return;
+    }
 
-      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
-      if (elapsedSeconds < STUDY_TIME_MIN_SECONDS) {
-        if (keepTracking) {
-          studyTrackingStartedAtRef.current = Date.now();
-        } else {
-          studyTrackingStartedAtRef.current = null;
-          trackedLessonIdRef.current = null;
-          trackedPathIdRef.current = null;
-        }
-        return;
+    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+    if (elapsedSeconds < STUDY_TIME_MIN_SECONDS) {
+      if (keepTracking) {
+        studyTrackingStartedAtRef.current = Date.now();
+      } else {
+        studyTrackingStartedAtRef.current = null;
+        trackedLessonIdRef.current = null;
+        trackedPathIdRef.current = null;
       }
+      return;
+    }
 
-      try {
-        await learningPathService.recordLessonStudyTime({
-          path_id: trackedPathId,
-          lesson_id: trackedLessonId,
-          seconds_spent: elapsedSeconds,
-        });
-      } catch (trackingError) {
-        console.error('Failed to record lesson study time:', trackingError);
-      } finally {
-        if (keepTracking) {
-          studyTrackingStartedAtRef.current = Date.now();
-        } else {
-          studyTrackingStartedAtRef.current = null;
-          trackedLessonIdRef.current = null;
-          trackedPathIdRef.current = null;
-        }
+    try {
+      await learningPathService.recordLessonStudyTime({
+        path_id: trackedPathId,
+        lesson_id: trackedLessonId,
+        seconds_spent: elapsedSeconds,
+      });
+    } catch (trackingError) {
+      console.error('Failed to record lesson study time:', trackingError);
+    } finally {
+      if (keepTracking) {
+        studyTrackingStartedAtRef.current = Date.now();
+      } else {
+        studyTrackingStartedAtRef.current = null;
+        trackedLessonIdRef.current = null;
+        trackedPathIdRef.current = null;
       }
-    },
-    []
-  );
+    }
+  }, []);
 
   useEffect(() => {
     const activePathId = path?.path_id || null;
@@ -1669,7 +1879,10 @@ export default function LearningPathDetail() {
     if (
       trackedLessonId &&
       trackedPathId &&
-      (!activeLessonId || !activePathId || trackedLessonId !== activeLessonId || trackedPathId !== activePathId)
+      (!activeLessonId ||
+        !activePathId ||
+        trackedLessonId !== activeLessonId ||
+        trackedPathId !== activePathId)
     ) {
       void flushTrackedStudyTime(false);
     }
@@ -1677,7 +1890,9 @@ export default function LearningPathDetail() {
     if (
       activePathId &&
       activeLessonId &&
-      (trackedLessonId !== activeLessonId || trackedPathId !== activePathId || !studyTrackingStartedAtRef.current)
+      (trackedLessonId !== activeLessonId ||
+        trackedPathId !== activePathId ||
+        !studyTrackingStartedAtRef.current)
     ) {
       trackedPathIdRef.current = activePathId;
       trackedLessonIdRef.current = activeLessonId;
@@ -1692,13 +1907,21 @@ export default function LearningPathDetail() {
         return;
       }
 
-      if (document.visibilityState === 'visible' && trackedLessonIdRef.current && trackedPathIdRef.current) {
+      if (
+        document.visibilityState === 'visible' &&
+        trackedLessonIdRef.current &&
+        trackedPathIdRef.current
+      ) {
         studyTrackingStartedAtRef.current = Date.now();
       }
     };
 
     const intervalId = window.setInterval(() => {
-      if (trackedLessonIdRef.current && trackedPathIdRef.current && studyTrackingStartedAtRef.current) {
+      if (
+        trackedLessonIdRef.current &&
+        trackedPathIdRef.current &&
+        studyTrackingStartedAtRef.current
+      ) {
         void flushTrackedStudyTime(true);
       }
     }, STUDY_TIME_FLUSH_INTERVAL_MS);
@@ -1784,7 +2007,9 @@ export default function LearningPathDetail() {
       });
       if (result.reused_existing && result.existing_count > 0) {
         await loadLessonQuestions(selectedLesson.lesson_id);
-        setQuestionNotice(result.message || 'Đang dùng lại bộ câu hỏi đã tạo trước đó cho bài học này.');
+        setQuestionNotice(
+          result.message || 'Đang dùng lại bộ câu hỏi đã tạo trước đó cho bài học này.',
+        );
         return;
       }
       if (result.insufficient_data || result.generated_count === 0) {
@@ -1882,7 +2107,9 @@ export default function LearningPathDetail() {
         <div>
           <p className="page-kicker">Lộ trình học tập</p>
           <h1 className="page-title mb-0 text-[#141217]">
-            {screenMode === 'subject' ? 'Lộ trình học tập chi tiết' : `Lộ trình học tập - ${subjectLabel}`}
+            {screenMode === 'subject'
+              ? 'Lộ trình học tập chi tiết'
+              : `Lộ trình học tập - ${subjectLabel}`}
           </h1>
         </div>
         {path?.path_id && (
@@ -1898,7 +2125,8 @@ export default function LearningPathDetail() {
       {screenMode === 'lesson' && selectedLesson && (
         <>
           <h2 className="mt-3 text-[28px] font-semibold tracking-[-0.04em] text-[#141217] md:text-[34px]">
-            Bài {selectedLesson.chapter_index}.{selectedLesson.lesson_index}: {cleanLessonTitle(selectedLesson.title)}
+            Bài {selectedLesson.chapter_index}.{selectedLesson.lesson_index}:{' '}
+            {cleanLessonTitle(selectedLesson.title)}
           </h2>
           <p className="mt-2 max-w-3xl text-[15px] leading-7 text-black/55">
             {selectedLesson.summary?.trim() || 'Nội dung bài học'}
@@ -1922,22 +2150,36 @@ export default function LearningPathDetail() {
             </p>
           </div>
           <span className="inline-flex shrink-0 items-center rounded-full bg-[#8c3451] px-4 py-2 text-[12px] font-medium text-white">
-            {chapters.some((chapter) => getChapterStatusLabel(chapter) === 'Đang học') ? 'Đang học' : 'Chưa học'}
+            {chapters.some((chapter) => getChapterStatusLabel(chapter) === 'Đang học')
+              ? 'Đang học'
+              : 'Chưa học'}
           </span>
         </div>
 
         <div className="mt-6 grid gap-4 md:grid-cols-3">
           <div className="metric-card p-4">
-            <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-black/35">Trình độ</p>
-            <p className="mt-2 text-[18px] font-semibold capitalize text-[#141217]">{path?.level || 'beginner'}</p>
+            <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-black/35">
+              Trình độ
+            </p>
+            <p className="mt-2 text-[18px] font-semibold capitalize text-[#141217]">
+              {path?.level || 'beginner'}
+            </p>
           </div>
           <div className="metric-card p-4">
-            <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-black/35">Ngày tạo</p>
-            <p className="mt-2 text-[18px] font-semibold text-[#141217]">{formatDateTime(path?.generated_at)}</p>
+            <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-black/35">
+              Ngày tạo
+            </p>
+            <p className="mt-2 text-[18px] font-semibold text-[#141217]">
+              {formatDateTime(path?.generated_at)}
+            </p>
           </div>
           <div className="metric-card p-4">
-            <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-black/35">Số chương</p>
-            <p className="mt-2 text-[18px] font-semibold text-[#141217]">{chapters.length} chương</p>
+            <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-black/35">
+              Số chương
+            </p>
+            <p className="mt-2 text-[18px] font-semibold text-[#141217]">
+              {chapters.length} chương
+            </p>
           </div>
         </div>
       </div>
@@ -1966,7 +2208,9 @@ export default function LearningPathDetail() {
             <button
               key={chapter.chapter_id || chapter.title}
               onClick={() => {
-                const firstLesson = lessons.find((lesson) => lesson.chapter_id === chapter.chapter_id);
+                const firstLesson = lessons.find(
+                  (lesson) => lesson.chapter_id === chapter.chapter_id,
+                );
                 if (firstLesson) {
                   openLessonScreen(firstLesson);
                 }
@@ -1978,9 +2222,13 @@ export default function LearningPathDetail() {
                   <h3 className="text-[22px] font-semibold tracking-[-0.03em] text-[#141217]">
                     Chương {chapterIndex + 1}: {cleanChapterTitle(chapter.title)}
                   </h3>
-                  <p className="mt-3 max-w-3xl text-[14px] leading-7 text-black/55">{getChapterDescription(chapter)}</p>
+                  <p className="mt-3 max-w-3xl text-[14px] leading-7 text-black/55">
+                    {getChapterDescription(chapter)}
+                  </p>
                 </div>
-                <span className={`inline-flex shrink-0 items-center rounded-full px-4 py-2 text-[12px] font-medium ${statusLabel === 'Đang học' ? 'bg-[#8c3451] text-white' : 'bg-[#f8e3ea] text-black/65'}`}>
+                <span
+                  className={`inline-flex shrink-0 items-center rounded-full px-4 py-2 text-[12px] font-medium ${statusLabel === 'Đang học' ? 'bg-[#8c3451] text-white' : 'bg-[#f8e3ea] text-black/65'}`}
+                >
                   {statusLabel === 'Chưa học' ? 'Chưa học' : statusLabel}
                 </span>
               </div>
@@ -2014,14 +2262,17 @@ export default function LearningPathDetail() {
         <div className="border-b border-black/5 px-6 py-6">
           {selectedLesson && (
             <p className="mb-4 text-[12px] font-medium uppercase tracking-[0.16em] text-[#8c3451]/55">
-              {subjectLabel} / Chương {selectedLesson.chapter_index} / Bài {selectedLesson.lesson_index}
+              {subjectLabel} / Chương {selectedLesson.chapter_index} / Bài{' '}
+              {selectedLesson.lesson_index}
             </p>
           )}
           <div className="mb-4 flex items-center justify-between gap-4">
             <span className="rounded-full bg-white/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/75">
               {selectedLesson ? `Chương ${selectedLesson.chapter_index}` : 'Bài học'}
             </span>
-            <span className={`rounded-full px-3 py-1 text-[11px] font-semibold ${selectedStatusMeta.pillClass}`}>
+            <span
+              className={`rounded-full px-3 py-1 text-[11px] font-semibold ${selectedStatusMeta.pillClass}`}
+            >
               {selectedStatusMeta.label}
             </span>
           </div>
@@ -2040,11 +2291,15 @@ export default function LearningPathDetail() {
         <div className="grid grid-cols-2 gap-3 border-b border-black/5 px-6 py-5">
           <div className="metric-card p-4">
             <p className="text-[12px] uppercase tracking-[0.14em] text-[#8c3451]/55">Tiến độ</p>
-            <p className="mt-2 text-[18px] font-semibold text-[#141217]">{selectedStatusMeta.label}</p>
+            <p className="mt-2 text-[18px] font-semibold text-[#141217]">
+              {selectedStatusMeta.label}
+            </p>
           </div>
           <div className="metric-card p-4">
             <p className="text-[12px] uppercase tracking-[0.14em] text-[#8c3451]/55">Cấp độ</p>
-            <p className="mt-2 text-[18px] font-semibold capitalize text-[#141217]">{path?.level || 'beginner'}</p>
+            <p className="mt-2 text-[18px] font-semibold capitalize text-[#141217]">
+              {path?.level || 'beginner'}
+            </p>
           </div>
         </div>
 
@@ -2125,7 +2380,9 @@ export default function LearningPathDetail() {
               </button>
             </div>
             <button
-              onClick={() => selectedLesson && canOpenSelectedLesson && openLessonScreen(selectedLesson)}
+              onClick={() =>
+                selectedLesson && canOpenSelectedLesson && openLessonScreen(selectedLesson)
+              }
               disabled={!selectedLesson || !canOpenSelectedLesson}
               className="theme-button w-full justify-center disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -2137,7 +2394,11 @@ export default function LearningPathDetail() {
                 selectedLesson.status !== 'in_progress' &&
                 handleLessonStatusUpdate(selectedLesson.lesson_id, 'in_progress')
               }
-              disabled={!selectedLesson || selectedLesson.status === 'in_progress' || updatingLessonId === selectedLesson?.lesson_id}
+              disabled={
+                !selectedLesson ||
+                selectedLesson.status === 'in_progress' ||
+                updatingLessonId === selectedLesson?.lesson_id
+              }
               className="theme-button-secondary w-full justify-center disabled:cursor-not-allowed disabled:opacity-50"
             >
               Đánh dấu đang học
@@ -2149,411 +2410,441 @@ export default function LearningPathDetail() {
 
     return (
       <>
-        <div className={mapPresentationMode ? 'space-y-0' : 'grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]'}>
+        <div
+          className={
+            mapPresentationMode ? 'space-y-0' : 'grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]'
+          }
+        >
           <section className="white-panel overflow-visible p-0">
-          <div className="space-y-4 border-b border-black/5 px-5 py-5 md:px-6">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-3">
+            <div className="space-y-4 border-b border-black/5 px-5 py-5 md:px-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => setScreenMode('subject')}
+                    className="theme-button-secondary px-5 py-3 text-[14px]"
+                  >
+                    ← Quay lại
+                  </button>
+                  <div className="rounded-full border border-[#f0d7e0] bg-[#fff9fb] px-4 py-3 text-[13px] font-medium text-[#6e6460]">
+                    {chapters.length} chương • {mapLessons.length} bài học
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex min-w-[240px] max-w-[360px] flex-1 items-center gap-2 rounded-full border border-[#f0d7e0] bg-white px-3 py-2 shadow-[0_10px_20px_rgba(114,62,83,0.06)]">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#f9eef3] text-[#8c3451]">
+                    ⌕
+                  </span>
+                  <input
+                    ref={mapSearchInputRef}
+                    value={mapSearchTerm}
+                    onChange={(event) => setMapSearchTerm(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        handleMapSearch();
+                      }
+                    }}
+                    placeholder="Tìm bài học trên bản đồ"
+                    className="w-full border-none bg-transparent text-[13px] text-[#141217] outline-none placeholder:text-[#8f8782]"
+                  />
+                  <button
+                    onClick={handleMapSearch}
+                    disabled={searchedLessons.length === 0}
+                    className="rounded-full bg-[#8c3451] px-4 py-2 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Tìm
+                  </button>
+                </div>
+
+                <div className="hidden flex-wrap items-center gap-2 rounded-full border border-[#f0d7e0] bg-[#fff9fb] p-1 md:flex">
+                  {filterOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      onClick={() => setMapStatusFilter(option.value)}
+                      className={`rounded-full px-4 py-2 text-[13px] font-medium transition ${
+                        mapStatusFilter === option.value
+                          ? 'bg-[#8c3451] text-white shadow-[0_12px_22px_rgba(140,52,81,0.18)]'
+                          : 'text-[#5c5550]'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="hidden flex-wrap items-center gap-2 rounded-full border border-[#f0d7e0] bg-[#fff9fb] p-1 md:flex">
+                  {layoutOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      onClick={() => setMapLayoutMode(option.value)}
+                      className={`rounded-full px-4 py-2 text-[13px] font-medium transition ${
+                        mapLayoutMode === option.value
+                          ? 'bg-[#f9eef3] text-[#8c3451] ring-1 ring-[#efd2dd]'
+                          : 'text-[#5c5550]'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+
                 <button
-                  onClick={() => setScreenMode('subject')}
-                  className="theme-button-secondary px-5 py-3 text-[14px]"
+                  onClick={handleFitAllMapNodes}
+                  disabled={!mapInstance || mapLessons.length === 0}
+                  className="rounded-full border border-[#f0d7e0] bg-white px-4 py-2 text-[13px] font-medium text-[#5c5550] transition hover:shadow-[0_10px_18px_rgba(137,78,99,0.08)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  ← Quay lại
+                  Fit toàn bộ
                 </button>
-                <div className="rounded-full border border-[#f0d7e0] bg-[#fff9fb] px-4 py-3 text-[13px] font-medium text-[#6e6460]">
-                  {chapters.length} chương • {mapLessons.length} bài học
+
+                <button
+                  onClick={() => setIsMapControlsDrawerOpen(true)}
+                  className="rounded-full border border-[#f0d7e0] bg-white px-4 py-2 text-[13px] font-medium text-[#5c5550] transition hover:shadow-[0_10px_18px_rgba(137,78,99,0.08)] md:hidden"
+                >
+                  Bộ lọc
+                </button>
+
+                {!mapPresentationMode && (
+                  <button
+                    onClick={() => setIsMapDetailDrawerOpen(true)}
+                    className="rounded-full border border-[#f0d7e0] bg-white px-4 py-2 text-[13px] font-medium text-[#5c5550] transition hover:shadow-[0_10px_18px_rgba(137,78,99,0.08)] xl:hidden"
+                  >
+                    Chi tiết bài học
+                  </button>
+                )}
+
+                <div ref={desktopOptionsRef} className="relative hidden md:block">
+                  <button
+                    type="button"
+                    onClick={() => setIsDesktopOptionsOpen((value) => !value)}
+                    className={`rounded-full border px-4 py-2 text-[13px] font-medium transition ${
+                      isDesktopOptionsOpen
+                        ? 'border-[#e7c6d2] bg-[#f9eef3] text-[#8c3451] shadow-[0_10px_18px_rgba(137,78,99,0.08)]'
+                        : 'border-[#f0d7e0] bg-white text-[#5c5550] hover:shadow-[0_10px_18px_rgba(137,78,99,0.08)]'
+                    }`}
+                    aria-expanded={isDesktopOptionsOpen}
+                    aria-haspopup="menu"
+                  >
+                    Tùy chọn
+                  </button>
+                  {isDesktopOptionsOpen && (
+                    <div
+                      role="menu"
+                      className="absolute left-0 top-[calc(100%+10px)] z-30 w-[304px] rounded-[24px] border border-[#f0d7e0] bg-white p-3 shadow-[0_18px_36px_rgba(114,62,83,0.14)]"
+                    >
+                      <div className="mb-3 rounded-[18px] bg-[#fff8fb] px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
+                          Tùy chọn bản đồ
+                        </p>
+                        <p className="mt-1 text-[13px] leading-6 text-[#6b645e]">
+                          Chọn nhanh cách xem phù hợp rồi quay lại sơ đồ.
+                        </p>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div>
+                          <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
+                            Khung nhìn
+                          </p>
+                          <div className="grid gap-2">
+                            <button
+                              onClick={() => {
+                                handleFitCurrentChapter();
+                                setIsDesktopOptionsOpen(false);
+                              }}
+                              disabled={!mapInstance || !selectedLesson}
+                              className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9] disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Fit chương hiện tại
+                            </button>
+                            <button
+                              onClick={() => {
+                                void handleToggleMapFullscreen();
+                                setIsDesktopOptionsOpen(false);
+                              }}
+                              className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9]"
+                            >
+                              {isMapFullscreen ? 'Thoát toàn màn hình' : 'Toàn màn hình'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
+                            Chương học
+                          </p>
+                          <div className="grid gap-2">
+                            <button
+                              onClick={() => {
+                                handleExpandAllChapters();
+                                setIsDesktopOptionsOpen(false);
+                              }}
+                              disabled={collapsedChapterIds.length === 0}
+                              className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9] disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Mở tất cả chương
+                            </button>
+                            <button
+                              onClick={() => {
+                                handleCollapseOtherChapters();
+                                setIsDesktopOptionsOpen(false);
+                              }}
+                              disabled={!selectedLesson || chapters.length <= 1}
+                              className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9] disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Thu chương khác
+                            </button>
+                            <button
+                              onClick={() => {
+                                handleToggleFocusedChapter();
+                                setIsDesktopOptionsOpen(false);
+                              }}
+                              disabled={!selectedLesson}
+                              className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9] disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {mapFocusedChapterId === selectedLesson?.chapter_id
+                                ? 'Hiện tất cả chương'
+                                : 'Chỉ xem chương hiện tại'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
+                            Chế độ hiển thị
+                          </p>
+                          <div className="grid gap-2">
+                            <button
+                              onClick={() => {
+                                setMapPresentationMode((value) => !value);
+                                setIsDesktopOptionsOpen(false);
+                              }}
+                              className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9]"
+                            >
+                              {mapPresentationMode
+                                ? 'Thoát presentation mode'
+                                : 'Presentation mode'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex min-w-[240px] max-w-[360px] flex-1 items-center gap-2 rounded-full border border-[#f0d7e0] bg-white px-3 py-2 shadow-[0_10px_20px_rgba(114,62,83,0.06)]">
-                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#f9eef3] text-[#8c3451]">⌕</span>
-                <input
-                  ref={mapSearchInputRef}
-                  value={mapSearchTerm}
-                  onChange={(event) => setMapSearchTerm(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      handleMapSearch();
+            <div className="border-b border-black/5 px-5 py-4 md:px-6">
+              <div className="flex items-center gap-3 overflow-x-auto pb-1 md:hidden">
+                <select
+                  value={mapFocusedChapterId || 'all'}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (value === 'all') {
+                      setMapFocusedChapterId(null);
+                      setCollapsedChapterIds([]);
+                      return;
                     }
+                    handleFocusChapter(value);
                   }}
-                  placeholder="Tìm bài học trên bản đồ"
-                  className="w-full border-none bg-transparent text-[13px] text-[#141217] outline-none placeholder:text-[#8f8782]"
-                />
-                <button
-                  onClick={handleMapSearch}
-                  disabled={searchedLessons.length === 0}
-                  className="rounded-full bg-[#8c3451] px-4 py-2 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  className="min-w-[190px] rounded-full border border-[#f0d7e0] bg-white px-4 py-3 text-[13px] font-medium text-[#5c5550] outline-none"
                 >
-                  Tìm
-                </button>
+                  <option value="all">Tất cả chương</option>
+                  {chapters.map((chapter, index) => {
+                    const chapterLessonsCount = lessons.filter(
+                      (lesson) => lesson.chapter_id === chapter.chapter_id,
+                    ).length;
+                    return (
+                      <option
+                        key={chapter.chapter_id || `${chapter.title}-${index}`}
+                        value={chapter.chapter_id}
+                      >
+                        {`Chương ${index + 1} (${chapterLessonsCount} bài)`}
+                      </option>
+                    );
+                  })}
+                </select>
+
+                {mapSearchTerm.trim() && (
+                  <span className="shrink-0 rounded-full bg-[#f9eef3] px-4 py-2 text-[12px] font-medium text-[#8c3451]">
+                    {searchedLessons.length > 0
+                      ? `${searchedLessons.length} bài khớp`
+                      : 'Không có kết quả'}
+                  </span>
+                )}
               </div>
 
-              <div className="hidden flex-wrap items-center gap-2 rounded-full border border-[#f0d7e0] bg-[#fff9fb] p-1 md:flex">
-                {filterOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    onClick={() => setMapStatusFilter(option.value)}
-                    className={`rounded-full px-4 py-2 text-[13px] font-medium transition ${
-                      mapStatusFilter === option.value
-                        ? 'bg-[#8c3451] text-white shadow-[0_12px_22px_rgba(140,52,81,0.18)]'
-                        : 'text-[#5c5550]'
-                    }`}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="hidden flex-wrap items-center gap-2 rounded-full border border-[#f0d7e0] bg-[#fff9fb] p-1 md:flex">
-                {layoutOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    onClick={() => setMapLayoutMode(option.value)}
-                    className={`rounded-full px-4 py-2 text-[13px] font-medium transition ${
-                      mapLayoutMode === option.value
-                        ? 'bg-[#f9eef3] text-[#8c3451] ring-1 ring-[#efd2dd]'
-                        : 'text-[#5c5550]'
-                    }`}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-
-              <button
-                onClick={handleFitAllMapNodes}
-                disabled={!mapInstance || mapLessons.length === 0}
-                className="rounded-full border border-[#f0d7e0] bg-white px-4 py-2 text-[13px] font-medium text-[#5c5550] transition hover:shadow-[0_10px_18px_rgba(137,78,99,0.08)] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Fit toàn bộ
-              </button>
-
-              <button
-                onClick={() => setIsMapControlsDrawerOpen(true)}
-                className="rounded-full border border-[#f0d7e0] bg-white px-4 py-2 text-[13px] font-medium text-[#5c5550] transition hover:shadow-[0_10px_18px_rgba(137,78,99,0.08)] md:hidden"
-              >
-                Bộ lọc
-              </button>
-
-              {!mapPresentationMode && (
+              <div className="hidden items-center gap-3 overflow-x-auto pb-1 md:flex">
                 <button
-                  onClick={() => setIsMapDetailDrawerOpen(true)}
-                  className="rounded-full border border-[#f0d7e0] bg-white px-4 py-2 text-[13px] font-medium text-[#5c5550] transition hover:shadow-[0_10px_18px_rgba(137,78,99,0.08)] xl:hidden"
-                >
-                  Chi tiết bài học
-                </button>
-              )}
-
-              <div ref={desktopOptionsRef} className="relative hidden md:block">
-                <button
-                  type="button"
-                  onClick={() => setIsDesktopOptionsOpen((value) => !value)}
-                  className={`rounded-full border px-4 py-2 text-[13px] font-medium transition ${
-                    isDesktopOptionsOpen
-                      ? 'border-[#e7c6d2] bg-[#f9eef3] text-[#8c3451] shadow-[0_10px_18px_rgba(137,78,99,0.08)]'
-                      : 'border-[#f0d7e0] bg-white text-[#5c5550] hover:shadow-[0_10px_18px_rgba(137,78,99,0.08)]'
+                  onClick={() => {
+                    setMapFocusedChapterId(null);
+                    setCollapsedChapterIds([]);
+                  }}
+                  className={`shrink-0 rounded-full px-4 py-2 text-[12px] font-semibold transition ${
+                    !mapFocusedChapterId && collapsedChapterIds.length === 0
+                      ? 'bg-[#8c3451] text-white shadow-[0_12px_22px_rgba(140,52,81,0.18)]'
+                      : 'border border-[#f0d7e0] bg-white text-[#5c5550]'
                   }`}
-                  aria-expanded={isDesktopOptionsOpen}
-                  aria-haspopup="menu"
                 >
-                  Tùy chọn
+                  Tất cả chương
                 </button>
-                {isDesktopOptionsOpen && (
-                  <div
-                    role="menu"
-                    className="absolute left-0 top-[calc(100%+10px)] z-30 w-[304px] rounded-[24px] border border-[#f0d7e0] bg-white p-3 shadow-[0_18px_36px_rgba(114,62,83,0.14)]"
-                  >
-                    <div className="mb-3 rounded-[18px] bg-[#fff8fb] px-4 py-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
-                        Tùy chọn bản đồ
-                      </p>
-                      <p className="mt-1 text-[13px] leading-6 text-[#6b645e]">
-                        Chọn nhanh cách xem phù hợp rồi quay lại sơ đồ.
-                      </p>
-                    </div>
 
-                    <div className="space-y-3">
-                      <div>
-                        <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
-                          Khung nhìn
-                        </p>
-                        <div className="grid gap-2">
-                          <button
-                            onClick={() => {
-                              handleFitCurrentChapter();
-                              setIsDesktopOptionsOpen(false);
-                            }}
-                            disabled={!mapInstance || !selectedLesson}
-                            className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9] disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            Fit chương hiện tại
-                          </button>
-                          <button
-                            onClick={() => {
-                              void handleToggleMapFullscreen();
-                              setIsDesktopOptionsOpen(false);
-                            }}
-                            className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9]"
-                          >
-                            {isMapFullscreen ? 'Thoát toàn màn hình' : 'Toàn màn hình'}
-                          </button>
-                        </div>
-                      </div>
+                {chapters.map((chapter, index) => {
+                  const accent = getChapterAccent(index + 1);
+                  const chapterLessonsCount = lessons.filter(
+                    (lesson) => lesson.chapter_id === chapter.chapter_id,
+                  ).length;
+                  const isActiveChapter = selectedLesson?.chapter_id === chapter.chapter_id;
 
-                      <div>
-                        <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
-                          Chương học
-                        </p>
-                        <div className="grid gap-2">
-                          <button
-                            onClick={() => {
-                              handleExpandAllChapters();
-                              setIsDesktopOptionsOpen(false);
-                            }}
-                            disabled={collapsedChapterIds.length === 0}
-                            className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9] disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            Mở tất cả chương
-                          </button>
-                          <button
-                            onClick={() => {
-                              handleCollapseOtherChapters();
-                              setIsDesktopOptionsOpen(false);
-                            }}
-                            disabled={!selectedLesson || chapters.length <= 1}
-                            className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9] disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            Thu chương khác
-                          </button>
-                          <button
-                            onClick={() => {
-                              handleToggleFocusedChapter();
-                              setIsDesktopOptionsOpen(false);
-                            }}
-                            disabled={!selectedLesson}
-                            className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9] disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            {mapFocusedChapterId === selectedLesson?.chapter_id
-                              ? 'Hiện tất cả chương'
-                              : 'Chỉ xem chương hiện tại'}
-                          </button>
-                        </div>
-                      </div>
+                  return (
+                    <button
+                      key={chapter.chapter_id || `${chapter.title}-${index}`}
+                      onClick={() => handleFocusChapter(chapter.chapter_id)}
+                      className="shrink-0 rounded-full border px-4 py-2 text-[12px] font-semibold transition"
+                      style={{
+                        borderColor: isActiveChapter ? accent.solid : accent.border,
+                        background: isActiveChapter ? accent.soft : 'rgba(255,255,255,0.92)',
+                        color: isActiveChapter ? accent.text : '#5c5550',
+                      }}
+                    >
+                      Chương {index + 1}
+                      {isActiveChapter ? (
+                        <span className="ml-2 opacity-70">• {chapterLessonsCount} bài</span>
+                      ) : null}
+                    </button>
+                  );
+                })}
 
-                      <div>
-                        <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
-                          Chế độ hiển thị
-                        </p>
-                        <div className="grid gap-2">
-                          <button
-                            onClick={() => {
-                              setMapPresentationMode((value) => !value);
-                              setIsDesktopOptionsOpen(false);
-                            }}
-                            className="rounded-[18px] border border-[#f0d7e0] bg-white px-4 py-3 text-left text-[13px] font-medium text-[#5c5550] transition hover:bg-[#fcf6f9]"
-                          >
-                            {mapPresentationMode ? 'Thoát presentation mode' : 'Presentation mode'}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                {mapSearchTerm.trim() && (
+                  <span className="shrink-0 rounded-full bg-[#f9eef3] px-4 py-2 text-[12px] font-medium text-[#8c3451]">
+                    {searchedLessons.length > 0
+                      ? `${searchedLessons.length} bài khớp`
+                      : 'Không có kết quả'}
+                  </span>
+                )}
+
+                {collapsedChapterIds.length > 0 && (
+                  <span className="shrink-0 rounded-full border border-[#f0d7e0] bg-white px-4 py-2 text-[12px] font-medium text-[#6b645e]">
+                    Đang ẩn {collapsedChapterIds.length} chương
+                  </span>
                 )}
               </div>
             </div>
-          </div>
 
-          <div className="border-b border-black/5 px-5 py-4 md:px-6">
-            <div className="flex items-center gap-3 overflow-x-auto pb-1 md:hidden">
-              <select
-                value={mapFocusedChapterId || 'all'}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  if (value === 'all') {
-                    setMapFocusedChapterId(null);
-                    setCollapsedChapterIds([]);
-                    return;
-                  }
-                  handleFocusChapter(value);
-                }}
-                className="min-w-[190px] rounded-full border border-[#f0d7e0] bg-white px-4 py-3 text-[13px] font-medium text-[#5c5550] outline-none"
-              >
-                <option value="all">Tất cả chương</option>
-                {chapters.map((chapter, index) => {
-                  const chapterLessonsCount = lessons.filter((lesson) => lesson.chapter_id === chapter.chapter_id).length;
-                  return (
-                    <option key={chapter.chapter_id || `${chapter.title}-${index}`} value={chapter.chapter_id}>
-                      {`Chương ${index + 1} (${chapterLessonsCount} bài)`}
-                    </option>
-                  );
-                })}
-              </select>
-
-              {mapSearchTerm.trim() && (
-                <span className="shrink-0 rounded-full bg-[#f9eef3] px-4 py-2 text-[12px] font-medium text-[#8c3451]">
-                  {searchedLessons.length > 0 ? `${searchedLessons.length} bài khớp` : 'Không có kết quả'}
-                </span>
+            <div
+              ref={mapCanvasRef}
+              className={`learning-flow-canvas relative overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(140,52,81,0.08)_1px,transparent_0)] [background-size:22px_22px] ${
+                isMapFullscreen ? 'h-screen rounded-none bg-[#fff8fb]' : 'h-[780px]'
+              }`}
+            >
+              {previewLesson && (
+                <div className="pointer-events-none absolute left-3 top-3 z-[5] max-w-[280px] md:left-5 md:top-5 md:max-w-[360px]">
+                  <div className="white-panel px-4 py-3 shadow-[0_20px_36px_rgba(114,62,83,0.12)] md:px-5 md:py-4">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55 md:text-[11px]">
+                      {hoveredLesson ? 'Xem nhanh' : 'Bài đang chọn'}
+                    </p>
+                    <p className="mt-1 overflow-hidden text-ellipsis whitespace-nowrap text-[14px] font-semibold leading-[1.3] text-[#141217] md:mt-2 md:text-[18px]">
+                      Bài {previewLesson.chapter_index}.{previewLesson.lesson_index}:{' '}
+                      {cleanLessonTitle(previewLesson.title)}
+                    </p>
+                    <p className="mt-2 hidden max-h-[76px] overflow-hidden text-[13px] leading-6 text-[#625b56] md:block">
+                      {previewLesson.summary?.trim() ||
+                        'Bài học này giúp bạn tiếp tục tiến lên trong lộ trình hiện tại.'}
+                    </p>
+                  </div>
+                </div>
               )}
-            </div>
 
-            <div className="hidden items-center gap-3 overflow-x-auto pb-1 md:flex">
-              <button
-                onClick={() => {
-                  setMapFocusedChapterId(null);
-                  setCollapsedChapterIds([]);
-                }}
-                className={`shrink-0 rounded-full px-4 py-2 text-[12px] font-semibold transition ${
-                  !mapFocusedChapterId && collapsedChapterIds.length === 0
-                    ? 'bg-[#8c3451] text-white shadow-[0_12px_22px_rgba(140,52,81,0.18)]'
-                    : 'border border-[#f0d7e0] bg-white text-[#5c5550]'
-                }`}
-              >
-                Tất cả chương
-              </button>
+              {mapPresentationMode && (
+                <div className="absolute right-5 top-5 z-[5] hidden w-[360px] xl:block">
+                  {detailPanel}
+                </div>
+              )}
 
-              {chapters.map((chapter, index) => {
-                const accent = getChapterAccent(index + 1);
-                const chapterLessonsCount = lessons.filter((lesson) => lesson.chapter_id === chapter.chapter_id).length;
-                const isActiveChapter = selectedLesson?.chapter_id === chapter.chapter_id;
+              {mapLessons.length === 0 ? (
+                <div className="flex h-full items-center justify-center p-8">
+                  <div className="white-panel max-w-[420px] p-8 text-center">
+                    <p className="text-[18px] font-semibold text-[#141217]">
+                      Không có bài học nào khớp bộ lọc hiện tại
+                    </p>
+                    <p className="mt-3 text-[14px] leading-7 text-[#615954]">
+                      Hãy thử đổi trạng thái, mở lại chương đang thu gọn hoặc xóa từ khóa tìm kiếm
+                      để xem nhiều bài học hơn.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <ReactFlow
+                  nodes={mapNodes}
+                  edges={mapEdges}
+                  nodeTypes={mapNodeTypes}
+                  onInit={setMapInstance}
+                  onMoveEnd={handlePersistViewport}
+                  fitView
+                  fitViewOptions={{ padding: 0.18 }}
+                  minZoom={0.55}
+                  maxZoom={1.5}
+                  defaultViewport={{ x: 0, y: 0, zoom: 0.82 }}
+                  nodesDraggable={false}
+                  nodesConnectable={false}
+                  elementsSelectable={false}
+                  panOnDrag
+                  zoomOnScroll
+                  zoomOnPinch
+                  proOptions={{ hideAttribution: true }}
+                >
+                  <Background gap={22} size={1.4} color="rgba(140,52,81,0.12)" />
+                  <MiniMap
+                    pannable
+                    zoomable
+                    position="bottom-right"
+                    className="!mb-5 !mr-5 !overflow-hidden !rounded-[20px] !border !border-[#ead7df] !bg-white/95 !shadow-[0_18px_32px_rgba(114,62,83,0.12)]"
+                    nodeColor={(node) => {
+                      if (String(node.id).startsWith('chapter-')) {
+                        const chapterNode = node.data as MapChapterNodeData | undefined;
+                        return chapterNode?.accent?.soft || '#f6dce6';
+                      }
 
-                return (
-                  <button
-                    key={chapter.chapter_id || `${chapter.title}-${index}`}
-                    onClick={() => handleFocusChapter(chapter.chapter_id)}
-                    className="shrink-0 rounded-full border px-4 py-2 text-[12px] font-semibold transition"
-                    style={{
-                      borderColor: isActiveChapter ? accent.solid : accent.border,
-                      background: isActiveChapter ? accent.soft : 'rgba(255,255,255,0.92)',
-                      color: isActiveChapter ? accent.text : '#5c5550',
+                      const lessonNode = node.data as MapLessonNodeData | undefined;
+                      if (lessonNode?.lesson?.status === 'complete') return '#10b981';
+                      if (lessonNode?.lesson?.status === 'in_progress')
+                        return lessonNode?.accent?.solid || '#8c3451';
+                      return '#cbd5e1';
                     }}
-                  >
-                    Chương {index + 1}
-                    {isActiveChapter ? <span className="ml-2 opacity-70">• {chapterLessonsCount} bài</span> : null}
-                  </button>
-                );
-              })}
-
-              {mapSearchTerm.trim() && (
-                <span className="shrink-0 rounded-full bg-[#f9eef3] px-4 py-2 text-[12px] font-medium text-[#8c3451]">
-                  {searchedLessons.length > 0 ? `${searchedLessons.length} bài khớp` : 'Không có kết quả'}
-                </span>
+                  />
+                  <Controls
+                    position="top-right"
+                    showInteractive={false}
+                    className="!overflow-hidden !rounded-[20px] !border !border-[#ead7df] !bg-white/95 !shadow-[0_20px_36px_rgba(114,62,83,0.12)]"
+                  />
+                </ReactFlow>
               )}
 
-              {collapsedChapterIds.length > 0 && (
-                <span className="shrink-0 rounded-full border border-[#f0d7e0] bg-white px-4 py-2 text-[12px] font-medium text-[#6b645e]">
-                  Đang ẩn {collapsedChapterIds.length} chương
-                </span>
-              )}
-            </div>
-          </div>
-
-
-          <div
-            ref={mapCanvasRef}
-            className={`learning-flow-canvas relative overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(140,52,81,0.08)_1px,transparent_0)] [background-size:22px_22px] ${
-              isMapFullscreen ? 'h-screen rounded-none bg-[#fff8fb]' : 'h-[780px]'
-            }`}
-          >
-            {previewLesson && (
-              <div className="pointer-events-none absolute left-3 top-3 z-[5] max-w-[280px] md:left-5 md:top-5 md:max-w-[360px]">
-                <div className="white-panel px-4 py-3 shadow-[0_20px_36px_rgba(114,62,83,0.12)] md:px-5 md:py-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55 md:text-[11px]">
-                    {hoveredLesson ? 'Xem nhanh' : 'Bài đang chọn'}
-                  </p>
-                  <p className="mt-1 overflow-hidden text-ellipsis whitespace-nowrap text-[14px] font-semibold leading-[1.3] text-[#141217] md:mt-2 md:text-[18px]">
-                    Bài {previewLesson.chapter_index}.{previewLesson.lesson_index}: {cleanLessonTitle(previewLesson.title)}
-                  </p>
-                  <p className="mt-2 hidden max-h-[76px] overflow-hidden text-[13px] leading-6 text-[#625b56] md:block">
-                    {previewLesson.summary?.trim() || 'Bài học này giúp bạn tiếp tục tiến lên trong lộ trình hiện tại.'}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {mapPresentationMode && (
-              <div className="absolute right-5 top-5 z-[5] hidden w-[360px] xl:block">
-                {detailPanel}
-              </div>
-            )}
-
-            {mapLessons.length === 0 ? (
-              <div className="flex h-full items-center justify-center p-8">
-                <div className="white-panel max-w-[420px] p-8 text-center">
-                  <p className="text-[18px] font-semibold text-[#141217]">Không có bài học nào khớp bộ lọc hiện tại</p>
-                  <p className="mt-3 text-[14px] leading-7 text-[#615954]">
-                    Hãy thử đổi trạng thái, mở lại chương đang thu gọn hoặc xóa từ khóa tìm kiếm để xem nhiều bài học hơn.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <ReactFlow
-                nodes={mapNodes}
-                edges={mapEdges}
-                nodeTypes={mapNodeTypes}
-                onInit={setMapInstance}
-                onMoveEnd={handlePersistViewport}
-                fitView
-                fitViewOptions={{ padding: 0.18 }}
-                minZoom={0.55}
-                maxZoom={1.5}
-                defaultViewport={{ x: 0, y: 0, zoom: 0.82 }}
-                nodesDraggable={false}
-                nodesConnectable={false}
-                elementsSelectable={false}
-                panOnDrag
-                zoomOnScroll
-                zoomOnPinch
-                proOptions={{ hideAttribution: true }}
-              >
-                <Background gap={22} size={1.4} color="rgba(140,52,81,0.12)" />
-                <MiniMap
-                  pannable
-                  zoomable
-                  position="bottom-right"
-                  className="!mb-5 !mr-5 !overflow-hidden !rounded-[20px] !border !border-[#ead7df] !bg-white/95 !shadow-[0_18px_32px_rgba(114,62,83,0.12)]"
-                  nodeColor={(node) => {
-                    if (String(node.id).startsWith('chapter-')) {
-                      const chapterNode = node.data as MapChapterNodeData | undefined;
-                      return chapterNode?.accent?.soft || '#f6dce6';
-                    }
-
-                    const lessonNode = node.data as MapLessonNodeData | undefined;
-                    if (lessonNode?.lesson?.status === 'complete') return '#10b981';
-                    if (lessonNode?.lesson?.status === 'in_progress') return lessonNode?.accent?.solid || '#8c3451';
-                    return '#cbd5e1';
-                  }}
-                />
-                <Controls
-                  position="top-right"
-                  showInteractive={false}
-                  className="!overflow-hidden !rounded-[20px] !border !border-[#ead7df] !bg-white/95 !shadow-[0_20px_36px_rgba(114,62,83,0.12)]"
-                />
-              </ReactFlow>
-            )}
-
-            <div className="pointer-events-none absolute bottom-3 left-3 md:bottom-5 md:left-5">
-              <div className="white-panel flex items-center gap-3 px-3 py-2 md:gap-4 md:px-4 md:py-3">
-                <div className="flex items-center gap-2 text-[11px] font-medium text-[#6f6762] md:text-[12px]">
-                  <span className="h-3 w-3 rounded-full bg-[#8c3451]"></span>
-                  <span className="hidden sm:inline">Đang học</span>
-                </div>
-                <div className="flex items-center gap-2 text-[11px] font-medium text-[#6f6762] md:text-[12px]">
-                  <span className="h-3 w-3 rounded-full bg-emerald-500"></span>
-                  <span className="hidden sm:inline">Hoàn thành</span>
-                </div>
-                <div className="flex items-center gap-2 text-[11px] font-medium text-[#6f6762] md:text-[12px]">
-                  <span className="h-3 w-3 rounded-full bg-slate-300"></span>
-                  <span className="hidden sm:inline">Chưa mở</span>
+              <div className="pointer-events-none absolute bottom-3 left-3 md:bottom-5 md:left-5">
+                <div className="white-panel flex items-center gap-3 px-3 py-2 md:gap-4 md:px-4 md:py-3">
+                  <div className="flex items-center gap-2 text-[11px] font-medium text-[#6f6762] md:text-[12px]">
+                    <span className="h-3 w-3 rounded-full bg-[#8c3451]"></span>
+                    <span className="hidden sm:inline">Đang học</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px] font-medium text-[#6f6762] md:text-[12px]">
+                    <span className="h-3 w-3 rounded-full bg-emerald-500"></span>
+                    <span className="hidden sm:inline">Hoàn thành</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px] font-medium text-[#6f6762] md:text-[12px]">
+                    <span className="h-3 w-3 rounded-full bg-slate-300"></span>
+                    <span className="hidden sm:inline">Chưa mở</span>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
           </section>
 
-          {!mapPresentationMode && <aside className="hidden space-y-5 xl:sticky xl:top-4 xl:block xl:self-start">{detailPanel}</aside>}
+          {!mapPresentationMode && (
+            <aside className="hidden space-y-5 xl:sticky xl:top-4 xl:block xl:self-start">
+              {detailPanel}
+            </aside>
+          )}
         </div>
 
         {!mapPresentationMode && isMapDetailDrawerOpen && (
@@ -2570,7 +2861,9 @@ export default function LearningPathDetail() {
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
                     Chi tiết bài học
                   </p>
-                  <p className="mt-1 text-[14px] text-[#615954]">Xem nhanh nội dung và thao tác tiếp theo</p>
+                  <p className="mt-1 text-[14px] text-[#615954]">
+                    Xem nhanh nội dung và thao tác tiếp theo
+                  </p>
                 </div>
                 <button
                   onClick={() => setIsMapDetailDrawerOpen(false)}
@@ -2598,7 +2891,9 @@ export default function LearningPathDetail() {
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
                     Bộ lọc bản đồ
                   </p>
-                  <p className="mt-1 text-[14px] text-[#615954]">Chọn cách xem phù hợp rồi quay lại sơ đồ</p>
+                  <p className="mt-1 text-[14px] text-[#615954]">
+                    Chọn cách xem phù hợp rồi quay lại sơ đồ
+                  </p>
                 </div>
                 <button
                   onClick={() => setIsMapControlsDrawerOpen(false)}
@@ -2762,7 +3057,8 @@ export default function LearningPathDetail() {
               Học liệu gợi ý
             </p>
             <p className="mt-2 text-[14px] leading-6 text-[#6a625d]">
-              Hệ thống đang ưu tiên đúng tài liệu và đúng trang liên quan nhất với lesson hiện tại để bạn đọc tiếp nhanh hơn.
+              Hệ thống đang ưu tiên đúng tài liệu và đúng trang liên quan nhất với lesson hiện tại
+              để bạn đọc tiếp nhanh hơn.
             </p>
           </div>
           {lessonRecommendedChunks?.metadata?.selected_count ? (
@@ -2800,10 +3096,13 @@ export default function LearningPathDetail() {
                 </h3>
                 <p className="mt-2 text-[14px] leading-6 text-[#6a625d]">
                   {resolvedPinnedLessonResource.source}
-                  {resolvedPinnedLessonResource.pageNumber ? ` • Quay lại từ trang ${resolvedPinnedLessonResource.pageNumber}` : ''}
+                  {resolvedPinnedLessonResource.pageNumber
+                    ? ` • Quay lại từ trang ${resolvedPinnedLessonResource.pageNumber}`
+                    : ''}
                 </p>
                 <p className="mt-3 max-w-3xl text-[13px] leading-6 text-[#6a625d]">
-                  Tài liệu này được giữ lại theo lesson hiện tại để bạn quay lại đúng chỗ đang đọc sau mỗi lần rời trang.
+                  Tài liệu này được giữ lại theo lesson hiện tại để bạn quay lại đúng chỗ đang đọc
+                  sau mỗi lần rời trang.
                 </p>
               </div>
               <div className="flex flex-wrap gap-3">
@@ -2833,7 +3132,9 @@ export default function LearningPathDetail() {
                 </p>
                 <p className="mt-2 text-[15px] font-medium text-[#141217]">
                   {resolvedCurrentReadingResource.title}
-                  {resolvedCurrentReadingResource.pageNumber ? ` • Trang ${resolvedCurrentReadingResource.pageNumber}` : ''}
+                  {resolvedCurrentReadingResource.pageNumber
+                    ? ` • Trang ${resolvedCurrentReadingResource.pageNumber}`
+                    : ''}
                 </p>
               </div>
               <button
@@ -2850,32 +3151,38 @@ export default function LearningPathDetail() {
         {lessonResourcesLoading ? (
           <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {Array.from(
-              { length: Math.min(8, Math.max(4, Number(lessonRecommendedChunks?.metadata?.selected_count ?? 4))) },
+              {
+                length: Math.min(
+                  8,
+                  Math.max(4, Number(lessonRecommendedChunks?.metadata?.selected_count ?? 4)),
+                ),
+              },
               (_, index) => (
-              <div
-                key={`resource-skeleton-${index}`}
-                className="min-h-[360px] animate-pulse rounded-[30px] border bg-white/90 px-5 pb-5 pt-5 shadow-[0_18px_34px_rgba(114,62,83,0.06)]"
-                style={{ borderColor: 'rgba(17,16,21,0.08)' }}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="h-8 w-16 rounded-full bg-[#f3dbe5]" />
-                  <div className="h-8 w-20 rounded-full bg-[#f7e8ee]" />
+                <div
+                  key={`resource-skeleton-${index}`}
+                  className="min-h-[360px] animate-pulse rounded-[30px] border bg-white/90 px-5 pb-5 pt-5 shadow-[0_18px_34px_rgba(114,62,83,0.06)]"
+                  style={{ borderColor: 'rgba(17,16,21,0.08)' }}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="h-8 w-16 rounded-full bg-[#f3dbe5]" />
+                    <div className="h-8 w-20 rounded-full bg-[#f7e8ee]" />
+                  </div>
+                  <div className="mt-5 h-7 w-3/4 rounded-full bg-[#f7e8ee]" />
+                  <div className="mt-3 h-5 w-1/2 rounded-full bg-[#f7e8ee]" />
+                  <div className="mt-6 h-[170px] rounded-[22px] bg-[#fbf4f7]" />
+                  <div className="mt-4 h-4 w-full rounded-full bg-[#f7e8ee]" />
+                  <div className="mt-2 h-4 w-5/6 rounded-full bg-[#f7e8ee]" />
+                  <div className="mt-5 h-11 w-full rounded-full bg-[#f3dbe5]" />
                 </div>
-                <div className="mt-5 h-7 w-3/4 rounded-full bg-[#f7e8ee]" />
-                <div className="mt-3 h-5 w-1/2 rounded-full bg-[#f7e8ee]" />
-                <div className="mt-6 h-[170px] rounded-[22px] bg-[#fbf4f7]" />
-                <div className="mt-4 h-4 w-full rounded-full bg-[#f7e8ee]" />
-                <div className="mt-2 h-4 w-5/6 rounded-full bg-[#f7e8ee]" />
-                <div className="mt-5 h-11 w-full rounded-full bg-[#f3dbe5]" />
-              </div>
-            ))}
+              ),
+            )}
           </div>
         ) : (
           <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {currentLessonResources.map((resource) => {
               const theme = getLessonResourceTheme(resource.source);
               const canOpenResource = Boolean(
-                (resource.source === 'PDF' && resource.resourceId) || resource.resourceUrl
+                (resource.source === 'PDF' && resource.resourceId) || resource.resourceUrl,
               );
               const isPinned = resolvedPinnedLessonResource?.key === resource.key;
               const isCurrentReading = resolvedCurrentReadingResource?.key === resource.key;
@@ -2888,7 +3195,9 @@ export default function LearningPathDetail() {
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className={`inline-flex rounded-full px-3 py-1 text-[11px] font-semibold ${theme.chip}`}>
+                        <span
+                          className={`inline-flex rounded-full px-3 py-1 text-[11px] font-semibold ${theme.chip}`}
+                        >
                           {resource.source}
                         </span>
                         {isPinned ? (
@@ -2922,7 +3231,9 @@ export default function LearningPathDetail() {
                         {path?.level || 'Cơ bản'}
                       </span>
                       {resource.pageNumber ? (
-                        <span className={`rounded-full bg-white px-4 py-2 text-[12px] font-semibold shadow-[0_8px_18px_rgba(114,62,83,0.08)] ${theme.accent}`}>
+                        <span
+                          className={`rounded-full bg-white px-4 py-2 text-[12px] font-semibold shadow-[0_8px_18px_rgba(114,62,83,0.08)] ${theme.accent}`}
+                        >
                           Trang {resource.pageNumber}
                         </span>
                       ) : null}
@@ -2933,7 +3244,9 @@ export default function LearningPathDetail() {
                     style={{ boxShadow: '0 12px 28px rgba(45,31,17,0.08)' }}
                   >
                     <div className="flex h-full w-full flex-col">
-                      <span className={`w-fit rounded-full bg-white/90 px-3 py-1 text-[10px] font-semibold tracking-[0.18em] ${theme.accent}`}>
+                      <span
+                        className={`w-fit rounded-full bg-white/90 px-3 py-1 text-[10px] font-semibold tracking-[0.18em] ${theme.accent}`}
+                      >
                         {theme.icon}
                       </span>
                       <p
@@ -2948,7 +3261,9 @@ export default function LearningPathDetail() {
                       </p>
                     </div>
                   </div>
-                  <p className="mt-4 text-[13px] leading-6 text-[#6a625d]">{getLessonResourceHint(resource)}</p>
+                  <p className="mt-4 text-[13px] leading-6 text-[#6a625d]">
+                    {getLessonResourceHint(resource)}
+                  </p>
                   <div className="mt-auto pt-5">
                     <button
                       type="button"
@@ -2967,8 +3282,17 @@ export default function LearningPathDetail() {
                       >
                         {isPinned ? 'Bỏ ghim' : 'Ghim nhanh'}
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleMarkLessonResourceCompleted(resource)}
+                        className="rounded-full border border-emerald-200 bg-white px-4 py-2.5 text-[12px] font-medium text-emerald-700 transition hover:bg-emerald-50"
+                      >
+                        Đã học xong
+                      </button>
                       {resource.pageNumber ? (
-                        <span className={`inline-flex items-center rounded-full bg-white px-4 py-2.5 text-[12px] font-medium shadow-[0_8px_18px_rgba(114,62,83,0.08)] ${theme.accent}`}>
+                        <span
+                          className={`inline-flex items-center rounded-full bg-white px-4 py-2.5 text-[12px] font-medium shadow-[0_8px_18px_rgba(114,62,83,0.08)] ${theme.accent}`}
+                        >
                           Đọc từ trang {resource.pageNumber}
                         </span>
                       ) : null}
@@ -3046,18 +3370,22 @@ export default function LearningPathDetail() {
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_320px]">
         <div className="soft-panel px-6 py-6">
-          <p className="text-[12px] font-semibold uppercase tracking-[0.22em] text-[#8c3451]/60">Quiz Studio</p>
+          <p className="text-[12px] font-semibold uppercase tracking-[0.22em] text-[#8c3451]/60">
+            Quiz Studio
+          </p>
           <h3 className="mt-2 text-[28px] font-semibold tracking-[-0.04em] text-[#141217]">
             Tạo bộ câu hỏi sát với lesson này
           </h3>
           <p className="mt-3 text-[14px] leading-6 text-[#6a625d]">
-            Câu hỏi sẽ bám trên các chunk đã được gợi ý cho lesson hiện tại. Bạn có thể đổi số lượng, dạng câu hỏi và
-            mức tư duy trước khi sinh lại.
+            Câu hỏi sẽ bám trên các chunk đã được gợi ý cho lesson hiện tại. Bạn có thể đổi số
+            lượng, dạng câu hỏi và mức tư duy trước khi sinh lại.
           </p>
 
           <div className="mt-6 grid gap-5 lg:grid-cols-2">
             <div>
-              <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">Số lượng câu</p>
+              <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">
+                Số lượng câu
+              </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {QUESTION_COUNT_OPTIONS.map((count) => {
                   const active = questionConfig.targetCount === count;
@@ -3065,9 +3393,13 @@ export default function LearningPathDetail() {
                     <button
                       key={`question-count-${count}`}
                       type="button"
-                      onClick={() => setQuestionConfig((previous) => ({ ...previous, targetCount: count }))}
+                      onClick={() =>
+                        setQuestionConfig((previous) => ({ ...previous, targetCount: count }))
+                      }
                       className={`rounded-full border px-4 py-2 text-[13px] font-semibold transition ${
-                        active ? 'bg-[#8c3451] text-white shadow-[0_16px_28px_rgba(140,52,81,0.18)]' : 'bg-white text-[#6a625d]'
+                        active
+                          ? 'bg-[#8c3451] text-white shadow-[0_16px_28px_rgba(140,52,81,0.18)]'
+                          : 'bg-white text-[#6a625d]'
                       }`}
                       style={{ borderColor: active ? '#8c3451' : 'rgba(17,16,21,0.08)' }}
                     >
@@ -3079,7 +3411,9 @@ export default function LearningPathDetail() {
             </div>
 
             <div>
-              <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">Độ khó</p>
+              <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">
+                Độ khó
+              </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {DIFFICULTY_OPTIONS.map((option) => {
                   const active = questionConfig.difficulty === option.value;
@@ -3087,9 +3421,13 @@ export default function LearningPathDetail() {
                     <button
                       key={option.value}
                       type="button"
-                      onClick={() => setQuestionConfig((previous) => ({ ...previous, difficulty: option.value }))}
+                      onClick={() =>
+                        setQuestionConfig((previous) => ({ ...previous, difficulty: option.value }))
+                      }
                       className={`rounded-full border px-4 py-2 text-[13px] font-semibold transition ${
-                        active ? 'bg-[#8c3451] text-white shadow-[0_16px_28px_rgba(140,52,81,0.18)]' : 'bg-white text-[#6a625d]'
+                        active
+                          ? 'bg-[#8c3451] text-white shadow-[0_16px_28px_rgba(140,52,81,0.18)]'
+                          : 'bg-white text-[#6a625d]'
                       }`}
                       style={{ borderColor: active ? '#8c3451' : 'rgba(17,16,21,0.08)' }}
                     >
@@ -3102,7 +3440,9 @@ export default function LearningPathDetail() {
           </div>
 
           <div className="mt-5">
-            <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">Loại câu hỏi</p>
+            <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">
+              Loại câu hỏi
+            </p>
             <div className="mt-3 flex flex-wrap gap-2">
               {QUESTION_TYPE_OPTIONS.map((option) => {
                 const active = questionConfig.questionTypes.includes(option.value);
@@ -3112,12 +3452,18 @@ export default function LearningPathDetail() {
                     type="button"
                     onClick={() => handleQuestionTypeToggle(option.value)}
                     className={`rounded-[18px] border px-4 py-3 text-left transition ${
-                      active ? 'bg-[#8c3451] text-white shadow-[0_16px_28px_rgba(140,52,81,0.18)]' : 'bg-white text-[#6a625d]'
+                      active
+                        ? 'bg-[#8c3451] text-white shadow-[0_16px_28px_rgba(140,52,81,0.18)]'
+                        : 'bg-white text-[#6a625d]'
                     }`}
                     style={{ borderColor: active ? '#8c3451' : 'rgba(17,16,21,0.08)' }}
                   >
                     <p className="text-[13px] font-semibold">{option.label}</p>
-                    <p className={`mt-1 text-[12px] ${active ? 'text-white/80' : 'text-[#8b7f88]'}`}>{option.description}</p>
+                    <p
+                      className={`mt-1 text-[12px] ${active ? 'text-white/80' : 'text-[#8b7f88]'}`}
+                    >
+                      {option.description}
+                    </p>
                   </button>
                 );
               })}
@@ -3125,7 +3471,9 @@ export default function LearningPathDetail() {
           </div>
 
           <div className="mt-5">
-            <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">Mức tư duy Bloom</p>
+            <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/60">
+              Mức tư duy Bloom
+            </p>
             <div className="mt-3 flex flex-wrap gap-2">
               {BLOOM_LEVEL_OPTIONS.map((option) => {
                 const active = questionConfig.bloomLevels.includes(option.value);
@@ -3167,7 +3515,9 @@ export default function LearningPathDetail() {
         </div>
 
         <div className="soft-panel px-6 py-6">
-          <p className="text-[12px] font-semibold uppercase tracking-[0.22em] text-[#8c3451]/60">Tiến độ ôn tập</p>
+          <p className="text-[12px] font-semibold uppercase tracking-[0.22em] text-[#8c3451]/60">
+            Tiến độ ôn tập
+          </p>
           <div className="mt-4 space-y-3">
             <div className="rounded-[18px] bg-white/90 px-4 py-4 shadow-[0_12px_24px_rgba(114,62,83,0.06)]">
               <p className="text-[13px] text-[#8b7f88]">Đã trả lời</p>
@@ -3178,8 +3528,15 @@ export default function LearningPathDetail() {
             <div className="rounded-[18px] bg-white/90 px-4 py-4 shadow-[0_12px_24px_rgba(114,62,83,0.06)]">
               <p className="text-[13px] text-[#8b7f88]">Độ tự tin</p>
               <p className="mt-1 text-[26px] font-semibold tracking-[-0.03em] text-[#141217]">
-                {submitted ? `${quizStats.confidence}%` : '--'}
+                {selectedLesson?.status === 'complete' && bestLessonConfidence !== null
+                  ? `${bestLessonConfidence}%`
+                  : submitted
+                    ? `${quizStats.confidence}%`
+                    : '--'}
               </p>
+              {selectedLesson?.status === 'complete' && bestLessonConfidence !== null && (
+                <p className="mt-1 text-[12px] text-[#8c3451]">Điểm cao nhất</p>
+              )}
             </div>
             <div className="rounded-[18px] bg-white/90 px-4 py-4 shadow-[0_12px_24px_rgba(114,62,83,0.06)]">
               <p className="text-[13px] text-[#8b7f88]">Đúng / Sai</p>
@@ -3188,7 +3545,11 @@ export default function LearningPathDetail() {
               </p>
             </div>
             <div className="rounded-[18px] bg-[linear-gradient(135deg,#fffafd_0%,#fdf2f6_100%)] px-4 py-4 text-[13px] leading-6 text-[#6a625d] shadow-[0_12px_24px_rgba(114,62,83,0.06)]">
-              Bài này hiện có <span className="font-semibold text-[#8c3451]">{lessonRecommendedChunks?.recommended_chunks?.length || 0} chunk</span> gợi ý để làm nguồn sinh câu hỏi.
+              Bài này hiện có{' '}
+              <span className="font-semibold text-[#8c3451]">
+                {lessonRecommendedChunks?.recommended_chunks?.length || 0} chunk
+              </span>{' '}
+              gợi ý để làm nguồn sinh câu hỏi.
             </div>
           </div>
         </div>
@@ -3201,18 +3562,26 @@ export default function LearningPathDetail() {
       )}
 
       {questionLoading ? (
-        <div className="py-20 text-center text-[15px] text-[#8c3451]">Đang tải câu hỏi ôn tập...</div>
+        <div className="py-20 text-center text-[15px] text-[#8c3451]">
+          Đang tải câu hỏi ôn tập...
+        </div>
       ) : questionError ? (
         <div className="rounded-[14px] border border-red-200 bg-red-50 px-4 py-4 text-[14px] text-red-700">
           <p>{questionError}</p>
-          <button onClick={() => void generateLessonQuestions(true)} className="theme-button mt-3 px-5 py-3 text-[14px]">
+          <button
+            onClick={() => void generateLessonQuestions(true)}
+            className="theme-button mt-3 px-5 py-3 text-[14px]"
+          >
             Tạo câu hỏi mới
           </button>
         </div>
       ) : !currentQuestion ? (
         <div className="py-16 text-center">
           <p className="text-[15px] text-[#8c3451]">Chưa có câu hỏi cho bài học này.</p>
-          <button onClick={() => void generateLessonQuestions(true)} className="theme-button mt-4 px-5 py-3 text-[14px]">
+          <button
+            onClick={() => void generateLessonQuestions(true)}
+            className="theme-button mt-4 px-5 py-3 text-[14px]"
+          >
             {questionGenerating ? 'Đang tạo...' : 'Tạo câu hỏi ôn tập'}
           </button>
         </div>
@@ -3232,7 +3601,9 @@ export default function LearningPathDetail() {
               {currentQuestionSources.length > 0 ? (
                 <span className="rounded-full bg-white px-4 py-2 text-[12px] font-semibold text-[#6f5260]">
                   {currentQuestionSources
-                    .map((item) => (item.page_number ? `trang ${item.page_number}` : item.chunk_index + 1))
+                    .map((item) =>
+                      item.page_number ? `trang ${item.page_number}` : item.chunk_index + 1,
+                    )
                     .join(' · ')}
                 </span>
               ) : null}
@@ -3245,7 +3616,9 @@ export default function LearningPathDetail() {
           <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#f7e8ee]">
             <div
               className="h-full rounded-full bg-[#8c3451] transition-all"
-              style={{ width: `${quizQuestions.length > 0 ? ((currentQuestionIndex + 1) / quizQuestions.length) * 100 : 0}%` }}
+              style={{
+                width: `${quizQuestions.length > 0 ? ((currentQuestionIndex + 1) / quizQuestions.length) * 100 : 0}%`,
+              }}
             />
           </div>
 
@@ -3266,14 +3639,17 @@ export default function LearningPathDetail() {
                 style={{ boxShadow: '0 18px 36px rgba(45,31,17,0.12)' }}
               >
                 <h3 className="text-[22px] font-semibold tracking-[-0.03em] text-[#141217]">
-                  Câu hỏi {currentQuestionIndex + 1}: <span className="font-normal">{currentQuestion.question}</span>
+                  Câu hỏi {currentQuestionIndex + 1}:{' '}
+                  <span className="font-normal">{currentQuestion.question}</span>
                 </h3>
 
                 {currentQuestion.question_type === 'short_answer' ? (
                   <div className="mt-8">
                     <textarea
                       value={selectedAnswers[currentQuestion.question_id] || ''}
-                      onChange={(event) => handleSelectAnswer(currentQuestion.question_id, event.target.value)}
+                      onChange={(event) =>
+                        handleSelectAnswer(currentQuestion.question_id, event.target.value)
+                      }
                       disabled={submitted}
                       placeholder="Tự nhập câu trả lời ngắn của bạn..."
                       className="min-h-[140px] w-full rounded-[22px] border border-white/80 bg-white/85 px-5 py-4 text-[16px] text-[#141217] outline-none placeholder:text-[#8b7f88] focus:border-[#8c3451]"
@@ -3287,8 +3663,12 @@ export default function LearningPathDetail() {
                     {buildQuestionChoices(currentQuestion).map((choice, index) => {
                       const label = ['A', 'B', 'C', 'D'][index] || `${index + 1}`;
                       const picked = selectedAnswers[currentQuestion.question_id] === choice;
-                      const isCorrect = submitted && isQuestionAnsweredCorrectly(currentQuestion, choice);
-                      const isWrong = submitted && picked && !isQuestionAnsweredCorrectly(currentQuestion, choice);
+                      const isCorrect =
+                        submitted && isQuestionAnsweredCorrectly(currentQuestion, choice);
+                      const isWrong =
+                        submitted &&
+                        picked &&
+                        !isQuestionAnsweredCorrectly(currentQuestion, choice);
 
                       return (
                         <button
@@ -3298,12 +3678,18 @@ export default function LearningPathDetail() {
                         >
                           <span
                             className={`flex h-11 w-11 items-center justify-center rounded-full bg-white text-[18px] font-bold text-[#141217] ${
-                              isCorrect ? 'ring-2 ring-green-500' : isWrong ? 'ring-2 ring-red-400' : ''
+                              isCorrect
+                                ? 'ring-2 ring-green-500'
+                                : isWrong
+                                  ? 'ring-2 ring-red-400'
+                                  : ''
                             }`}
                           >
                             {label}
                           </span>
-                          <span className="text-[16px] text-[#141217]">{getQuestionChoiceLabel(choice)}</span>
+                          <span className="text-[16px] text-[#141217]">
+                            {getQuestionChoiceLabel(choice)}
+                          </span>
                         </button>
                       );
                     })}
@@ -3315,11 +3701,17 @@ export default function LearningPathDetail() {
                     {currentQuestion.question_type === 'short_answer' ? (
                       <p className="font-semibold">
                         Câu trả lời của bạn:{' '}
-                        <span className="font-normal">{selectedAnswers[currentQuestion.question_id] || 'Chưa trả lời'}</span>
+                        <span className="font-normal">
+                          {selectedAnswers[currentQuestion.question_id] || 'Chưa trả lời'}
+                        </span>
                       </p>
                     ) : null}
-                    <p className="font-semibold">Đáp án đúng: {getQuestionChoiceLabel(currentQuestion.correct_answer)}</p>
-                    <p className="mt-1">{currentQuestion.explanation || 'Chưa có giải thích chi tiết.'}</p>
+                    <p className="font-semibold">
+                      Đáp án đúng: {getQuestionChoiceLabel(currentQuestion.correct_answer)}
+                    </p>
+                    <p className="mt-1">
+                      {currentQuestion.explanation || 'Chưa có giải thích chi tiết.'}
+                    </p>
                     {currentQuestionSources.length > 0 ? (
                       <div className="mt-3 flex flex-wrap gap-2">
                         {currentQuestionSources.map((item) => (
@@ -3327,7 +3719,9 @@ export default function LearningPathDetail() {
                             key={`question-source-${item.chunk_id}`}
                             className="rounded-full bg-white px-3 py-1 text-[12px] font-medium text-[#8c3451]"
                           >
-                            {item.page_number ? `${item.resource_title || 'PDF'} · trang ${item.page_number}` : item.resource_title || `Chunk ${item.chunk_index + 1}`}
+                            {item.page_number
+                              ? `${item.resource_title || 'PDF'} · trang ${item.page_number}`
+                              : item.resource_title || `Chunk ${item.chunk_index + 1}`}
                           </span>
                         ))}
                       </div>
@@ -3338,7 +3732,9 @@ export default function LearningPathDetail() {
             </div>
 
             <button
-              onClick={() => setCurrentQuestionIndex((value) => Math.min(value + 1, quizQuestions.length - 1))}
+              onClick={() =>
+                setCurrentQuestionIndex((value) => Math.min(value + 1, quizQuestions.length - 1))
+              }
               disabled={currentQuestionIndex >= quizQuestions.length - 1}
               className="flex h-14 w-14 items-center justify-center rounded-full border border-black/10 bg-white text-[38px] leading-none text-[#141217] shadow-[0_12px_24px_rgba(45,31,17,0.08)] disabled:opacity-30"
             >
@@ -3383,7 +3779,9 @@ export default function LearningPathDetail() {
             <div className="text-[16px] text-black/60">Đang tải lộ trình...</div>
           </div>
         ) : error ? (
-          <div className="white-panel border border-red-200 bg-red-50 px-4 py-4 text-red-700">{error}</div>
+          <div className="white-panel border border-red-200 bg-red-50 px-4 py-4 text-red-700">
+            {error}
+          </div>
         ) : (
           <div className="page-shell max-w-[1280px]">
             {renderHeader()}
@@ -3408,10 +3806,13 @@ export default function LearningPathDetail() {
             onClick={(event) => event.stopPropagation()}
           >
             <p className="page-kicker mb-2">Xóa lộ trình</p>
-            <h3 className="text-[28px] font-semibold tracking-[-0.04em] text-[#141217]">Bạn có chắc muốn xóa?</h3>
+            <h3 className="text-[28px] font-semibold tracking-[-0.04em] text-[#141217]">
+              Bạn có chắc muốn xóa?
+            </h3>
             <p className="mt-4 text-[15px] leading-7 text-[#5f5853]">
-              Lộ trình <span className="font-semibold text-[#8c3451]">{displayGoal || subjectLabel}</span> sẽ bị xóa
-              cùng các chương, bài học và câu hỏi được sinh riêng cho lộ trình này.
+              Lộ trình{' '}
+              <span className="font-semibold text-[#8c3451]">{displayGoal || subjectLabel}</span> sẽ
+              bị xóa cùng các chương, bài học và câu hỏi được sinh riêng cho lộ trình này.
             </p>
             <div className="mt-8 flex flex-wrap justify-end gap-3">
               <button
@@ -3437,5 +3838,3 @@ export default function LearningPathDetail() {
     </DashboardLayout>
   );
 }
-
-

@@ -2,11 +2,13 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import bunnyLogo from '../../assets/Elegant Sub-Logo Designs for Beauty Brands.jpg';
 import illustrationLearning from '../../assets/tải xuống (1).jpg';
+import { useAuth } from '../../contexts/AuthContext';
 import { authService } from '../../services/authService';
 import type { StoredUser } from '../../types/auth';
 
 export default function Login() {
   const navigate = useNavigate();
+  const { setUser } = useAuth();
   const [email, setEmail] = useState(authService.getStoredEmail() || '');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(!!authService.getStoredEmail());
@@ -29,6 +31,12 @@ export default function Login() {
         name: data.name,
       };
       authService.setStoredUser(user);
+      setUser({
+        user_id: data.user_id,
+        email: data.email,
+        name: data.name,
+        level: 'beginner',
+      });
 
       if (rememberMe) {
         localStorage.setItem('email', email);

@@ -26,7 +26,11 @@ from backend.app.repositories import (
     ResourceChunkRepository,
     ResourceRepository,
 )
-from backend.app.services.chunk_service import build_chunk_documents, clean_text, split_into_chunks
+from backend.app.services.chunk_service import (
+    build_chunk_documents,
+    clean_text,
+    split_into_chunks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +294,9 @@ class IngestionService:
             job_id=job_id,
             resource_id=resource_id,
             resource_type="youtube",
-            processing_fn=lambda: self._process_youtube_content(resource_id, youtube_url, topic, level),
+            processing_fn=lambda: self._process_youtube_content(
+                resource_id, youtube_url, topic, level
+            ),
         )
 
     def get_job_status(self, job_id: str) -> Dict[str, Any]:
@@ -346,7 +352,9 @@ class IngestionService:
             )
         except Exception as exc:
             processing_time = round(time.perf_counter() - start, 3)
-            logger.exception("Ingestion job failed for resource %s: %s", resource_id, exc)
+            logger.exception(
+                "Ingestion job failed for resource %s: %s", resource_id, exc
+            )
             self.job_repository.update(
                 job_id,
                 {
@@ -384,7 +392,9 @@ class IngestionService:
         cleaned_text = "\n\n".join(page_text for _, page_text in pages)
         page_chunks = [page_text for _, page_text in chunk_pages]
         page_chunk_indexes = [page_number - 1 for page_number, _ in chunk_pages]
-        page_chunk_metadata = [{"page_number": page_number} for page_number, _ in chunk_pages]
+        page_chunk_metadata = [
+            {"page_number": page_number} for page_number, _ in chunk_pages
+        ]
         metadata = {
             **resource.get("metadata", {}),
             "pages": page_count,
@@ -409,8 +419,12 @@ class IngestionService:
         level: str,
     ) -> Dict[str, Any]:
         resource = self._require_resource(resource_id)
-        video_id = resource.get("metadata", {}).get("video_id") or self.extract_video_id(youtube_url)
-        metadata = self.fetch_youtube_metadata(video_id=video_id, youtube_url=youtube_url)
+        video_id = resource.get("metadata", {}).get(
+            "video_id"
+        ) or self.extract_video_id(youtube_url)
+        metadata = self.fetch_youtube_metadata(
+            video_id=video_id, youtube_url=youtube_url
+        )
         transcript_text, transcript_language = self.fetch_youtube_transcript(video_id)
 
         if transcript_text:
@@ -428,7 +442,9 @@ class IngestionService:
             content_kind = "ai_summary"
 
         raw_chunks = split_into_chunks(cleaned_text)
-        ranked_chunks = self._rank_chunks_by_topic(raw_chunks, topic=topic, limit=MAX_STORED_CHUNKS)
+        ranked_chunks = self._rank_chunks_by_topic(
+            raw_chunks, topic=topic, limit=MAX_STORED_CHUNKS
+        )
         merged_metadata = {
             **resource.get("metadata", {}),
             **metadata,
@@ -506,7 +522,9 @@ class IngestionService:
             "metadata": metadata_updates,
         }
 
-    def _rank_chunks_by_topic(self, chunks: List[str], *, topic: str, limit: int) -> List[str]:
+    def _rank_chunks_by_topic(
+        self, chunks: List[str], *, topic: str, limit: int
+    ) -> List[str]:
         """Use embedding similarity instead of keyword maps to prioritize chunks."""
         if len(chunks) <= limit:
             return chunks
@@ -526,7 +544,9 @@ class IngestionService:
 
         return np.array(values, dtype=float)
 
-    def _build_submission_response(self, *, resource: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_submission_response(
+        self, *, resource: Dict[str, Any], job: Dict[str, Any]
+    ) -> Dict[str, Any]:
         return {
             "resource_id": str(resource["_id"]),
             "job_id": str(job["_id"]),
@@ -575,7 +595,9 @@ class IngestionService:
     @staticmethod
     def _sanitize_filename(filename: str) -> str:
         name = Path(filename).name
-        safe = "".join(char if char.isalnum() or char in "._-" else "_" for char in name)
+        safe = "".join(
+            char if char.isalnum() or char in "._-" else "_" for char in name
+        )
         if not safe.lower().endswith(".pdf"):
             safe = f"{safe}.pdf"
         return safe
@@ -602,14 +624,19 @@ class IngestionService:
         elif "youtube.com" in hostname:
             if parsed.path == "/watch":
                 candidate = parse_qs(parsed.query).get("v", [""])[0]
-            elif parsed.path.startswith("/shorts/") or parsed.path.startswith("/embed/"):
+            elif parsed.path.startswith("/shorts/") or parsed.path.startswith(
+                "/embed/"
+            ):
                 candidate = parsed.path.strip("/").split("/")[1]
             else:
                 candidate = parse_qs(parsed.query).get("v", [""])[0]
         else:
             raise ValueError("Invalid YouTube URL.")
 
-        if len(candidate) != 11 or not candidate.replace("-", "").replace("_", "").isalnum():
+        if (
+            len(candidate) != 11
+            or not candidate.replace("-", "").replace("_", "").isalnum()
+        ):
             raise ValueError("Invalid YouTube video identifier.")
         return candidate
 
@@ -658,7 +685,9 @@ class IngestionService:
                 "duration": video.length or 0,
                 "channel": video.author or fallback["channel"],
                 "views": video.views or 0,
-                "publish_date": video.publish_date.isoformat() if video.publish_date else None,
+                "publish_date": (
+                    video.publish_date.isoformat() if video.publish_date else None
+                ),
                 "thumbnail_url": video.thumbnail_url,
             }
         except Exception as exc:
@@ -673,14 +702,18 @@ class IngestionService:
         languages = ["en", "vi", "es", "fr"]
         for language in languages:
             try:  # pragma: no cover - optional external integration
-                transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[language])
+                transcript = YouTubeTranscriptApi.get_transcript(
+                    video_id, languages=[language]
+                )
                 text = " ".join(entry.get("text", "") for entry in transcript).strip()
                 if text:
                     return text, language
             except (TranscriptsDisabled, NoTranscriptFound):
                 continue
             except Exception as exc:
-                logger.debug("Transcript fetch failed for %s (%s): %s", video_id, language, exc)
+                logger.debug(
+                    "Transcript fetch failed for %s (%s): %s", video_id, language, exc
+                )
                 continue
         return None, None
 

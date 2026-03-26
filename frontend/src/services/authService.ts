@@ -32,7 +32,7 @@ export const authService = {
       await apiClient.put(`/users/${data.user_id}`, {
         level: data.level,
         learning_goal: data.learning_goal,
-      })
+      }),
     );
   },
 
@@ -41,9 +41,15 @@ export const authService = {
   },
 
   async logout(): Promise<void> {
-    localStorage.removeItem('token');
-    localStorage.removeItem('email');
-    localStorage.removeItem('user');
+    try {
+      await apiClient.post('/auth/logout', {});
+    } catch (error) {
+      console.warn('Logout API failed, clearing local session anyway:', error);
+    } finally {
+      localStorage.removeItem('token');
+      localStorage.removeItem('email');
+      localStorage.removeItem('user');
+    }
   },
 
   getStoredToken(): string | null {

@@ -7,9 +7,17 @@ from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
 
-from backend.app.ai_module import EmbeddingService, SemanticRetrievalService, cosine_similarity
+from backend.app.ai_module import (
+    EmbeddingService,
+    SemanticRetrievalService,
+    cosine_similarity,
+)
 from backend.app.repositories import ResourceChunkRepository, ResourceRepository
-from backend.app.services.chunk_service import build_chunk_documents, clean_text, split_into_chunks
+from backend.app.services.chunk_service import (
+    build_chunk_documents,
+    clean_text,
+    split_into_chunks,
+)
 
 _embedding_service = EmbeddingService()
 # Backward-compatible public alias used by existing service imports.
@@ -143,7 +151,10 @@ def store_embedding_only(
     )
     _resource_repository.update(
         parent_resource_id,
-        {"chunks_count": _chunk_repository.count_for_resource(parent_resource_id), "status": "done"},
+        {
+            "chunks_count": _chunk_repository.count_for_resource(parent_resource_id),
+            "status": "done",
+        },
     )
     return str(inserted.inserted_id)
 

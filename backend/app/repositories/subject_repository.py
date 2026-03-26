@@ -34,7 +34,10 @@ class SubjectRepository:
         document.setdefault("created_at", now)
         document.setdefault("updated_at", now)
         result = self.collection.insert_one(document)
-        return self.collection.find_one({"_id": result.inserted_id}) or {**document, "_id": result.inserted_id}
+        return self.collection.find_one({"_id": result.inserted_id}) or {
+            **document,
+            "_id": result.inserted_id,
+        }
 
     def get(self, subject_id: str | ObjectId) -> Optional[Dict[str, Any]]:
         return self.collection.find_one({"_id": self._to_object_id(subject_id)})
@@ -68,7 +71,9 @@ class SubjectRepository:
 
         total = self.collection.count_documents(query)
         skip = max(page - 1, 0) * size
-        items = list(self.collection.find(query).sort("created_at", -1).skip(skip).limit(size))
+        items = list(
+            self.collection.find(query).sort("created_at", -1).skip(skip).limit(size)
+        )
         return {
             "items": items,
             "total": total,

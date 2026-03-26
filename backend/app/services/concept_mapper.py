@@ -12,7 +12,9 @@ def _tokenize(text: str) -> List[str]:
     return [t for t in re.split(r"\W+", text.lower()) if t]
 
 
-def resolve_concept_id(topic: str, allow_fallback: bool = True, min_score: float = 0.40) -> Optional[int]:
+def resolve_concept_id(
+    topic: str, allow_fallback: bool = True, min_score: float = 0.40
+) -> Optional[int]:
     """
     Map a free-form topic string -> best matching concept_id.
 
@@ -37,7 +39,18 @@ def resolve_concept_id(topic: str, allow_fallback: bool = True, min_score: float
     topic_tokens = set(_tokenize(topic_lower))
 
     try:
-        concepts = list(db.concepts.find({}, {"_id": 0, "concept_id": 1, "concept_name": 1, "topic": 1, "difficulty": 1}))
+        concepts = list(
+            db.concepts.find(
+                {},
+                {
+                    "_id": 0,
+                    "concept_id": 1,
+                    "concept_name": 1,
+                    "topic": 1,
+                    "difficulty": 1,
+                },
+            )
+        )
     except Exception as e:
         logger.exception("DB error fetching concepts: %s", e)
         return None
@@ -90,28 +103,44 @@ def resolve_concept_id(topic: str, allow_fallback: bool = True, min_score: float
                 "concept_id": cid,
                 "concept_name": c.get("concept_name"),
                 "score": round(score, 3),
-                "difficulty": c.get("difficulty", None)
+                "difficulty": c.get("difficulty", None),
             }
 
     logger.debug("Concept matching result for '%s': %s", topic, best)
 
     if best and best_score >= min_score:
-        logger.info("Resolved topic '%s' -> concept %s (score=%.3f)", topic, best["concept_name"], best_score)
+        logger.info(
+            "Resolved topic '%s' -> concept %s (score=%.3f)",
+            topic,
+            best["concept_name"],
+            best_score,
+        )
         return best["concept_id"]
 
     # No confident match
     if not allow_fallback:
-        logger.info("No confident concept match for '%s' (best_score=%.3f); allow_fallback=False -> returning None", topic, best_score)
+        logger.info(
+            "No confident concept match for '%s' (best_score=%.3f); allow_fallback=False -> returning None",
+            topic,
+            best_score,
+        )
         return None
 
     # Fallback: return the easiest concept (lowest difficulty) if available
     try:
-        concepts_with_diff = [c for c in concepts if isinstance(c.get("difficulty"), (int, float))]
+        concepts_with_diff = [
+            c for c in concepts if isinstance(c.get("difficulty"), (int, float))
+        ]
         if concepts_with_diff:
             easiest = min(concepts_with_diff, key=lambda x: x.get("difficulty", 99))
         else:
             easiest = concepts[0]
-        logger.warning("Falling back for topic '%s' to easiest concept %s (score=%.3f)", topic, easiest.get("concept_name"), best_score)
+        logger.warning(
+            "Falling back for topic '%s' to easiest concept %s (score=%.3f)",
+            topic,
+            easiest.get("concept_name"),
+            best_score,
+        )
         return easiest.get("concept_id")
     except Exception as e:
         logger.exception("Fallback selection error: %s", e)

@@ -20,8 +20,12 @@ router = APIRouter(prefix="/chapters", tags=["Chapters"])
 def list_chapters(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    subject_id: Optional[str] = Query(None, description="Filter chapters by subject ID"),
-    q: Optional[str] = Query(None, min_length=1, description="Search by title or description"),
+    subject_id: Optional[str] = Query(
+        None, description="Filter chapters by subject ID"
+    ),
+    q: Optional[str] = Query(
+        None, min_length=1, description="Search by title or description"
+    ),
     topic: Optional[str] = Query(None, min_length=1),
     current_user=Depends(get_current_user),
 ):
@@ -39,10 +43,15 @@ def list_chapters(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to list chapters: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load chapters.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load chapters.",
+        )
 
 
-@router.get("/{chapter_id}", response_model=ChapterResponse, status_code=status.HTTP_200_OK)
+@router.get(
+    "/{chapter_id}", response_model=ChapterResponse, status_code=status.HTTP_200_OK
+)
 def get_chapter(chapter_id: str, current_user=Depends(get_current_user)):
     """Get a single chapter."""
     del current_user
@@ -52,7 +61,10 @@ def get_chapter(chapter_id: str, current_user=Depends(get_current_user)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to get chapter %s: %s", chapter_id, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load chapter.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load chapter.",
+        )
 
 
 @router.post("/", response_model=ChapterResponse, status_code=status.HTTP_201_CREATED)
@@ -65,4 +77,7 @@ def create_chapter(payload: ChapterCreate, current_user=Depends(get_current_user
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to create chapter: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create chapter.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not create chapter.",
+        )

@@ -48,7 +48,9 @@ class YouTubeSummaryService:
 
         generated_text = self._call_with_retry(prompt)
         if not generated_text:
-            generated_text = self._fallback_template(video_title=video_title, topic=topic, level=level)
+            generated_text = self._fallback_template(
+                video_title=video_title, topic=topic, level=level
+            )
 
         return {
             "content": generated_text,
@@ -70,7 +72,9 @@ class YouTubeSummaryService:
                 if text:
                     return text
             except Exception as exc:  # pragma: no cover - optional dependency
-                logger.warning("Summary generation failed on attempt %s: %s", attempt, exc)
+                logger.warning(
+                    "Summary generation failed on attempt %s: %s", attempt, exc
+                )
                 time.sleep(min(attempt, 3))
         return None
 

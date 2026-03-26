@@ -19,7 +19,7 @@ def get_next_sequence(name: str) -> int:
         {"_id": name},
         {"$inc": {"seq": 1}},
         upsert=True,
-        return_document=ReturnDocument.AFTER
+        return_document=ReturnDocument.AFTER,
     )
 
     return counter["seq"]

@@ -58,7 +58,9 @@ export default function Signup() {
             <div className="h-[4px] w-[10px] rounded-[2px] bg-[#de8fac]" />
           </div>
 
-          <h1 className="mb-4 text-center text-[35px] font-semibold text-[#832e44]">Bắt đầu ngay</h1>
+          <h1 className="mb-4 text-center text-[35px] font-semibold text-[#832e44]">
+            Bắt đầu ngay
+          </h1>
 
           <p className="mb-12 text-center text-[15px] text-[#832e44]">
             Tạo tài khoản để bắt đầu học theo lộ trình cá nhân hóa
@@ -115,7 +117,10 @@ export default function Signup() {
 
           <p className="mt-8 text-center text-[10px] text-[#832e44]">
             <span>Đã có tài khoản? </span>
-            <button onClick={() => navigate('/login')} className="cursor-pointer font-bold hover:underline">
+            <button
+              onClick={() => navigate('/login')}
+              className="cursor-pointer font-bold hover:underline"
+            >
               Đăng nhập
             </button>
           </p>

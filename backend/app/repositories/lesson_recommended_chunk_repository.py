@@ -30,7 +30,9 @@ class LessonRecommendedChunkRepository:
         self.collection.create_index([("subject_id", 1), ("chapter_id", 1)])
         self.collection.create_index([("created_at", -1)])
 
-    def upsert_for_lesson(self, lesson_id: str | ObjectId, document: Dict[str, Any]) -> Dict[str, Any]:
+    def upsert_for_lesson(
+        self, lesson_id: str | ObjectId, document: Dict[str, Any]
+    ) -> Dict[str, Any]:
         now = datetime.utcnow()
         payload = dict(document)
         created_at = payload.pop("created_at", now)
@@ -53,9 +55,17 @@ class LessonRecommendedChunkRepository:
     ) -> List[Dict[str, Any]]:
         clauses: List[Dict[str, Any]] = []
         if resource_ids:
-            clauses.append({"resource_ids": {"$in": [self._to_object_id(item) for item in resource_ids]}})
+            clauses.append(
+                {
+                    "resource_ids": {
+                        "$in": [self._to_object_id(item) for item in resource_ids]
+                    }
+                }
+            )
         if chunk_ids:
-            clauses.append({"chunk_ids": {"$in": [self._to_object_id(item) for item in chunk_ids]}})
+            clauses.append(
+                {"chunk_ids": {"$in": [self._to_object_id(item) for item in chunk_ids]}}
+            )
         if not clauses:
             return []
         return list(self.collection.find({"$or": clauses}))

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import PDFViewer from '../components/PDFViewer';
 import { resourceService } from '../services/resourceService';
+import { recommendationInteractionService } from '../services/recommendationInteractionService';
 import type { Resource, SearchResponse } from '../types/resource';
 
 type ResourceLevel = Resource['level'];
@@ -17,10 +18,7 @@ const parseResourceLevel = (value: FormDataEntryValue | null): ResourceLevel => 
 };
 
 const collapseText = (value: string): string =>
-  value
-    .replace(PDF_PAGE_MARKER_REGEX, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  value.replace(PDF_PAGE_MARKER_REGEX, ' ').replace(/\s+/g, ' ').trim();
 
 const truncateText = (value: string, maxLength: number = MAX_PREVIEW_LENGTH): string => {
   if (value.length <= maxLength) {
@@ -68,6 +66,16 @@ const getDisplaySnippet = (resource: Resource): string => {
   return 'Tài nguyên được chọn để bổ trợ cho quá trình học tập hiện tại của bạn.';
 };
 
+const toNumericResourceId = (resource: Resource): number | undefined => {
+  const rawValue = resource.resource_id || resource.id || resource._id;
+  if (!rawValue) {
+    return undefined;
+  }
+
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
 export default function Resources() {
   const [searchParams] = useSearchParams();
   const conceptIdParam = searchParams.get('concept');
@@ -104,6 +112,11 @@ export default function Resources() {
     title: string;
     resourceId: string;
   } | null>(null);
+
+  // Form refs for handling resets safely
+  const pdfFormRef = useRef<HTMLFormElement>(null);
+  const youtubeFormRef = useRef<HTMLFormElement>(null);
+  const webFormRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     if (queryParam) {
@@ -212,8 +225,9 @@ export default function Resources() {
       if (!response.success) {
         throw new Error(response.error || 'Không thể tải tệp PDF lên');
       }
+      // Reset form using ref before closing
+      pdfFormRef.current?.reset();
       setShowAddResource(false);
-      (e.currentTarget as HTMLFormElement).reset();
       await finalizeIngestion(response);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Không thể tải tệp PDF lên';
@@ -245,8 +259,9 @@ export default function Resources() {
       if (!response.success) {
         throw new Error(response.error || 'Không thể thêm tài nguyên YouTube');
       }
+      // Reset form using ref before closing
+      youtubeFormRef.current?.reset();
       setShowAddResource(false);
-      (e.currentTarget as HTMLFormElement).reset();
       await finalizeIngestion(response);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Không thể thêm tài nguyên YouTube';
@@ -285,8 +300,9 @@ export default function Resources() {
       if (!response.success) {
         throw new Error(response.error || 'Không thể thêm tài nguyên web');
       }
+      // Reset form using ref before closing
+      webFormRef.current?.reset();
       setShowAddResource(false);
-      (e.currentTarget as HTMLFormElement).reset();
       await finalizeIngestion(response);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Không thể thêm tài nguyên web';
@@ -471,7 +487,14 @@ export default function Resources() {
 
     if (source === 'pdf') {
       return (
-        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+        <svg
+          className="h-5 w-5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          aria-hidden="true"
+        >
           <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z" />
           <path d="M14 2v5h5" />
           <path d="M8 13h2.5a1.5 1.5 0 0 0 0-3H8v7" />
@@ -482,7 +505,14 @@ export default function Resources() {
     }
 
     return (
-      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <svg
+        className="h-5 w-5"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        aria-hidden="true"
+      >
         <path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0-18 0Z" />
         <path d="M3.6 9h16.8" />
         <path d="M3.6 15h16.8" />
@@ -530,13 +560,35 @@ export default function Resources() {
     }
   };
 
+  const handleMarkResourceCompleted = async (
+    resource: Resource,
+    context: string = 'resource_card',
+  ) => {
+    try {
+      await recommendationInteractionService.trackResourceCompleted({
+        resource_id: toNumericResourceId(resource),
+        concept_id: resource.concept_id,
+        goal: resource.topic,
+        level: resource.level,
+        metadata: {
+          source_screen: 'resources',
+          completion_context: context,
+          resource_source: resource.source,
+          resource_identifier: resource.resource_id || resource.id || resource._id,
+        },
+      });
+      showToast('success', 'Đã ghi nhận hoàn thành tài nguyên.');
+    } catch (completionError) {
+      console.error('Failed to track resource completion:', completionError);
+      showToast('error', 'Không thể ghi nhận hoàn thành tài nguyên.');
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="page-shell pb-6">
         <p className="page-kicker">Thư viện học tập</p>
-        <h1 className="page-title">
-          Tài nguyên học tập
-        </h1>
+        <h1 className="page-title">Tài nguyên học tập</h1>
 
         {error && (
           <div className="white-panel mb-6 border border-red-200 px-4 py-3 text-[14px] text-red-700">
@@ -553,7 +605,9 @@ export default function Resources() {
         <div className="soft-panel sticky top-4 z-10 mb-[40px] space-y-4 p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-[13px] text-[#6f6661]">
-              {totalResults > 0 ? `${totalResults} tài nguyên khớp với bộ lọc` : 'Tìm kiếm, lọc và thêm tài nguyên nhanh hơn'}
+              {totalResults > 0
+                ? `${totalResults} tài nguyên khớp với bộ lọc`
+                : 'Tìm kiếm, lọc và thêm tài nguyên nhanh hơn'}
             </p>
           </div>
           <form onSubmit={handleSearch} className="flex flex-col gap-3 sm:flex-row">
@@ -564,10 +618,7 @@ export default function Resources() {
               placeholder="Tìm kiếm tài nguyên..."
               className="theme-input"
             />
-            <button
-              type="submit"
-              className="theme-button justify-center sm:self-auto"
-            >
+            <button type="submit" className="theme-button justify-center sm:self-auto">
               Tìm
             </button>
           </form>
@@ -576,7 +627,7 @@ export default function Resources() {
             <select
               value={filters.level}
               onChange={(e) => handleFilterChange('level', e.target.value)}
-               className="theme-input min-w-[160px] flex-1 rounded-full py-2 sm:w-auto sm:min-w-[180px] sm:flex-none"
+              className="theme-input min-w-[160px] flex-1 rounded-full py-2 sm:w-auto sm:min-w-[180px] sm:flex-none"
             >
               <option value="">Tất cả cấp độ</option>
               <option value="beginner">Bước đầu</option>
@@ -587,7 +638,7 @@ export default function Resources() {
             <select
               value={filters.source}
               onChange={(e) => handleFilterChange('source', e.target.value)}
-               className="theme-input min-w-[160px] flex-1 rounded-full py-2 sm:w-auto sm:min-w-[180px] sm:flex-none"
+              className="theme-input min-w-[160px] flex-1 rounded-full py-2 sm:w-auto sm:min-w-[180px] sm:flex-none"
             >
               <option value="">Tất cả nguồn</option>
               <option value="youtube">YouTube</option>
@@ -623,7 +674,7 @@ export default function Resources() {
             </div>
 
             {addResourceType === 'web' && (
-              <form onSubmit={handleWebAdd} className="space-y-4">
+              <form ref={webFormRef} onSubmit={handleWebAdd} className="space-y-4">
                 <input
                   type="text"
                   name="title"
@@ -679,7 +730,7 @@ export default function Resources() {
             )}
 
             {addResourceType === 'youtube' && (
-              <form onSubmit={handleYouTubeAdd} className="space-y-4">
+              <form ref={youtubeFormRef} onSubmit={handleYouTubeAdd} className="space-y-4">
                 <input
                   type="url"
                   name="youtube_url"
@@ -729,7 +780,7 @@ export default function Resources() {
             )}
 
             {addResourceType === 'pdf' && (
-              <form onSubmit={handlePDFUpload} className="space-y-4">
+              <form ref={pdfFormRef} onSubmit={handlePDFUpload} className="space-y-4">
                 <input
                   type="file"
                   name="pdf_file"
@@ -790,7 +841,6 @@ export default function Resources() {
         ) : (
           <>
             <div className="mb-[40px] grid grid-cols-1 gap-6 md:grid-cols-2 2xl:grid-cols-3">
-
               {resources.map((resource) => {
                 const sourceTheme = getSourceTheme(resource.source);
                 const resourceId = getResourceIdentifier(resource);
@@ -815,7 +865,9 @@ export default function Resources() {
                         </h3>
                       </div>
                       <div className="flex shrink-0 items-start gap-2">
-                        <span className={`rounded-full px-3 py-1.5 text-[11px] font-medium ${getLevelColor(resource.level)}`}>
+                        <span
+                          className={`rounded-full px-3 py-1.5 text-[11px] font-medium ${getLevelColor(resource.level)}`}
+                        >
                           {getLevelLabel(resource.level)}
                         </span>
                         <button
@@ -830,15 +882,21 @@ export default function Resources() {
                     </div>
 
                     <div className="mb-5 flex items-center justify-between gap-3">
-                      <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[12px] font-medium ${sourceTheme.chip}`}>
+                      <span
+                        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[12px] font-medium ${sourceTheme.chip}`}
+                      >
                         {getSourceLabel(resource.source)}
                       </span>
-                      <span className={`flex h-11 w-11 items-center justify-center rounded-full border ${sourceTheme.icon}`}>
+                      <span
+                        className={`flex h-11 w-11 items-center justify-center rounded-full border ${sourceTheme.icon}`}
+                      >
                         {getSourceIcon(resource.source)}
                       </span>
                     </div>
 
-                    <div className={`relative mb-5 flex min-h-[250px] flex-1 overflow-hidden rounded-[28px] border border-[#efeaed] ${sourceTheme.preview}`}>
+                    <div
+                      className={`relative mb-5 flex min-h-[250px] flex-1 overflow-hidden rounded-[28px] border border-[#efeaed] ${sourceTheme.preview}`}
+                    >
                       {resource.source === 'youtube' ? (
                         (() => {
                           const thumbnailUrl = getYouTubeThumbnail(resource);
@@ -861,13 +919,21 @@ export default function Resources() {
                               <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(19,16,22,0.02)_0%,rgba(19,16,22,0.35)_100%)]" />
                               <div className="absolute inset-x-5 bottom-5 flex items-end justify-between gap-4">
                                 <div className="max-w-[70%] rounded-[20px] bg-white/88 px-4 py-3 backdrop-blur-sm">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#9b2f55]">YouTube</p>
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#9b2f55]">
+                                    YouTube
+                                  </p>
                                   <p className="mt-1 line-clamp-2 text-[14px] font-medium leading-5 text-[#17141a]">
                                     {displayTitle}
                                   </p>
                                 </div>
-                                <span className={`flex h-16 w-16 shrink-0 items-center justify-center rounded-full text-white shadow-[0_18px_30px_rgba(114,62,83,0.18)] ${sourceTheme.accent}`}>
-                                  <svg className="ml-1 h-8 w-8" fill="currentColor" viewBox="0 0 24 24">
+                                <span
+                                  className={`flex h-16 w-16 shrink-0 items-center justify-center rounded-full text-white shadow-[0_18px_30px_rgba(114,62,83,0.18)] ${sourceTheme.accent}`}
+                                >
+                                  <svg
+                                    className="ml-1 h-8 w-8"
+                                    fill="currentColor"
+                                    viewBox="0 0 24 24"
+                                  >
                                     <path d="M8 5v14l11-7z" />
                                   </svg>
                                 </span>
@@ -897,12 +963,18 @@ export default function Resources() {
                               }}
                             />
                           ) : (
-                            <div className={`flex h-full w-full flex-col items-center justify-center gap-4 px-6 text-center ${sourceTheme.soft}`}>
-                              <span className={`flex h-16 w-16 items-center justify-center rounded-[20px] border bg-white shadow-[0_12px_24px_rgba(114,62,83,0.08)] ${sourceTheme.icon}`}>
+                            <div
+                              className={`flex h-full w-full flex-col items-center justify-center gap-4 px-6 text-center ${sourceTheme.soft}`}
+                            >
+                              <span
+                                className={`flex h-16 w-16 items-center justify-center rounded-[20px] border bg-white shadow-[0_12px_24px_rgba(114,62,83,0.08)] ${sourceTheme.icon}`}
+                              >
                                 {getSourceIcon(resource.source)}
                               </span>
                               <div>
-                                <p className="text-[12px] font-semibold tracking-[0.08em] text-[#8d7e84]">Tệp PDF</p>
+                                <p className="text-[12px] font-semibold tracking-[0.08em] text-[#8d7e84]">
+                                  Tệp PDF
+                                </p>
                                 <p className="mt-2 text-[16px] font-medium leading-6 text-[#1b171c]">
                                   Xem nhanh tài liệu trực tiếp trong thư viện của bạn.
                                 </p>
@@ -911,13 +983,32 @@ export default function Resources() {
                           )}
                           <div className="pointer-events-none absolute inset-x-5 bottom-5 flex items-center justify-between gap-4">
                             <div className="rounded-[18px] bg-white/90 px-4 py-3 backdrop-blur-sm">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6d4c8f]">PDF</p>
-                              <p className="mt-1 text-[14px] font-medium text-[#17141a]">Xem trước tài liệu</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6d4c8f]">
+                                PDF
+                              </p>
+                              <p className="mt-1 text-[14px] font-medium text-[#17141a]">
+                                Xem trước tài liệu
+                              </p>
                             </div>
                             <span className="rounded-full bg-white/90 p-3 text-[#8c3451] shadow-[0_12px_24px_rgba(114,62,83,0.12)] backdrop-blur-sm">
-                              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                              <svg
+                                className="h-6 w-6"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                                />
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                                />
                               </svg>
                             </span>
                           </div>
@@ -933,7 +1024,9 @@ export default function Resources() {
                             </p>
                           </div>
                           <div className="flex items-end justify-between gap-3">
-                            <span className={`max-w-[75%] rounded-full px-3 py-2 text-[12px] ${sourceTheme.soft} ${sourceTheme.icon}`}>
+                            <span
+                              className={`max-w-[75%] rounded-full px-3 py-2 text-[12px] ${sourceTheme.soft} ${sourceTheme.icon}`}
+                            >
                               {resourceHost}
                             </span>
                             <button
@@ -948,14 +1041,18 @@ export default function Resources() {
                       )}
                     </div>
 
-                    <div className={`rounded-[24px] border px-4 py-4 ${sourceTheme.soft} border-white/70`}>
+                    <div
+                      className={`rounded-[24px] border px-4 py-4 ${sourceTheme.soft} border-white/70`}
+                    >
                       <p className="line-clamp-2 min-h-[44px] break-words text-[13px] leading-6 text-[#6a625d]">
                         {previewText}
                       </p>
 
                       <div className="mt-4 flex items-center justify-between gap-3 border-t border-white/80 pt-4">
                         <div className="flex min-w-0 items-center gap-3">
-                          <span className={`flex h-10 w-10 items-center justify-center rounded-[14px] border bg-white ${sourceTheme.icon}`}>
+                          <span
+                            className={`flex h-10 w-10 items-center justify-center rounded-[14px] border bg-white ${sourceTheme.icon}`}
+                          >
                             {getSourceIcon(resource.source)}
                           </span>
                           <div className="min-w-0">
@@ -965,18 +1062,29 @@ export default function Resources() {
                             <p className="line-clamp-1 text-[15px] font-semibold leading-6 tracking-[-0.01em] text-[#18141a]">
                               {resource.topic || displayTitle}
                             </p>
-                            <p className="text-[12px] font-normal leading-5 tracking-normal text-[#7a726d]">{getResourceTimestamp(resource)}</p>
+                            <p className="text-[12px] font-normal leading-5 tracking-normal text-[#7a726d]">
+                              {getResourceTimestamp(resource)}
+                            </p>
                           </div>
                         </div>
-                        {resource.source !== 'web' && (
+                        <div className="flex flex-wrap justify-end gap-2">
+                          {resource.source !== 'web' && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenResource(resource)}
+                              className={`rounded-full border bg-white px-4 py-2 text-[12px] font-medium transition hover:bg-white ${sourceTheme.chip}`}
+                            >
+                              {resource.source === 'youtube' ? 'Xem video' : 'Xem trước'}
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => handleOpenResource(resource)}
-                            className={`rounded-full border bg-white px-4 py-2 text-[12px] font-medium transition hover:bg-white ${sourceTheme.chip}`}
+                            onClick={() => void handleMarkResourceCompleted(resource)}
+                            className="rounded-full border border-emerald-200 bg-white px-4 py-2 text-[12px] font-medium text-emerald-700 transition hover:bg-emerald-50"
                           >
-                            {resource.source === 'youtube' ? 'Xem video' : 'Xem trước'}
+                            Đã học xong
                           </button>
-                        )}
+                        </div>
                       </div>
                     </div>
                   </article>
@@ -1020,8 +1128,8 @@ export default function Resources() {
 
         {resources.length > 0 && (
           <div className="text-center text-[13px] text-gray-600 mt-[40px]">
-            Hiển thị {(currentPage - 1) * pageSize + 1} đến {Math.min(currentPage * pageSize, totalResults)} trên tổng{' '}
-            {totalResults} tài nguyên
+            Hiển thị {(currentPage - 1) * pageSize + 1} đến{' '}
+            {Math.min(currentPage * pageSize, totalResults)} trên tổng {totalResults} tài nguyên
           </div>
         )}
       </div>
@@ -1045,7 +1153,12 @@ export default function Resources() {
                 aria-label="Đóng"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
                 </svg>
               </button>
             </div>
@@ -1104,8 +1217,12 @@ export default function Resources() {
               Xóa tài nguyên này?
             </h3>
             <p className="mb-6 text-[14px] leading-6 text-[#6f5260]">
-              Tài nguyên <span className="font-semibold text-[#8c3451]">{getDisplayTitle(pendingDeleteResource)}</span> sẽ bị xóa khỏi danh sách,
-              đồng thời dọn luôn dữ liệu chunk và gợi ý liên quan trong hệ thống.
+              Tài nguyên{' '}
+              <span className="font-semibold text-[#8c3451]">
+                {getDisplayTitle(pendingDeleteResource)}
+              </span>{' '}
+              sẽ bị xóa khỏi danh sách, đồng thời dọn luôn dữ liệu chunk và gợi ý liên quan trong hệ
+              thống.
             </p>
 
             <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">

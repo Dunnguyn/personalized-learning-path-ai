@@ -40,9 +40,13 @@ class IngestionJobRepository:
         created = self.collection.find_one({"_id": result.inserted_id})
         return created or {**document, "_id": result.inserted_id}
 
-    def update(self, job_id: str | ObjectId, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def update(
+        self, job_id: str | ObjectId, updates: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
         updates = {**updates, "updated_at": datetime.utcnow()}
-        self.collection.update_one({"_id": self._to_object_id(job_id)}, {"$set": updates})
+        self.collection.update_one(
+            {"_id": self._to_object_id(job_id)}, {"$set": updates}
+        )
         return self.get(job_id)
 
     def get(self, job_id: str | ObjectId) -> Optional[Dict[str, Any]]:

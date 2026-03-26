@@ -31,11 +31,7 @@ def list_concepts():
         concept_id = concept.get("concept_id")
         concept["prerequisites"] = prereq_map.get(concept_id, [])
 
-    return {
-        "success": True,
-        "concepts": concepts,
-        "total": len(concepts)
-    }
+    return {"success": True, "concepts": concepts, "total": len(concepts)}
 
 
 @router.get("/{concept_id}", status_code=status.HTTP_200_OK)
@@ -46,14 +42,10 @@ def get_concept(concept_id: int):
 
     if not concept:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Concept not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found"
         )
 
     prereq_map = _build_prereq_map(db)
     concept["prerequisites"] = prereq_map.get(concept_id, [])
 
-    return {
-        "success": True,
-        "concept": concept
-    }
+    return {"success": True, "concept": concept}

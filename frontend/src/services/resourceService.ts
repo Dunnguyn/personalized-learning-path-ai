@@ -1,5 +1,10 @@
 import { apiClient } from '@/utils/apiClient';
-import type { IngestionJobStatus, Resource, SearchResponse, UploadResponse } from '../types/resource';
+import type {
+  IngestionJobStatus,
+  Resource,
+  SearchResponse,
+  UploadResponse,
+} from '../types/resource';
 import {
   asRecord,
   normalizeIngestionJobStatus,
@@ -8,7 +13,12 @@ import {
   transformToSearchResponse,
 } from './parsers/resourceParser';
 
-export type { IngestionJobStatus, Resource, SearchResponse, UploadResponse } from '../types/resource';
+export type {
+  IngestionJobStatus,
+  Resource,
+  SearchResponse,
+  UploadResponse,
+} from '../types/resource';
 
 const DEFAULT_PAGE_SIZE = 10;
 const PDF_UPLOAD_TIMEOUT = 60000;
@@ -16,7 +26,7 @@ const PDF_UPLOAD_TIMEOUT = 60000;
 function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
-  timeoutMessage: string = 'Request timeout'
+  timeoutMessage: string = 'Request timeout',
 ): Promise<T> {
   return Promise.race([
     promise,
@@ -28,7 +38,7 @@ export const resourceService = {
   async searchResources(
     query: string,
     page: number = 1,
-    size: number = DEFAULT_PAGE_SIZE
+    size: number = DEFAULT_PAGE_SIZE,
   ): Promise<SearchResponse> {
     if (!query || query.trim().length === 0) {
       return {
@@ -78,7 +88,7 @@ export const resourceService = {
     file: File,
     topic: string,
     level: 'beginner' | 'intermediate' | 'advanced',
-    conceptId?: number
+    conceptId?: number,
   ): Promise<UploadResponse> {
     try {
       if (!file) {
@@ -119,12 +129,16 @@ export const resourceService = {
           signal: controller.signal,
         }),
         PDF_UPLOAD_TIMEOUT,
-        'Tải PDF quá lâu. Tệp có thể quá lớn hoặc quá phức tạp, vui lòng thử tệp nhỏ hơn.'
+        'Tải PDF quá lâu. Tệp có thể quá lớn hoặc quá phức tạp, vui lòng thử tệp nhỏ hơn.',
       )) as Response;
 
       if (!response.ok) {
         const errorData = asRecord(await response.json().catch(() => ({})));
-        throw new Error(String(errorData.detail || errorData.message || `Tải tệp thất bại: ${response.statusText}`));
+        throw new Error(
+          String(
+            errorData.detail || errorData.message || `Tải tệp thất bại: ${response.statusText}`,
+          ),
+        );
       }
 
       const data = normalizeUploadPayload(await response.json());
@@ -150,7 +164,7 @@ export const resourceService = {
     title: string,
     topic: string,
     level: 'beginner' | 'intermediate' | 'advanced',
-    conceptId?: number
+    conceptId?: number,
   ): Promise<UploadResponse> {
     try {
       if (!url || (!url.includes('youtube.com') && !url.includes('youtu.be'))) {
@@ -164,7 +178,7 @@ export const resourceService = {
           topic: topic.trim(),
           level,
           concept_id: conceptId && conceptId > 0 ? conceptId : undefined,
-        })
+        }),
       );
 
       return {
@@ -212,7 +226,7 @@ export const resourceService = {
           level: data.level,
           url: data.url?.trim() || undefined,
           concept_id: data.conceptId && data.conceptId > 0 ? data.conceptId : undefined,
-        })
+        }),
       );
 
       return {
@@ -255,7 +269,9 @@ export const resourceService = {
       throw new Error('Thiếu mã job xử lý tài nguyên');
     }
 
-    return normalizeIngestionJobStatus(await apiClient.get(`/resources/jobs/${encodeURIComponent(jobId)}`));
+    return normalizeIngestionJobStatus(
+      await apiClient.get(`/resources/jobs/${encodeURIComponent(jobId)}`),
+    );
   },
 
   async waitForIngestionCompletion(
@@ -263,7 +279,7 @@ export const resourceService = {
     options?: {
       intervalMs?: number;
       timeoutMs?: number;
-    }
+    },
   ): Promise<IngestionJobStatus> {
     const intervalMs = options?.intervalMs ?? 1500;
     const timeoutMs = options?.timeoutMs ?? 45000;

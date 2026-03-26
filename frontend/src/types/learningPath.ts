@@ -77,6 +77,11 @@ export interface LessonProgressApiResponse {
   lesson_id: string;
   status: LessonStatus;
   updated_at: string;
+  auto_completed?: boolean;
+  is_locked?: boolean;
+  reason_locked?: string;
+  last_confidence?: number;
+  confidence_updated_at?: string;
 }
 
 export interface LessonStudyTimeResponse {
@@ -129,6 +134,17 @@ export interface LessonQuestionBank {
   questions: LessonQuestion[];
 }
 
+export interface LessonAnsweredQuestion {
+  question_id: string;
+  question: string;
+  question_type: LessonQuestionType;
+  user_answer: string;
+  correct_answer: string;
+  is_correct: boolean;
+  difficulty: LearningLevel;
+  bloom_level: BloomLevel;
+}
+
 export interface LessonQuestionGenerationResponse {
   lesson_id: string;
   status: string;
@@ -139,6 +155,16 @@ export interface LessonQuestionGenerationResponse {
   reused_existing: boolean;
   existing_count: number;
   message: string;
+}
+
+export interface LessonAttemptStatistics {
+  total_attempts: number;
+  passed_attempts: number;
+  best_confidence: number | null;
+  avg_confidence: number | null;
+  latest_confidence: number | null;
+  improvement: number | null;
+  success_rate: number;
 }
 
 export interface RecommendedChunkItem {

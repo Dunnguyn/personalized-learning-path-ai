@@ -7,7 +7,11 @@ from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
 
-from backend.app.repositories import ChapterRepository, LessonRepository, SubjectRepository
+from backend.app.repositories import (
+    ChapterRepository,
+    LessonRepository,
+    SubjectRepository,
+)
 
 
 def serialize_document(document: Dict[str, Any]) -> Dict[str, Any]:
@@ -111,7 +115,10 @@ class LessonStructureService:
         return self._serialize_subject(subject)
 
     def list_subjects(self) -> List[Dict[str, Any]]:
-        return [self._serialize_subject(subject) for subject in self.subject_repository.list()]
+        return [
+            self._serialize_subject(subject)
+            for subject in self.subject_repository.list()
+        ]
 
     def list_subjects_paginated(
         self,
@@ -222,7 +229,11 @@ class LessonStructureService:
                 "level": payload.level.value,
                 "learning_objectives": payload.learning_objectives,
                 "keywords": payload.keywords,
-                "resource_ids": [ObjectId(item) for item in payload.resource_ids if ObjectId.is_valid(item)],
+                "resource_ids": [
+                    ObjectId(item)
+                    for item in payload.resource_ids
+                    if ObjectId.is_valid(item)
+                ],
                 "metadata": payload.metadata,
             }
         )

@@ -108,7 +108,9 @@ export default function SignupStep2() {
             <div className="h-[4px] w-[10px] rounded-[2px] bg-[#5b1724]" />
           </div>
 
-          <h1 className="mb-4 text-center text-[35px] font-semibold text-[#832e44]">Bắt đầu ngay</h1>
+          <h1 className="mb-4 text-center text-[35px] font-semibold text-[#832e44]">
+            Bắt đầu ngay
+          </h1>
 
           <p className="mb-12 text-center text-[15px] text-[#832e44]">Chọn mục tiêu của bạn</p>
 
@@ -166,13 +168,19 @@ export default function SignupStep2() {
             </div>
           </form>
 
-          <button onClick={() => navigate('/signup')} className="mt-4 text-[13px] text-[#832e44] hover:underline">
+          <button
+            onClick={() => navigate('/signup')}
+            className="mt-4 text-[13px] text-[#832e44] hover:underline"
+          >
             ← Quay lại
           </button>
 
           <p className="mt-8 text-center text-[10px] text-[#832e44]">
             <span>Đã có tài khoản? </span>
-            <button onClick={() => navigate('/login')} className="cursor-pointer font-bold hover:underline">
+            <button
+              onClick={() => navigate('/login')}
+              className="cursor-pointer font-bold hover:underline"
+            >
               Đăng nhập
             </button>
           </p>

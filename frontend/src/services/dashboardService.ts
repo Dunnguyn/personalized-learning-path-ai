@@ -36,32 +36,28 @@ export type {
 
 export const dashboardService = {
   async getProgressOverview(userId?: string): Promise<ProgressOverview> {
-    const endpoint = userId
-      ? `/progress/overview?user_id=${userId}`
-      : '/progress/overview';
+    const endpoint = userId ? `/progress/overview?user_id=${userId}` : '/progress/overview';
     return normalizeProgressOverview(await apiClient.get(endpoint));
   },
 
   async getConfidenceOverview(userId?: string): Promise<ConfidenceOverview> {
-    const endpoint = userId
-      ? `/progress/confidence?user_id=${userId}`
-      : '/progress/confidence';
+    const endpoint = userId ? `/progress/confidence?user_id=${userId}` : '/progress/confidence';
     return normalizeConfidenceOverview(await apiClient.get(endpoint));
   },
 
   async getProgressSummary(
-    userId?: string
+    userId?: string,
   ): Promise<{ success: boolean; user_id: string; summary: ProgressSummary }> {
-    const endpoint = userId
-      ? `/progress/summary?user_id=${userId}`
-      : '/progress/summary';
+    const endpoint = userId ? `/progress/summary?user_id=${userId}` : '/progress/summary';
     return normalizeProgressSummaryResponse(await apiClient.get(endpoint));
   },
 
   async getAdaptiveRecommendations(userId: string): Promise<AdaptiveRecommendation[]> {
     try {
       const response: RecommendedConceptsResponse = normalizeRecommendedConceptsResponse(
-        await apiClient.get(`/ask/recommend-concepts?user_id=${encodeURIComponent(userId)}&limit=3`)
+        await apiClient.get(
+          `/ask/recommend-concepts?user_id=${encodeURIComponent(userId)}&limit=3`,
+        ),
       );
 
       if (response.success && response.recommended.length > 0) {
@@ -95,7 +91,7 @@ export const dashboardService = {
 
   async searchResources(query: string): Promise<ResourceSearchResponse> {
     return normalizeResourceSearchResponse(
-      await apiClient.get(`/resources/search?q=${encodeURIComponent(query)}`)
+      await apiClient.get(`/resources/search?q=${encodeURIComponent(query)}`),
     );
   },
 
@@ -103,7 +99,7 @@ export const dashboardService = {
     userId: string,
     goal: string,
     level: string,
-    limit: number = 6
+    limit: number = 6,
   ): Promise<PersonalizedRecommendationResponse> {
     const query = new URLSearchParams({
       user_id: userId,
@@ -113,7 +109,7 @@ export const dashboardService = {
     });
 
     return normalizePersonalizedRecommendationResponse(
-      await apiClient.get(`/recommendations/resources?${query.toString()}`)
+      await apiClient.get(`/recommendations/resources?${query.toString()}`),
     );
   },
 
@@ -124,7 +120,7 @@ export const dashboardService = {
     });
 
     return normalizeGoalLearningProgressResponse(
-      await apiClient.get(`/recommendations/progress?${query.toString()}`)
+      await apiClient.get(`/recommendations/progress?${query.toString()}`),
     );
   },
 };

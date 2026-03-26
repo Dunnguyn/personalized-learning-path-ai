@@ -25,7 +25,9 @@ from backend.app.services.learning_path.service import generate_learning_path
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-router = APIRouter(prefix="/learning-path", tags=["Learning Paths (Legacy)"], include_in_schema=False)
+router = APIRouter(
+    prefix="/learning-path", tags=["Learning Paths (Legacy)"], include_in_schema=False
+)
 
 
 def _build_lesson_progress(curriculum: Optional[List[dict]]) -> dict:
@@ -38,14 +40,20 @@ def _build_lesson_progress(curriculum: Optional[List[dict]]) -> dict:
     return progress
 
 
-def _apply_lesson_progress(curriculum: Optional[List[dict]], lesson_progress: dict) -> Optional[List[dict]]:
+def _apply_lesson_progress(
+    curriculum: Optional[List[dict]], lesson_progress: dict
+) -> Optional[List[dict]]:
     if not curriculum:
         return curriculum
 
     for chapter in curriculum:
         for lesson in chapter.get("lessons", []):
             lesson_id = lesson.get("lesson_id")
-            resolved_status = lesson_progress.get(lesson_id, "not_started") if lesson_id else "not_started"
+            resolved_status = (
+                lesson_progress.get(lesson_id, "not_started")
+                if lesson_id
+                else "not_started"
+            )
             if lesson_id:
                 lesson["status"] = resolved_status
     return curriculum
@@ -54,13 +62,16 @@ def _apply_lesson_progress(curriculum: Optional[List[dict]], lesson_progress: di
 class LearningPathRequest(BaseModel):
     user_id: str = Field(..., description="MongoDB ObjectId as string")
     goal: str = Field(..., min_length=3, max_length=500, description="Learning goal")
-    level: LevelEnum = Field(..., description="Learning level (beginner/intermediate/advanced)")
+    level: LevelEnum = Field(
+        ..., description="Learning level (beginner/intermediate/advanced)"
+    )
 
 
-@router.post("/generate", response_model=LearningPathResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/generate", response_model=LearningPathResponse, status_code=status.HTTP_200_OK
+)
 def generate_learning_path_api(
-    payload: LearningPathRequest,
-    current_user: dict = Depends(get_current_user)
+    payload: LearningPathRequest, current_user: dict = Depends(get_current_user)
 ):
     logger.info(
         "Learning path generation requested: user=%s, goal='%s...', level=%s",
@@ -80,7 +91,11 @@ def generate_learning_path_api(
         result = generate_learning_path(
             user_id=payload.user_id,
             goal=payload.goal,
-            level=payload.level.value if hasattr(payload.level, "value") else payload.level,
+            level=(
+                payload.level.value
+                if hasattr(payload.level, "value")
+                else payload.level
+            ),
         )
 
         curriculum = _apply_lesson_progress(
@@ -98,7 +113,11 @@ def generate_learning_path_api(
                     "path_id": result.get("path_id"),
                     "user_id": payload.user_id,
                     "goal": payload.goal,
-                    "level": payload.level.value if hasattr(payload.level, "value") else payload.level,
+                    "level": (
+                        payload.level.value
+                        if hasattr(payload.level, "value")
+                        else payload.level
+                    ),
                     "generated_at": datetime.now(timezone.utc),
                     "recommended_path": result.get("recommended_path", []),
                     "curriculum": curriculum or [],
@@ -106,7 +125,9 @@ def generate_learning_path_api(
                     "curriculum_notice": result.get("curriculum_notice"),
                     "llm_status": result.get("llm_status"),
                     "lesson_progress": lesson_progress,
-                    "message": result.get("message", "Learning path generated successfully"),
+                    "message": result.get(
+                        "message", "Learning path generated successfully"
+                    ),
                 }
             )
         except Exception as save_error:
@@ -129,7 +150,9 @@ def generate_learning_path_api(
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     except Exception as exc:
         logger.exception("Error generating learning path: %s", exc)
         raise HTTPException(
@@ -140,8 +163,7 @@ def generate_learning_path_api(
 
 @router.get("/history", status_code=status.HTTP_200_OK)
 def get_learning_path_history(
-    user_id: str = None,
-    current_user: dict = Depends(get_current_user)
+    user_id: str = None, current_user: dict = Depends(get_current_user)
 ):
     if user_id is None:
         user_id = str(current_user.get("_id", ""))
@@ -156,7 +178,11 @@ def get_learning_path_history(
         from backend.app.database.mongo import get_db
 
         db = get_db()
-        paths = list(db.learning_paths.find({"user_id": user_id}).sort("generated_at", -1).limit(10))
+        paths = list(
+            db.learning_paths.find({"user_id": user_id})
+            .sort("generated_at", -1)
+            .limit(10)
+        )
 
         for path in paths:
             if "_id" in path:
@@ -176,10 +202,13 @@ def get_learning_path_history(
         ) from exc
 
 
-@router.post("/lesson-progress", response_model=LessonProgressResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/lesson-progress",
+    response_model=LessonProgressResponse,
+    status_code=status.HTTP_200_OK,
+)
 def update_lesson_progress(
-    payload: LessonProgressUpdate,
-    current_user: dict = Depends(get_current_user)
+    payload: LessonProgressUpdate, current_user: dict = Depends(get_current_user)
 ):
     user_id = str(current_user.get("_id", ""))
 
@@ -187,7 +216,9 @@ def update_lesson_progress(
         from backend.app.database.mongo import get_db
 
         db = get_db()
-        path = db.learning_paths.find_one({"path_id": payload.path_id, "user_id": user_id})
+        path = db.learning_paths.find_one(
+            {"path_id": payload.path_id, "user_id": user_id}
+        )
         if not path:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -226,17 +257,20 @@ def update_lesson_progress(
         ) from exc
 
 
-@router.delete("/{path_id}", response_model=LearningPathDeleteResponse, status_code=status.HTTP_200_OK)
-def delete_learning_path(
-    path_id: str,
-    current_user: dict = Depends(get_current_user)
-):
+@router.delete(
+    "/{path_id}",
+    response_model=LearningPathDeleteResponse,
+    status_code=status.HTTP_200_OK,
+)
+def delete_learning_path(path_id: str, current_user: dict = Depends(get_current_user)):
     user_id = str(current_user.get("_id", ""))
 
     try:
         from backend.app.services.learning_path_service import learning_path_service
 
-        result = learning_path_service.delete_learning_path(path_id=path_id, user_id=user_id)
+        result = learning_path_service.delete_learning_path(
+            path_id=path_id, user_id=user_id
+        )
         return LearningPathDeleteResponse(**result)
 
     except ValueError as exc:
@@ -254,8 +288,7 @@ def delete_learning_path(
 
 @router.get("/{path_id}", status_code=status.HTTP_200_OK)
 def get_learning_path_detail(
-    path_id: str,
-    current_user: dict = Depends(get_current_user)
+    path_id: str, current_user: dict = Depends(get_current_user)
 ):
     user_id = str(current_user.get("_id", ""))
 
@@ -272,7 +305,9 @@ def get_learning_path_detail(
             )
 
         lesson_progress = path.get("lesson_progress", {})
-        path["curriculum"] = _apply_lesson_progress(path.get("curriculum"), lesson_progress)
+        path["curriculum"] = _apply_lesson_progress(
+            path.get("curriculum"), lesson_progress
+        )
 
         if "_id" in path:
             path["_id"] = str(path["_id"])

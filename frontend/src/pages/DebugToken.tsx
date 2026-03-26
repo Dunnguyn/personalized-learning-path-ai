@@ -19,7 +19,7 @@ export default function DebugToken() {
   useEffect(() => {
     const token = localStorage.getItem('token');
     const user = localStorage.getItem('user');
-    
+
     if (token) {
       try {
         // Decode JWT (without verification - just for debugging)
@@ -30,7 +30,7 @@ export default function DebugToken() {
             token: token.substring(0, 50) + '...',
             payload,
             user: user ? (JSON.parse(user) as unknown) : null,
-            fullToken: token
+            fullToken: token,
           });
         }
       } catch (e) {
@@ -47,9 +47,9 @@ export default function DebugToken() {
       <pre className="bg-gray-100 p-4 rounded overflow-auto">
         {JSON.stringify(tokenInfo, null, 2)}
       </pre>
-      
+
       <div className="mt-4">
-        <button 
+        <button
           onClick={() => {
             const token = localStorage.getItem('token');
             if (token) {

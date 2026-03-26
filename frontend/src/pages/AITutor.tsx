@@ -6,7 +6,11 @@ import DashboardLayout from '../components/layout/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../utils/apiClient';
 import { SUBJECTS } from '../utils/subjects';
-import { assessmentService, type AssessmentQuestion, type AssessmentDifficulty } from '../services/assessmentService';
+import {
+  assessmentService,
+  type AssessmentQuestion,
+  type AssessmentDifficulty,
+} from '../services/assessmentService';
 import { learningPathService } from '../services';
 
 interface Message {
@@ -144,7 +148,12 @@ const loadStoredMessages = (userId: string, subjectKey: string, goalKey: string)
   }
 };
 
-const saveStoredMessages = (userId: string, subjectKey: string, goalKey: string, messages: Message[]) => {
+const saveStoredMessages = (
+  userId: string,
+  subjectKey: string,
+  goalKey: string,
+  messages: Message[],
+) => {
   try {
     const data: StoredMessage[] = messages.map((message) => ({
       ...message,
@@ -168,7 +177,7 @@ export default function AITutor() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -206,7 +215,9 @@ export default function AITutor() {
     concept: assessmentDraft.concept.trim(),
     questionType: assessmentDraft.question_type.trim(),
     chapterContent: assessmentDraft.chapter_content.trim(),
-    numQuestions: Number.isFinite(assessmentDraft.num_questions) ? assessmentDraft.num_questions : 0,
+    numQuestions: Number.isFinite(assessmentDraft.num_questions)
+      ? assessmentDraft.num_questions
+      : 0,
   };
 
   const assessmentValidationMessage = (() => {
@@ -216,7 +227,10 @@ export default function AITutor() {
     if (!normalizedAssessmentDraft.questionType) {
       return 'Cần chọn loại câu hỏi.';
     }
-    if (!normalizedAssessmentDraft.chapterContent || normalizedAssessmentDraft.chapterContent.length < 50) {
+    if (
+      !normalizedAssessmentDraft.chapterContent ||
+      normalizedAssessmentDraft.chapterContent.length < 50
+    ) {
       return 'Nội dung chương học cần ít nhất 50 ký tự.';
     }
     if (normalizedAssessmentDraft.numQuestions < 1 || normalizedAssessmentDraft.numQuestions > 20) {
@@ -227,7 +241,9 @@ export default function AITutor() {
 
   const canGenerateAssessment = !assessmentLoading && !assessmentValidationMessage;
   const activeAssessmentQuestion = assessmentQuestions[activeAssessmentIndex] || null;
-  const activeAssessmentChoices = (activeAssessmentQuestion?.options || []).map(normalizeAssessmentOptionLabel);
+  const activeAssessmentChoices = (activeAssessmentQuestion?.options || []).map(
+    normalizeAssessmentOptionLabel,
+  );
   const activeAssessmentAnswer = activeAssessmentQuestion
     ? normalizeAssessmentOptionLabel(activeAssessmentQuestion.answer)
     : '';
@@ -235,7 +251,8 @@ export default function AITutor() {
   const isActiveAssessmentRevealed = Boolean(assessmentRevealed[activeAssessmentIndex]);
   const isActiveAssessmentCorrect =
     isActiveAssessmentRevealed &&
-    normalizeAssessmentAnswerValue(activeAssessmentResponse) === normalizeAssessmentAnswerValue(activeAssessmentAnswer);
+    normalizeAssessmentAnswerValue(activeAssessmentResponse) ===
+      normalizeAssessmentAnswerValue(activeAssessmentAnswer);
   const answeredAssessmentCount = assessmentRevealed.filter(Boolean).length;
   const correctAssessmentCount = assessmentQuestions.reduce((count, question, index) => {
     if (!assessmentRevealed[index]) {
@@ -247,21 +264,25 @@ export default function AITutor() {
     );
     return normalizedUserAnswer === normalizedCorrectAnswer ? count + 1 : count;
   }, 0);
-  const incorrectAssessmentIndexes = assessmentQuestions.reduce<number[]>((indexes, question, index) => {
-    if (!assessmentRevealed[index]) {
+  const incorrectAssessmentIndexes = assessmentQuestions.reduce<number[]>(
+    (indexes, question, index) => {
+      if (!assessmentRevealed[index]) {
+        return indexes;
+      }
+      const normalizedUserAnswer = normalizeAssessmentAnswerValue(assessmentResponses[index] || '');
+      const normalizedCorrectAnswer = normalizeAssessmentAnswerValue(
+        normalizeAssessmentOptionLabel(question.answer || ''),
+      );
+      if (normalizedUserAnswer !== normalizedCorrectAnswer) {
+        indexes.push(index);
+      }
       return indexes;
-    }
-    const normalizedUserAnswer = normalizeAssessmentAnswerValue(assessmentResponses[index] || '');
-    const normalizedCorrectAnswer = normalizeAssessmentAnswerValue(
-      normalizeAssessmentOptionLabel(question.answer || ''),
-    );
-    if (normalizedUserAnswer !== normalizedCorrectAnswer) {
-      indexes.push(index);
-    }
-    return indexes;
-  }, []);
+    },
+    [],
+  );
   const incorrectAssessmentCount = incorrectAssessmentIndexes.length;
-  const allAssessmentAnswered = assessmentQuestions.length > 0 && answeredAssessmentCount === assessmentQuestions.length;
+  const allAssessmentAnswered =
+    assessmentQuestions.length > 0 && answeredAssessmentCount === assessmentQuestions.length;
 
   useEffect(() => {
     if (!isAssessmentModalOpen) {
@@ -289,12 +310,24 @@ export default function AITutor() {
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
-        h1: ({ children }) => <h1 className="text-[18px] font-bold mb-3 mt-4 text-[#1a1a1a]">{children}</h1>,
-        h2: ({ children }) => <h2 className="text-[16px] font-bold mb-2 mt-3 text-[#2a2a2a]">{children}</h2>,
-        h3: ({ children }) => <h3 className="text-[15px] font-semibold mb-2 mt-2 text-[#333]">{children}</h3>,
-        p: ({ children }) => <p className="text-[14px] leading-[1.6] mb-3 last:mb-0 text-[#444]">{children}</p>,
-        ul: ({ children }) => <ul className="list-disc pl-6 mb-3 space-y-1.5 text-[#444]">{children}</ul>,
-        ol: ({ children }) => <ol className="list-decimal pl-6 mb-3 space-y-1.5 text-[#444]">{children}</ol>,
+        h1: ({ children }) => (
+          <h1 className="text-[18px] font-bold mb-3 mt-4 text-[#1a1a1a]">{children}</h1>
+        ),
+        h2: ({ children }) => (
+          <h2 className="text-[16px] font-bold mb-2 mt-3 text-[#2a2a2a]">{children}</h2>
+        ),
+        h3: ({ children }) => (
+          <h3 className="text-[15px] font-semibold mb-2 mt-2 text-[#333]">{children}</h3>
+        ),
+        p: ({ children }) => (
+          <p className="text-[14px] leading-[1.6] mb-3 last:mb-0 text-[#444]">{children}</p>
+        ),
+        ul: ({ children }) => (
+          <ul className="list-disc pl-6 mb-3 space-y-1.5 text-[#444]">{children}</ul>
+        ),
+        ol: ({ children }) => (
+          <ol className="list-decimal pl-6 mb-3 space-y-1.5 text-[#444]">{children}</ol>
+        ),
         li: ({ children }) => <li className="text-[14px] leading-relaxed ml-1">{children}</li>,
         strong: ({ children }) => <strong className="font-bold text-[#1a1a1a]">{children}</strong>,
         em: ({ children }) => <em className="italic text-[#555]">{children}</em>,
@@ -333,21 +366,13 @@ export default function AITutor() {
             {children}
           </table>
         ),
-        thead: ({ children }) => (
-          <thead className="bg-[#f3f4f6]">{children}</thead>
-        ),
-        tbody: ({ children }) => (
-          <tbody>{children}</tbody>
-        ),
-        tr: ({ children }) => (
-          <tr className="border-b border-[#ddd]">{children}</tr>
-        ),
+        thead: ({ children }) => <thead className="bg-[#f3f4f6]">{children}</thead>,
+        tbody: ({ children }) => <tbody>{children}</tbody>,
+        tr: ({ children }) => <tr className="border-b border-[#ddd]">{children}</tr>,
         th: ({ children }) => (
           <th className="border border-[#ddd] px-3 py-2 text-left font-semibold">{children}</th>
         ),
-        td: ({ children }) => (
-          <td className="border border-[#ddd] px-3 py-2">{children}</td>
-        ),
+        td: ({ children }) => <td className="border border-[#ddd] px-3 py-2">{children}</td>,
       }}
     >
       {text}
@@ -396,7 +421,7 @@ export default function AITutor() {
           addMessage(
             'assistant',
             `Xin chào! Tôi sẽ giúp bạn học: "${goalParam}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
-            null
+            null,
           );
         }
         loadHistory();
@@ -423,11 +448,13 @@ export default function AITutor() {
     try {
       const [conceptResponse, progressResponse] = await Promise.all([
         learningPathService.getConceptDetails(conceptId),
-        user ? learningPathService.getConceptProgress(conceptId, user.user_id) : Promise.resolve(null),
+        user
+          ? learningPathService.getConceptProgress(conceptId, user.user_id)
+          : Promise.resolve(null),
       ]);
 
-      const concept = ((conceptResponse?.concept ?? conceptResponse ?? {}) as ConceptApiRecord);
-      const progress = ((progressResponse?.progress ?? {}) as ConceptProgressRecord);
+      const concept = (conceptResponse?.concept ?? conceptResponse ?? {}) as ConceptApiRecord;
+      const progress = (progressResponse?.progress ?? {}) as ConceptProgressRecord;
 
       setCurrentConcept({
         concept_id: Number(concept?.concept_id ?? conceptId),
@@ -445,7 +472,7 @@ export default function AITutor() {
 
   const loadHistory = async () => {
     if (!user) return;
-    
+
     setHistoryLoading(true);
     try {
       const data = (await apiClient.get('/ask/history?limit=20')) as {
@@ -468,7 +495,9 @@ export default function AITutor() {
     }
 
     try {
-      const response = (await apiClient.delete(`/ask/history/${historyId}`)) as { success: boolean };
+      const response = (await apiClient.delete(`/ask/history/${historyId}`)) as {
+        success: boolean;
+      };
       if (response.success) {
         setHistory(history.filter((item) => item._id !== historyId));
       } else {
@@ -523,7 +552,7 @@ export default function AITutor() {
         addMessage(
           'assistant',
           `Xin chào! Tôi sẽ giúp bạn học: "${nextGoal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
-          null
+          null,
         );
       }
     } else {
@@ -531,7 +560,7 @@ export default function AITutor() {
       addMessage(
         'assistant',
         `Xin chào! Tôi sẽ giúp bạn học: "${nextGoal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
-        null
+        null,
       );
     }
     loadHistory();
@@ -552,7 +581,7 @@ export default function AITutor() {
       addMessage(
         'assistant',
         `Xin chào! Tôi sẽ giúp bạn học: "${goal}". Hãy đặt bất kỳ câu hỏi nào về chủ đề này.`,
-        null
+        null,
       );
     }
   };
@@ -564,7 +593,7 @@ export default function AITutor() {
 
     const userQuestion = input;
     setInput('');
-    
+
     // Add user message
     addMessage('user', userQuestion, null);
     setLoading(true);
@@ -611,21 +640,25 @@ export default function AITutor() {
         };
         error?: string;
       };
-      
+
       if (data.success) {
-        addMessage('assistant', data.answer?.answer_text || 'Xin lỗi, tôi không thể trả lời câu hỏi này lúc này.', {
-          answer: data.answer
-            ? {
-                answer_text: data.answer.answer_text ?? '',
-                sources: data.answer.sources ?? [],
-                confidence: data.answer.confidence ?? 0,
-                latency_ms: data.answer.latency_ms ?? 0,
-              }
-            : undefined,
-          conceptDetected: data.concept_detected,
-          learning_path: data.learning_path,
-          adaptive_info: data.adaptive_info,
-        });
+        addMessage(
+          'assistant',
+          data.answer?.answer_text || 'Xin lỗi, tôi không thể trả lời câu hỏi này lúc này.',
+          {
+            answer: data.answer
+              ? {
+                  answer_text: data.answer.answer_text ?? '',
+                  sources: data.answer.sources ?? [],
+                  confidence: data.answer.confidence ?? 0,
+                  latency_ms: data.answer.latency_ms ?? 0,
+                }
+              : undefined,
+            conceptDetected: data.concept_detected,
+            learning_path: data.learning_path,
+            adaptive_info: data.adaptive_info,
+          },
+        );
       } else {
         throw new Error(data.error || 'Không nhận được phản hồi từ server');
       }
@@ -660,7 +693,10 @@ export default function AITutor() {
       return;
     }
 
-    if (!assessmentDraft.chapter_content.trim() || assessmentDraft.chapter_content.trim().length < 50) {
+    if (
+      !assessmentDraft.chapter_content.trim() ||
+      assessmentDraft.chapter_content.trim().length < 50
+    ) {
       setAssessmentError('Nội dung chương học cần ít nhất 50 ký tự');
       return;
     }
@@ -754,7 +790,9 @@ export default function AITutor() {
       return;
     }
 
-    const incorrectQuestions = incorrectAssessmentIndexes.map((index) => assessmentQuestions[index]).filter(Boolean);
+    const incorrectQuestions = incorrectAssessmentIndexes
+      .map((index) => assessmentQuestions[index])
+      .filter(Boolean);
     const retryConcept = Array.from(
       new Set(
         incorrectQuestions
@@ -806,7 +844,7 @@ export default function AITutor() {
         <div className="page-shell-narrow">
           <p className="page-kicker">Trợ giảng AI</p>
           <h1 className="page-title">Trợ giảng AI</h1>
-          
+
           <div className="mb-[40px] flex items-center gap-2">
             <div className="h-[28px] w-[3px] rounded-[5px] bg-[#8c3451]" />
             <h2 className="page-section-title text-[18px]">Bắt đầu phiên học tập</h2>
@@ -855,7 +893,9 @@ export default function AITutor() {
               </label>
               <select
                 value={level}
-                onChange={(e) => setLevel(e.target.value as 'beginner' | 'intermediate' | 'advanced')}
+                onChange={(e) =>
+                  setLevel(e.target.value as 'beginner' | 'intermediate' | 'advanced')
+                }
                 className="theme-input rounded-[18px]"
               >
                 <option value="beginner">Người mới bắt đầu</option>
@@ -883,24 +923,21 @@ export default function AITutor() {
   }
 
   return (
-      <DashboardLayout>
-        <div className="page-shell flex min-h-[calc(100vh-140px)] flex-col pb-6">
-          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="page-kicker mb-2">Trợ giảng AI</p>
-              <h1 className="page-title mb-0">Trợ giảng AI</h1>
-            </div>
-            <div className="flex flex-wrap gap-3">
+    <DashboardLayout>
+      <div className="page-shell flex min-h-[calc(100vh-140px)] flex-col pb-6">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="page-kicker mb-2">Trợ giảng AI</p>
+            <h1 className="page-title mb-0">Trợ giảng AI</h1>
+          </div>
+          <div className="flex flex-wrap gap-3">
             <button
               onClick={handleClearSubjectHistory}
               className="theme-button-secondary border-red-200 bg-white/90 text-red-700"
             >
               🗑️ Xóa lịch sử môn
             </button>
-            <button
-              onClick={() => setShowHistory(!showHistory)}
-              className="theme-button-secondary"
-            >
+            <button onClick={() => setShowHistory(!showHistory)} className="theme-button-secondary">
               📋 Lịch sử ({history.length})
             </button>
             <button
@@ -921,7 +958,9 @@ export default function AITutor() {
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
             <div className="white-panel flex max-h-[80vh] w-full max-w-[560px] flex-col overflow-hidden">
               <div className="flex items-center justify-between border-b border-[#8c3451]/10 p-6">
-                <h2 className="text-[22px] font-medium tracking-[-0.03em] text-[#8c3451]">Lịch sử câu hỏi</h2>
+                <h2 className="text-[22px] font-medium tracking-[-0.03em] text-[#8c3451]">
+                  Lịch sử câu hỏi
+                </h2>
                 <button
                   onClick={() => setShowHistory(false)}
                   className="text-[24px] text-[#8c3451]"
@@ -943,23 +982,24 @@ export default function AITutor() {
                   history.map((item) => (
                     <div key={item._id} className="metric-card group p-3">
                       <div className="flex justify-between items-start gap-2">
-                        <div className="flex-1 cursor-pointer" onClick={() => handleLoadFromHistory(item)}>
-                           <p className="mb-1 line-clamp-2 text-[13px] font-medium text-[#8c3451]">
+                        <div
+                          className="flex-1 cursor-pointer"
+                          onClick={() => handleLoadFromHistory(item)}
+                        >
+                          <p className="mb-1 line-clamp-2 text-[13px] font-medium text-[#8c3451]">
                             {item.question}
                           </p>
-                           <p className="mb-1 text-[11px] text-[#666]">
-                            Mục tiêu: {item.goal}
-                          </p>
+                          <p className="mb-1 text-[11px] text-[#666]">Mục tiêu: {item.goal}</p>
                           <p className="text-[10px] text-[#999]">
                             {new Date(item.timestamp).toLocaleString('vi-VN')}
                           </p>
                         </div>
-                         <button
-                           onClick={() => handleDeleteHistoryItem(item._id)}
-                           className="rounded-full bg-red-100 px-2 py-1 text-[11px] whitespace-nowrap text-red-600 opacity-0 transition-opacity group-hover:opacity-100"
-                          >
-                            Xóa
-                          </button>
+                        <button
+                          onClick={() => handleDeleteHistoryItem(item._id)}
+                          className="rounded-full bg-red-100 px-2 py-1 text-[11px] whitespace-nowrap text-red-600 opacity-0 transition-opacity group-hover:opacity-100"
+                        >
+                          Xóa
+                        </button>
                       </div>
                     </div>
                   ))
@@ -971,14 +1011,16 @@ export default function AITutor() {
 
         <div className="flex min-h-0 flex-1 flex-col gap-6 xl:flex-row">
           {/* Main Chat Area */}
-          <div className="white-panel flex min-h-[540px] flex-1 flex-col overflow-hidden">
+          <div className="white-panel flex h-[72vh] min-h-[540px] max-h-[860px] flex-1 flex-col overflow-hidden">
             {/* Messages Area */}
-            <div className="scroll-soft flex-1 overflow-y-auto p-6 space-y-4">
+            <div className="scroll-soft min-h-0 flex-1 overflow-y-auto p-6 space-y-4">
               {messages.length === 0 ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="text-center">
                     <div className="text-[50px] mb-4">💡</div>
-                    <p className="text-[#8c3451] text-[16px]">Hãy bắt đầu bằng cách đặt một câu hỏi</p>
+                    <p className="text-[#8c3451] text-[16px]">
+                      Hãy bắt đầu bằng cách đặt một câu hỏi
+                    </p>
                   </div>
                 </div>
               ) : (
@@ -1022,13 +1064,15 @@ export default function AITutor() {
                                 <p className="text-[13px] font-bold mb-3 text-[#8c3451] flex items-center gap-1.5">
                                   <span>📚</span> Nguồn tài liệu
                                 </p>
-                                <div className="space-y-2">
+                                <div className="scroll-soft max-h-44 space-y-2 overflow-y-auto pr-1">
                                   {message.answer.sources.map((source, idx) => (
                                     <div
                                       key={idx}
                                       className="flex items-start gap-2 p-2.5 bg-[#fef3f4] border border-[#f5d5dd] rounded-lg hover:bg-[#fedde2] transition-colors"
                                     >
-                                      <span className="text-[11px] font-bold text-[#8c3451] min-w-[18px] text-center">{idx + 1}</span>
+                                      <span className="text-[11px] font-bold text-[#8c3451] min-w-[18px] text-center">
+                                        {idx + 1}
+                                      </span>
                                       <div className="flex-1">
                                         {source.url ? (
                                           <a
@@ -1040,7 +1084,9 @@ export default function AITutor() {
                                             {source.title}
                                           </a>
                                         ) : (
-                                          <p className="text-[12px] font-medium text-[#333]">{source.title}</p>
+                                          <p className="text-[12px] font-medium text-[#333]">
+                                            {source.title}
+                                          </p>
                                         )}
                                       </div>
                                     </div>
@@ -1051,11 +1097,15 @@ export default function AITutor() {
 
                             {message.answer.confidence && (
                               <div className="flex items-center gap-2 p-2.5 bg-[#eef9ff] border border-[#b8e0f6] rounded-lg">
-                                <span className="text-[13px] font-semibold text-[#0066cc]">⭐ Độ tin cậy:</span>
+                                <span className="text-[13px] font-semibold text-[#0066cc]">
+                                  ⭐ Độ tin cậy:
+                                </span>
                                 <div className="flex-1 bg-white border border-[#d0e8ff] rounded-full h-2 overflow-hidden">
                                   <div
                                     className="h-full bg-gradient-to-r from-[#0066cc] to-[#003d99]"
-                                    style={{ width: `${Math.round(message.answer.confidence * 100)}%` }}
+                                    style={{
+                                      width: `${Math.round(message.answer.confidence * 100)}%`,
+                                    }}
                                   />
                                 </div>
                                 <span className="text-[12px] font-bold text-[#0066cc] min-w-[35px] text-right">
@@ -1069,7 +1119,9 @@ export default function AITutor() {
                         {/* Concept Detected */}
                         {message.role === 'assistant' && message.conceptDetected && (
                           <div className="mt-3 p-2 bg-white bg-opacity-20 rounded-[10px]">
-                            <p className="text-[12px] font-semibold mb-1">📌 Khái niệm được phát hiện:</p>
+                            <p className="text-[12px] font-semibold mb-1">
+                              📌 Khái niệm được phát hiện:
+                            </p>
                             <p className="text-[13px]">{message.conceptDetected.concept_name}</p>
                             <p className="text-[11px] opacity-80 mt-1">
                               Độ phù hợp: {Math.round(message.conceptDetected.score * 100)}%
@@ -1078,18 +1130,23 @@ export default function AITutor() {
                         )}
 
                         {/* Learning Recommendations */}
-                        {message.role === 'assistant' && message.learning_path && message.learning_path.length > 0 && (
-                          <div className="mt-3 p-2 bg-white bg-opacity-20 rounded-[10px]">
-                            <p className="text-[12px] font-semibold mb-2">🎯 Khái niệm tiếp theo:</p>
-                            <div className="space-y-1">
-                              {message.learning_path.slice(0, 3).map((concept, idx) => (
-                                <div key={idx} className="text-[12px]">
-                                  <span className="font-medium">{idx + 1}.</span> {concept.concept_name}
-                                </div>
-                              ))}
+                        {message.role === 'assistant' &&
+                          message.learning_path &&
+                          message.learning_path.length > 0 && (
+                            <div className="mt-3 p-2 bg-white bg-opacity-20 rounded-[10px]">
+                              <p className="text-[12px] font-semibold mb-2">
+                                🎯 Khái niệm tiếp theo:
+                              </p>
+                              <div className="space-y-1">
+                                {message.learning_path.slice(0, 3).map((concept, idx) => (
+                                  <div key={idx} className="text-[12px]">
+                                    <span className="font-medium">{idx + 1}.</span>{' '}
+                                    {concept.concept_name}
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )}
                       </div>
                     </div>
                   ))}
@@ -1136,7 +1193,9 @@ export default function AITutor() {
           <div className="flex w-full flex-col gap-4 xl:sticky xl:top-4 xl:w-[320px] xl:self-start">
             {/* Assessment Generator Card */}
             <div className="soft-panel p-5">
-              <h3 className="mb-3 text-[16px] font-medium text-[#8c3451]">📝 Tạo câu hỏi kiểm tra</h3>
+              <h3 className="mb-3 text-[16px] font-medium text-[#8c3451]">
+                📝 Tạo câu hỏi kiểm tra
+              </h3>
 
               <div className="space-y-3">
                 <div>
@@ -1182,7 +1241,7 @@ export default function AITutor() {
                           difficulty: e.target.value as AssessmentDifficulty,
                         }))
                       }
-                       className="theme-input rounded-[14px] px-2 py-2 text-[12px]"
+                      className="theme-input rounded-[14px] px-2 py-2 text-[12px]"
                     >
                       <option value="easy">Dễ</option>
                       <option value="medium">Trung bình</option>
@@ -1225,13 +1284,15 @@ export default function AITutor() {
                           num_questions: Number(e.target.value) || 1,
                         }))
                       }
-                       className="theme-input rounded-[14px] px-2 py-2 text-[12px]"
+                      className="theme-input rounded-[14px] px-2 py-2 text-[12px]"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-[12px] text-[#8c3451] mb-1">Nội dung chương học</label>
+                  <label className="block text-[12px] text-[#8c3451] mb-1">
+                    Nội dung chương học
+                  </label>
                   <textarea
                     value={assessmentDraft.chapter_content}
                     onChange={(e) =>
@@ -1242,7 +1303,7 @@ export default function AITutor() {
                     }
                     rows={6}
                     placeholder="Dán nội dung chương học vào đây..."
-                     className="theme-input min-h-[132px] resize-y rounded-[14px] px-3 py-2 text-[12px]"
+                    className="theme-input min-h-[132px] resize-y rounded-[14px] px-3 py-2 text-[12px]"
                   />
                 </div>
 
@@ -1253,7 +1314,8 @@ export default function AITutor() {
                       : 'border-emerald-200 bg-emerald-50 text-emerald-700'
                   }`}
                 >
-                  {assessmentValidationMessage || 'Đã đủ thông tin. Bấm tạo để mở popup card câu hỏi.'}
+                  {assessmentValidationMessage ||
+                    'Đã đủ thông tin. Bấm tạo để mở popup card câu hỏi.'}
                 </div>
 
                 {assessmentError && (
@@ -1265,7 +1327,7 @@ export default function AITutor() {
                 <button
                   onClick={handleGenerateAssessment}
                   disabled={!canGenerateAssessment}
-                   className="theme-button w-full rounded-[14px] py-2 text-[12px] disabled:opacity-50"
+                  className="theme-button w-full rounded-[14px] py-2 text-[12px] disabled:opacity-50"
                 >
                   {assessmentLoading ? 'Đang tạo...' : 'Tạo câu hỏi'}
                 </button>
@@ -1300,23 +1362,31 @@ export default function AITutor() {
             <div className="metric-card p-5">
               <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">📚 Mục tiêu</h3>
               <p className="text-[13px] text-[#333] line-clamp-3">{goal}</p>
-              <p className="text-[12px] text-[#8c3451] mt-3 font-medium">Trình độ: {
-                level === 'beginner' ? 'Người mới' :
-                level === 'intermediate' ? 'Trung cấp' : 'Nâng cao'
-              }</p>
+              <p className="text-[12px] text-[#8c3451] mt-3 font-medium">
+                Trình độ:{' '}
+                {level === 'beginner'
+                  ? 'Người mới'
+                  : level === 'intermediate'
+                    ? 'Trung cấp'
+                    : 'Nâng cao'}
+              </p>
             </div>
 
             {/* Current Concept Card */}
             {currentConcept && (
               <div className="metric-card p-5">
-                <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">🎯 Khái niệm hiện tại</h3>
+                <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">
+                  🎯 Khái niệm hiện tại
+                </h3>
                 {conceptLoading ? (
                   <div className="h-6 w-6 animate-spin rounded-full border-b-2 border-[#8c3451]" />
                 ) : (
                   <>
-                    <p className="text-[13px] font-medium text-[#333] mb-2">{currentConcept.concept_name}</p>
+                    <p className="text-[13px] font-medium text-[#333] mb-2">
+                      {currentConcept.concept_name}
+                    </p>
                     <p className="text-[12px] text-[#666] mb-3">{currentConcept.description}</p>
-                    
+
                     <div className="mb-3">
                       <p className="text-[12px] font-medium text-[#8c3451] mb-1">Độ thành thạo</p>
                       <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -1325,18 +1395,33 @@ export default function AITutor() {
                           style={{ width: `${currentConcept.mastery * 100}%` }}
                         />
                       </div>
-                      <p className="text-[11px] text-[#666] mt-1">{Math.round(currentConcept.mastery * 100)}%</p>
+                      <p className="text-[11px] text-[#666] mt-1">
+                        {Math.round(currentConcept.mastery * 100)}%
+                      </p>
                     </div>
 
-                    <div className="inline-block px-3 py-1 rounded-full text-[11px] font-medium"
-                         style={{
-                           backgroundColor: currentConcept.status === 'complete' ? '#d4f4dd' :
-                                          currentConcept.status === 'in_progress' ? '#fff4d6' : '#f0f0f0',
-                           color: currentConcept.status === 'complete' ? '#1a6b2f' :
-                                  currentConcept.status === 'in_progress' ? '#a67c2f' : '#666'
-                         }}>
-                      {currentConcept.status === 'complete' ? 'Hoàn thành' :
-                       currentConcept.status === 'in_progress' ? 'Đang học' : 'Chưa bắt đầu'}
+                    <div
+                      className="inline-block px-3 py-1 rounded-full text-[11px] font-medium"
+                      style={{
+                        backgroundColor:
+                          currentConcept.status === 'complete'
+                            ? '#d4f4dd'
+                            : currentConcept.status === 'in_progress'
+                              ? '#fff4d6'
+                              : '#f0f0f0',
+                        color:
+                          currentConcept.status === 'complete'
+                            ? '#1a6b2f'
+                            : currentConcept.status === 'in_progress'
+                              ? '#a67c2f'
+                              : '#666',
+                      }}
+                    >
+                      {currentConcept.status === 'complete'
+                        ? 'Hoàn thành'
+                        : currentConcept.status === 'in_progress'
+                          ? 'Đang học'
+                          : 'Chưa bắt đầu'}
                     </div>
                   </>
                 )}
@@ -1417,7 +1502,10 @@ export default function AITutor() {
                       Tỉ lệ hiện tại
                     </p>
                     <p className="mt-2 text-[24px] font-medium text-[#6f59c0]">
-                      {answeredAssessmentCount > 0 ? Math.round((correctAssessmentCount / answeredAssessmentCount) * 100) : 0}%
+                      {answeredAssessmentCount > 0
+                        ? Math.round((correctAssessmentCount / answeredAssessmentCount) * 100)
+                        : 0}
+                      %
                     </p>
                   </div>
                 </div>
@@ -1439,7 +1527,9 @@ export default function AITutor() {
                       {incorrectAssessmentCount > 0 && (
                         <button
                           type="button"
-                          onClick={() => setActiveAssessmentIndex(incorrectAssessmentIndexes[0] ?? 0)}
+                          onClick={() =>
+                            setActiveAssessmentIndex(incorrectAssessmentIndexes[0] ?? 0)
+                          }
                           className="theme-button-secondary rounded-[14px] px-4 py-2 text-[12px]"
                         >
                           Xem câu sai đầu tiên
@@ -1459,10 +1549,13 @@ export default function AITutor() {
 
                 <div className="flex flex-wrap gap-2">
                   <span className="rounded-full bg-[#fdf0f5] px-3 py-1 text-[12px] font-medium text-[#8c3451]">
-                    {activeAssessmentQuestion.concept || normalizedAssessmentDraft.concept || 'Khái niệm tổng hợp'}
+                    {activeAssessmentQuestion.concept ||
+                      normalizedAssessmentDraft.concept ||
+                      'Khái niệm tổng hợp'}
                   </span>
                   <span className="rounded-full bg-[#f7f3ff] px-3 py-1 text-[12px] font-medium text-[#6f59c0]">
-                    {ASSESSMENT_DIFFICULTY_LABELS[activeAssessmentQuestion.difficulty] || activeAssessmentQuestion.difficulty}
+                    {ASSESSMENT_DIFFICULTY_LABELS[activeAssessmentQuestion.difficulty] ||
+                      activeAssessmentQuestion.difficulty}
                   </span>
                   <span className="rounded-full bg-[#eef9ff] px-3 py-1 text-[12px] font-medium text-[#2f6b9a]">
                     {getAssessmentQuestionTypeLabel(activeAssessmentQuestion.question_type)}
@@ -1551,10 +1644,15 @@ export default function AITutor() {
                               : 'bg-red-100 text-red-700'
                           }`}
                         >
-                          {isActiveAssessmentCorrect ? 'Bạn trả lời đúng' : 'Bạn cần cải thiện câu này'}
+                          {isActiveAssessmentCorrect
+                            ? 'Bạn trả lời đúng'
+                            : 'Bạn cần cải thiện câu này'}
                         </p>
                         <p className="mt-3 text-[14px] text-[#5f5470]">
-                          Câu trả lời của bạn: <span className="font-medium text-[#2b1f26]">{activeAssessmentResponse || 'Chưa trả lời'}</span>
+                          Câu trả lời của bạn:{' '}
+                          <span className="font-medium text-[#2b1f26]">
+                            {activeAssessmentResponse || 'Chưa trả lời'}
+                          </span>
                         </p>
                         <p className="mt-2 text-[15px] leading-[1.7] text-[#3e3150]">
                           Đáp án đúng: {activeAssessmentAnswer || 'Chưa có đáp án gợi ý.'}
@@ -1584,14 +1682,17 @@ export default function AITutor() {
                     Đoạn nội dung tham chiếu
                   </p>
                   <p className="mt-3 whitespace-pre-wrap text-[14px] leading-[1.7] text-[#5f4b2a]">
-                    {activeAssessmentQuestion.source_excerpt || normalizedAssessmentDraft.chapterContent || 'Chưa có đoạn trích nguồn.'}
+                    {activeAssessmentQuestion.source_excerpt ||
+                      normalizedAssessmentDraft.chapterContent ||
+                      'Chưa có đoạn trích nguồn.'}
                   </p>
                 </div>
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#8c3451]/10 bg-[#fff6fa] p-6">
                 <p className="text-[13px] text-[#7d5d68]">
-                  Bạn có thể làm từng câu, kiểm tra ngay trong popup và theo dõi tiến độ của cả bộ câu hỏi.
+                  Bạn có thể làm từng câu, kiểm tra ngay trong popup và theo dõi tiến độ của cả bộ
+                  câu hỏi.
                 </p>
                 <div className="flex flex-wrap gap-3">
                   <button
@@ -1621,7 +1722,9 @@ export default function AITutor() {
                   <button
                     type="button"
                     onClick={() =>
-                      setActiveAssessmentIndex((prev) => Math.min(prev + 1, assessmentQuestions.length - 1))
+                      setActiveAssessmentIndex((prev) =>
+                        Math.min(prev + 1, assessmentQuestions.length - 1),
+                      )
                     }
                     disabled={activeAssessmentIndex === assessmentQuestions.length - 1}
                     className="theme-button rounded-[14px] px-4 py-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-50"

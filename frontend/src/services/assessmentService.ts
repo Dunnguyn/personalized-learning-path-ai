@@ -31,6 +31,9 @@ interface GenerateAssessmentResponse {
 
 export const assessmentService = {
   async generateQuestions(payload: GenerateAssessmentRequest): Promise<GenerateAssessmentResponse> {
-    return apiClient.post('/ask/generate-assessment', payload) as Promise<GenerateAssessmentResponse>;
+    return apiClient.post(
+      '/ask/generate-assessment',
+      payload,
+    ) as Promise<GenerateAssessmentResponse>;
   },
 };

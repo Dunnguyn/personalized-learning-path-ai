@@ -31,7 +31,10 @@ export default function PDFViewer({
   const normalizedBaseUrl = apiBaseUrl.replace(/\/$/, '');
   const normalizedBasePath = apiBasePath.startsWith('/') ? apiBasePath : `/${apiBasePath}`;
   const pdfUrl = `${normalizedBaseUrl}${normalizedBasePath}/resources/pdf/${resourceId}`;
-  const viewerUrl = useMemo(() => `${pdfUrl}#page=${Math.max(currentPage, 1)}`, [currentPage, pdfUrl]);
+  const viewerUrl = useMemo(
+    () => `${pdfUrl}#page=${Math.max(currentPage, 1)}`,
+    [currentPage, pdfUrl],
+  );
   const iframeKey = useMemo(() => `${resourceId}-${currentPage}`, [currentPage, resourceId]);
 
   useEffect(() => {
@@ -45,7 +48,9 @@ export default function PDFViewer({
 
     const timeoutTimer = setTimeout(() => {
       setLoading(false);
-      setError('\u0054\u1ea3\u0069\u0020\u0050\u0044\u0046\u0020\u0071\u0075\u00e1\u0020\u006c\u00e2\u0075\u002e\u0020\u0056\u0075\u0069\u0020\u006c\u00f2\u006e\u0067\u0020\u0074\u0068\u1eed\u0020\u006d\u1edf\u0020\u0074\u0072\u006f\u006e\u0067\u0020\u0074\u0061\u0062\u0020\u006d\u1edb\u0069\u0020\u0068\u006f\u1eb7\u0063\u0020\u0074\u1ea3\u0069\u0020\u0078\u0075\u1ed1\u006e\u0067\u002e');
+      setError(
+        '\u0054\u1ea3\u0069\u0020\u0050\u0044\u0046\u0020\u0071\u0075\u00e1\u0020\u006c\u00e2\u0075\u002e\u0020\u0056\u0075\u0069\u0020\u006c\u00f2\u006e\u0067\u0020\u0074\u0068\u1eed\u0020\u006d\u1edf\u0020\u0074\u0072\u006f\u006e\u0067\u0020\u0074\u0061\u0062\u0020\u006d\u1edb\u0069\u0020\u0068\u006f\u1eb7\u0063\u0020\u0074\u1ea3\u0069\u0020\u0078\u0075\u1ed1\u006e\u0067\u002e',
+      );
     }, 15000);
 
     return () => {
@@ -100,9 +105,25 @@ export default function PDFViewer({
           <div className="min-w-0">
             <h2 className="truncate text-[18px] font-semibold text-[#5b1724]">{title}</h2>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px] font-medium text-[#8c3451]/70">
-              <span>{'\u0054\u0072\u0061\u006e\u0067\u0020\u0068\u0069\u1ec7\u006e\u0020\u0074\u1ea1\u0069'} {currentPage}</span>
-              {initialPage ? <span className="rounded-full bg-[#faf2f5] px-2 py-1">{'\u0047\u1ee3\u0069\u0020\u00fd\u0020\u0074\u1eeb\u0020\u0074\u0072\u0061\u006e\u0067'} {initialPage}</span> : null}
-              {isPinned ? <span className="rounded-full bg-[#f7dfe8] px-2 py-1 text-[#8c3451]">{'\u0110\u00e3\u0020\u0067\u0068\u0069\u006d'}</span> : null}
+              <span>
+                {
+                  '\u0054\u0072\u0061\u006e\u0067\u0020\u0068\u0069\u1ec7\u006e\u0020\u0074\u1ea1\u0069'
+                }{' '}
+                {currentPage}
+              </span>
+              {initialPage ? (
+                <span className="rounded-full bg-[#faf2f5] px-2 py-1">
+                  {
+                    '\u0047\u1ee3\u0069\u0020\u00fd\u0020\u0074\u1eeb\u0020\u0074\u0072\u0061\u006e\u0067'
+                  }{' '}
+                  {initialPage}
+                </span>
+              ) : null}
+              {isPinned ? (
+                <span className="rounded-full bg-[#f7dfe8] px-2 py-1 text-[#8c3451]">
+                  {'\u0110\u00e3\u0020\u0067\u0068\u0069\u006d'}
+                </span>
+              ) : null}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -110,10 +131,14 @@ export default function PDFViewer({
               type="button"
               onClick={() => onTogglePin?.(currentPage)}
               className={`rounded-full px-4 py-2 text-[12px] font-semibold transition-colors ${
-                isPinned ? 'bg-[#f7dfe8] text-[#8c3451]' : 'bg-[#f6f1f4] text-[#6f5260] hover:bg-[#f1e5ea]'
+                isPinned
+                  ? 'bg-[#f7dfe8] text-[#8c3451]'
+                  : 'bg-[#f6f1f4] text-[#6f5260] hover:bg-[#f1e5ea]'
               }`}
             >
-              {isPinned ? '\u0042\u1ecf\u0020\u0067\u0068\u0069\u006d' : '\u0047\u0068\u0069\u006d\u0020\u0074\u00e0\u0069\u0020\u006c\u0069\u1ec7\u0075\u0020\u006e\u00e0\u0079'}
+              {isPinned
+                ? '\u0042\u1ecf\u0020\u0067\u0068\u0069\u006d'
+                : '\u0047\u0068\u0069\u006d\u0020\u0074\u00e0\u0069\u0020\u006c\u0069\u1ec7\u0075\u0020\u006e\u00e0\u0079'}
             </button>
             <button
               type="button"
@@ -144,7 +169,9 @@ export default function PDFViewer({
             </button>
           </div>
           <p className="text-[12px] text-[#8c3451]/70">
-            {'\u0044\u00f9\u006e\u0067\u0020\u0111\u0069\u1ec1\u0075\u0020\u0068\u01b0\u1edb\u006e\u0067\u0020\u006e\u00e0\u0079\u0020\u0111\u1ec3\u0020\u006e\u0068\u1ea3\u0079\u0020\u006e\u0068\u0061\u006e\u0068\u0020\u0067\u0069\u1eefa\u0020\u0063\u00e1\u0063\u0020\u0074\u0072\u0061\u006e\u0067\u0020\u0067\u1ee3\u0069\u0020\u00fd\u0020\u006d\u00e0\u0020\u006b\u0068\u00f4\u006e\u0067\u0020\u0072\u1eddi\u0020\u006c\u0065\u0073\u0073\u006f\u006e\u002e'}
+            {
+              '\u0044\u00f9\u006e\u0067\u0020\u0111\u0069\u1ec1\u0075\u0020\u0068\u01b0\u1edb\u006e\u0067\u0020\u006e\u00e0\u0079\u0020\u0111\u1ec3\u0020\u006e\u0068\u1ea3\u0079\u0020\u006e\u0068\u0061\u006e\u0068\u0020\u0067\u0069\u1eefa\u0020\u0063\u00e1\u0063\u0020\u0074\u0072\u0061\u006e\u0067\u0020\u0067\u1ee3\u0069\u0020\u00fd\u0020\u006d\u00e0\u0020\u006b\u0068\u00f4\u006e\u0067\u0020\u0072\u1eddi\u0020\u006c\u0065\u0073\u0073\u006f\u006e\u002e'
+            }
           </p>
         </div>
 
@@ -153,16 +180,26 @@ export default function PDFViewer({
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-white bg-opacity-75">
               <div className="text-center">
                 <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-b-2 border-[#8f1025]" />
-                <p className="mb-2 text-[#8f1025]">{'\u0110\u0061\u006e\u0067\u0020\u0074\u1ea3\u0069\u0020\u0050\u0044\u0046\u002e\u002e\u002e'}</p>
+                <p className="mb-2 text-[#8f1025]">
+                  {
+                    '\u0110\u0061\u006e\u0067\u0020\u0074\u1ea3\u0069\u0020\u0050\u0044\u0046\u002e\u002e\u002e'
+                  }
+                </p>
                 {showSlowLoadingHint ? (
                   <div className="mt-4 space-y-2">
-                    <p className="text-[13px] text-gray-600">{'\u0054\u1ea3\u0069\u0020\u006c\u00e2\u0075\u0020\u0068\u01a1\u006e\u0020\u0062\u00ec\u006e\u0068\u0020\u0074\u0068\u01b0\u1edd\u006e\u0067\u003f'}</p>
+                    <p className="text-[13px] text-gray-600">
+                      {
+                        '\u0054\u1ea3\u0069\u0020\u006c\u00e2\u0075\u0020\u0068\u01a1\u006e\u0020\u0062\u00ec\u006e\u0068\u0020\u0074\u0068\u01b0\u1edd\u006e\u0067\u003f'
+                      }
+                    </p>
                     <button
                       type="button"
                       onClick={openInNewTab}
                       className="rounded-[8px] bg-[#8f1025] px-4 py-2 text-[12px] text-white hover:bg-[#7a0e20]"
                     >
-                      {'\u004d\u1edf\u0020\u0074\u0072\u006f\u006e\u0067\u0020\u0074\u0061\u0062\u0020\u006d\u1edb\u0069'}
+                      {
+                        '\u004d\u1edf\u0020\u0074\u0072\u006f\u006e\u0067\u0020\u0074\u0061\u0062\u0020\u006d\u1edb\u0069'
+                      }
                     </button>
                   </div>
                 ) : null}
@@ -173,7 +210,9 @@ export default function PDFViewer({
           {error ? (
             <div className="absolute inset-0 flex items-center justify-center bg-white">
               <div className="max-w-md px-6 text-center">
-                <p className="mb-4 text-[16px] text-red-600">{'\u004c\u1ed7\u0069\u0020\u0074\u1ea3\u0069\u0020\u0050\u0044\u0046'}</p>
+                <p className="mb-4 text-[16px] text-red-600">
+                  {'\u004c\u1ed7\u0069\u0020\u0074\u1ea3\u0069\u0020\u0050\u0044\u0046'}
+                </p>
                 <p className="mb-6 text-[14px] text-gray-600">{error}</p>
                 <div className="flex justify-center gap-3">
                   <button
@@ -181,7 +220,9 @@ export default function PDFViewer({
                     onClick={openInNewTab}
                     className="rounded-[8px] bg-[#8f1025] px-4 py-2 text-[13px] text-white hover:bg-[#7a0e20]"
                   >
-                    {'\u004d\u1edf\u0020\u0074\u0072\u006f\u006e\u0067\u0020\u0074\u0061\u0062\u0020\u006d\u1edb\u0069'}
+                    {
+                      '\u004d\u1edf\u0020\u0074\u0072\u006f\u006e\u0067\u0020\u0074\u0061\u0062\u0020\u006d\u1edb\u0069'
+                    }
                   </button>
                   <a
                     href={pdfUrl}
@@ -206,7 +247,9 @@ export default function PDFViewer({
             }}
             onError={() => {
               setLoading(false);
-              setError('\u004b\u0068\u00f4\u006e\u0067\u0020\u0074\u0068\u1ec3\u0020\u0074\u1ea3\u0069\u0020\u0066\u0069\u006c\u0065\u0020\u0050\u0044\u0046\u002e\u0020\u0056\u0075\u0069\u0020\u006c\u00f2\u006e\u0067\u0020\u0074\u0068\u1eed\u0020\u0074\u1ea3\u0069\u0020\u0078\u0075\u1ed1\u006e\u0067\u0020\u0066\u0069\u006c\u0065\u002e');
+              setError(
+                '\u004b\u0068\u00f4\u006e\u0067\u0020\u0074\u0068\u1ec3\u0020\u0074\u1ea3\u0069\u0020\u0066\u0069\u006c\u0065\u0020\u0050\u0044\u0046\u002e\u0020\u0056\u0075\u0069\u0020\u006c\u00f2\u006e\u0067\u0020\u0074\u0068\u1eed\u0020\u0074\u1ea3\u0069\u0020\u0078\u0075\u1ed1\u006e\u0067\u0020\u0066\u0069\u006c\u0065\u002e',
+              );
             }}
           />
         </div>
@@ -224,10 +267,14 @@ export default function PDFViewer({
               type="button"
               onClick={() => onTogglePin?.(currentPage)}
               className={`rounded-[8px] px-6 py-2 text-[13px] font-medium transition-colors ${
-                isPinned ? 'bg-[#f7dfe8] text-[#8c3451] hover:bg-[#f2d2df]' : 'bg-[#f6f1f4] text-[#6f5260] hover:bg-[#eee2e8]'
+                isPinned
+                  ? 'bg-[#f7dfe8] text-[#8c3451] hover:bg-[#f2d2df]'
+                  : 'bg-[#f6f1f4] text-[#6f5260] hover:bg-[#eee2e8]'
               }`}
             >
-              {isPinned ? '\u0042\u1ecf\u0020\u0067\u0068\u0069\u006d' : '\u0047\u0068\u0069\u006d\u0020\u0111\u1ec3\u0020\u0111\u1ecdc\u0020\u0074\u0069\u1ebf\u0070'}
+              {isPinned
+                ? '\u0042\u1ecf\u0020\u0067\u0068\u0069\u006d'
+                : '\u0047\u0068\u0069\u006d\u0020\u0111\u1ec3\u0020\u0111\u1ecdc\u0020\u0074\u0069\u1ebf\u0070'}
             </button>
             <a
               href={pdfUrl}

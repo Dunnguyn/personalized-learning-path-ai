@@ -81,8 +81,16 @@ def add_resource_service(
         title=resource.title,
         content=resource.content,
         topic=resource.topic,
-        level=resource.level.value if hasattr(resource.level, "value") else str(resource.level),
-        source=resource.source.value if hasattr(resource.source, "value") else str(resource.source),
+        level=(
+            resource.level.value
+            if hasattr(resource.level, "value")
+            else str(resource.level)
+        ),
+        source=(
+            resource.source.value
+            if hasattr(resource.source, "value")
+            else str(resource.source)
+        ),
         concept_id=resource.concept_id,
         url=resource.url,
         user_id=user_id,
@@ -104,8 +112,16 @@ def import_resources_service(
                 title=resource.title,
                 content=resource.content,
                 topic=resource.topic,
-                level=resource.level.value if hasattr(resource.level, "value") else str(resource.level),
-                source=resource.source.value if hasattr(resource.source, "value") else str(resource.source),
+                level=(
+                    resource.level.value
+                    if hasattr(resource.level, "value")
+                    else str(resource.level)
+                ),
+                source=(
+                    resource.source.value
+                    if hasattr(resource.source, "value")
+                    else str(resource.source)
+                ),
                 concept_id=resource.concept_id,
                 url=resource.url,
                 user_id=user_id,
@@ -238,15 +254,25 @@ def delete_resource_service(resource_id: str) -> Dict[str, Any]:
 
     chunks = _chunk_repository.get_by_resource_ids([resource_id])
     chunk_ids = [str(chunk["_id"]) for chunk in chunks]
-    vector_ids = [f"{resource_id}:{int(chunk.get('chunk_index', 0))}" for chunk in chunks]
+    vector_ids = [
+        f"{resource_id}:{int(chunk.get('chunk_index', 0))}" for chunk in chunks
+    ]
 
-    affected_recommendations = _lesson_recommended_chunk_repository.find_by_resources_or_chunks(
-        resource_ids=[resource_id],
-        chunk_ids=chunk_ids,
+    affected_recommendations = (
+        _lesson_recommended_chunk_repository.find_by_resources_or_chunks(
+            resource_ids=[resource_id],
+            chunk_ids=chunk_ids,
+        )
     )
-    affected_lesson_ids = [str(item["lesson_id"]) for item in affected_recommendations if item.get("lesson_id")]
+    affected_lesson_ids = [
+        str(item["lesson_id"])
+        for item in affected_recommendations
+        if item.get("lesson_id")
+    ]
 
-    recommendation_ids = [item["_id"] for item in affected_recommendations if item.get("_id")]
+    recommendation_ids = [
+        item["_id"] for item in affected_recommendations if item.get("_id")
+    ]
     if recommendation_ids:
         _lesson_recommended_chunk_repository.delete_many_by_ids(recommendation_ids)
 
@@ -276,7 +302,11 @@ def delete_resource_service(resource_id: str) -> Dict[str, Any]:
             if path.exists():
                 path.unlink()
         except OSError:
-            logger.warning("Could not delete stored PDF for resource %s", resource_id, exc_info=True)
+            logger.warning(
+                "Could not delete stored PDF for resource %s",
+                resource_id,
+                exc_info=True,
+            )
 
     deleted_count = _resource_repository.delete(resource_id)
     if deleted_count == 0:
@@ -322,7 +352,9 @@ def get_resource_stats(user_id: Optional[str] = None) -> Dict[str, Any]:
     facet = aggregated[0]
     return {
         "total_resources": total,
-        "by_source": {item["_id"]: item["count"] for item in facet.get("by_source", [])},
+        "by_source": {
+            item["_id"]: item["count"] for item in facet.get("by_source", [])
+        },
         "by_type": {item["_id"]: item["count"] for item in facet.get("by_type", [])},
         "recent_resources": [serialize_mongo(item) for item in facet.get("recent", [])],
     }

@@ -205,6 +205,10 @@ backend/uploads/
 *.mp4
 *.mp3
 
+# Runtime vector index/cache data
+backend/.chroma/
+backend/.runtime/
+
 
 # =========================
 # ADDITIONAL COMMON IGNORES

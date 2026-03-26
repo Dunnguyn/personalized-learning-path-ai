@@ -1,17 +1,17 @@
-import { Suspense, lazy } from 'react'
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
-import { AuthProvider } from './contexts/AuthContext'
+import { Suspense, lazy } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider } from './contexts/AuthContext';
 
-const Login = lazy(() => import('./components/auth/Login'))
-const Signup = lazy(() => import('./components/auth/Signup'))
-const SignupStep2 = lazy(() => import('./components/auth/SignupStep2'))
-const Dashboard = lazy(() => import('./pages/Dashboard'))
-const LearningPath = lazy(() => import('./pages/LearningPath'))
-const LearningPathDetail = lazy(() => import('./pages/LearningPathDetail'))
-const Resources = lazy(() => import('./pages/Resources'))
-const AITutor = lazy(() => import('./pages/AITutor'))
-const Settings = lazy(() => import('./pages/Settings'))
-const DebugToken = lazy(() => import('./pages/DebugToken'))
+const Login = lazy(() => import('./components/auth/Login'));
+const Signup = lazy(() => import('./components/auth/Signup'));
+const SignupStep2 = lazy(() => import('./components/auth/SignupStep2'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const LearningPath = lazy(() => import('./pages/LearningPath'));
+const LearningPathDetail = lazy(() => import('./pages/LearningPathDetail'));
+const Resources = lazy(() => import('./pages/Resources'));
+const AITutor = lazy(() => import('./pages/AITutor'));
+const Settings = lazy(() => import('./pages/Settings'));
+const DebugToken = lazy(() => import('./pages/DebugToken'));
 
 function App() {
   return (
@@ -42,7 +42,7 @@ function App() {
         </Suspense>
       </Router>
     </AuthProvider>
-  )
+  );
 }
 
-export default App
+export default App;

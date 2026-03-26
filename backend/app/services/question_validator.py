@@ -34,7 +34,14 @@ class LessonScopedQuestionValidator:
 
     allowed_question_types = {"multiple_choice", "short_answer", "true_false"}
     allowed_difficulties = {"beginner", "intermediate", "advanced"}
-    allowed_bloom_levels = {"remember", "understand", "apply", "analyze", "evaluate", "create"}
+    allowed_bloom_levels = {
+        "remember",
+        "understand",
+        "apply",
+        "analyze",
+        "evaluate",
+        "create",
+    }
     question_type_aliases = {
         "multiple choice": "multiple_choice",
         "multiple-choice": "multiple_choice",
@@ -117,11 +124,17 @@ class LessonScopedQuestionValidator:
         allowed_chunk_set = set(allowed_chunk_ids)
         for index, item in enumerate(raw_questions[:target_count]):
             try:
-                question = self._normalize_question(item, allowed_chunk_set, chunk_text_by_id)
+                question = self._normalize_question(
+                    item, allowed_chunk_set, chunk_text_by_id
+                )
                 for chunk_id in question.chunk_ids:
-                    source_excerpt = str(question.metadata.get("source_excerpt") or "").strip()
+                    source_excerpt = str(
+                        question.metadata.get("source_excerpt") or ""
+                    ).strip()
                     chunk_text = str(chunk_text_by_id.get(chunk_id) or "")
-                    if source_excerpt and not self._excerpt_matches_chunk(source_excerpt=source_excerpt, chunk_text=chunk_text):
+                    if source_excerpt and not self._excerpt_matches_chunk(
+                        source_excerpt=source_excerpt, chunk_text=chunk_text
+                    ):
                         raise ValueError("source_excerpt_not_in_chunk")
                 valid_questions.append(question)
             except ValueError as exc:
@@ -150,22 +163,40 @@ class LessonScopedQuestionValidator:
         default_difficulty: str = "beginner",
         default_bloom_levels: Sequence[str] = ("understand",),
     ) -> ValidatedLessonQuestion:
-        question_type = self._normalize_question_type(str(item.get("question_type") or "").strip())
+        question_type = self._normalize_question_type(
+            str(item.get("question_type") or "").strip()
+        )
         question = str(item.get("question") or "").strip()
         correct_answer = str(item.get("correct_answer") or "").strip()
-        question_type = self._infer_question_type(question_type=question_type, item=item, correct_answer=correct_answer)
-        correct_answer = self._normalize_correct_answer(question_type=question_type, value=correct_answer)
-        explanation = str(item.get("explanation") or "").strip()
-        difficulty = self._normalize_difficulty(str(item.get("difficulty") or "").strip().lower()) or default_difficulty
-        bloom_level = (
-            self._normalize_bloom_level(str(item.get("bloom_level") or "").strip().lower())
-            or (list(default_bloom_levels)[0] if default_bloom_levels else "understand")
+        question_type = self._infer_question_type(
+            question_type=question_type, item=item, correct_answer=correct_answer
         )
+        correct_answer = self._normalize_correct_answer(
+            question_type=question_type, value=correct_answer
+        )
+        explanation = str(item.get("explanation") or "").strip()
+        difficulty = (
+            self._normalize_difficulty(
+                str(item.get("difficulty") or "").strip().lower()
+            )
+            or default_difficulty
+        )
+        bloom_level = self._normalize_bloom_level(
+            str(item.get("bloom_level") or "").strip().lower()
+        ) or (list(default_bloom_levels)[0] if default_bloom_levels else "understand")
         chunk_ids = self._normalize_chunk_ids(item.get("chunk_ids"))
-        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        distractors = self._normalize_distractors(item=item, question_type=question_type, correct_answer=correct_answer)
+        metadata = (
+            item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        )
+        distractors = self._normalize_distractors(
+            item=item, question_type=question_type, correct_answer=correct_answer
+        )
         if not chunk_ids:
-            chunk_ids = self._normalize_chunk_ids(item.get("chunk_id")) or self._normalize_chunk_ids(metadata.get("chunk_ids")) or self._normalize_chunk_ids(metadata.get("chunk_id"))
+            chunk_ids = (
+                self._normalize_chunk_ids(item.get("chunk_id"))
+                or self._normalize_chunk_ids(metadata.get("chunk_ids"))
+                or self._normalize_chunk_ids(metadata.get("chunk_id"))
+            )
 
         if not question:
             raise ValueError("question_empty")
@@ -187,7 +218,10 @@ class LessonScopedQuestionValidator:
         if question_type == "multiple_choice":
             if len(distractors) < 2:
                 raise ValueError("invalid_distractor_count")
-            normalized_options = {self._normalize_text(correct_answer), *(self._normalize_text(item) for item in distractors)}
+            normalized_options = {
+                self._normalize_text(correct_answer),
+                *(self._normalize_text(item) for item in distractors),
+            }
             if len(normalized_options) != len(distractors) + 1:
                 raise ValueError("duplicate_answers")
         elif question_type == "short_answer":
@@ -199,13 +233,17 @@ class LessonScopedQuestionValidator:
 
         source_excerpt = str(metadata.get("source_excerpt") or "").strip()
         if not source_excerpt and chunk_ids:
-            source_excerpt = self._build_excerpt_from_chunk(chunk_text_by_id.get(chunk_ids[0]) or "")
+            source_excerpt = self._build_excerpt_from_chunk(
+                chunk_text_by_id.get(chunk_ids[0]) or ""
+            )
             if source_excerpt:
                 metadata["source_excerpt"] = source_excerpt
         if not source_excerpt:
             raise ValueError("missing_source_excerpt")
         if not explanation:
-            explanation = f"Câu hỏi được suy ra từ đoạn trích: {source_excerpt[:180]}".strip()
+            explanation = (
+                f"Câu hỏi được suy ra từ đoạn trích: {source_excerpt[:180]}".strip()
+            )
 
         return ValidatedLessonQuestion(
             question_type=question_type,
@@ -225,7 +263,9 @@ class LessonScopedQuestionValidator:
         if not text:
             return None
         candidates = [text]
-        fenced = re.search(r"```json\s*(\{.*\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+        fenced = re.search(
+            r"```json\s*(\{.*\})\s*```", text, flags=re.DOTALL | re.IGNORECASE
+        )
         if fenced:
             candidates.append(fenced.group(1).strip())
         object_match = re.search(r"(\{.*\})", text, flags=re.DOTALL)
@@ -268,9 +308,19 @@ class LessonScopedQuestionValidator:
             return [raw_value.strip()]
         return []
 
-    def _normalize_distractors(self, *, item: Dict[str, Any], question_type: str, correct_answer: str) -> List[str]:
+    def _normalize_distractors(
+        self, *, item: Dict[str, Any], question_type: str, correct_answer: str
+    ) -> List[str]:
         raw_distractors = item.get("distractors")
-        distractors = [str(value).strip() for value in raw_distractors or [] if str(value).strip()] if isinstance(raw_distractors, list) else []
+        distractors = (
+            [
+                str(value).strip()
+                for value in raw_distractors or []
+                if str(value).strip()
+            ]
+            if isinstance(raw_distractors, list)
+            else []
+        )
         if question_type != "multiple_choice":
             return distractors
 
@@ -283,22 +333,31 @@ class LessonScopedQuestionValidator:
             derived = [
                 str(value).strip()
                 for value in raw_choices
-                if str(value).strip() and self._normalize_text(str(value)) != normalized_answer
+                if str(value).strip()
+                and self._normalize_text(str(value)) != normalized_answer
             ]
             for choice in derived:
-                if self._normalize_text(choice) not in {self._normalize_text(item) for item in distractors}:
+                if self._normalize_text(choice) not in {
+                    self._normalize_text(item) for item in distractors
+                }:
                     distractors.append(choice)
                 if len(distractors) >= 3:
                     break
         return distractors[:3]
 
-    def _infer_question_type(self, *, question_type: str, item: Dict[str, Any], correct_answer: str) -> str:
+    def _infer_question_type(
+        self, *, question_type: str, item: Dict[str, Any], correct_answer: str
+    ) -> str:
         if question_type in self.allowed_question_types:
             return question_type
         normalized_answer = self._normalize_text(correct_answer)
         if normalized_answer in self.true_false_aliases:
             return "true_false"
-        if isinstance(item.get("distractors"), list) or isinstance(item.get("choices"), list) or isinstance(item.get("options"), list):
+        if (
+            isinstance(item.get("distractors"), list)
+            or isinstance(item.get("choices"), list)
+            or isinstance(item.get("options"), list)
+        ):
             return "multiple_choice"
         return "short_answer"
 
@@ -307,11 +366,22 @@ class LessonScopedQuestionValidator:
         normalized_chunk = self._normalize_text(chunk_text)
         if not normalized_excerpt or not normalized_chunk:
             return False
-        if normalized_excerpt in normalized_chunk or normalized_chunk in normalized_excerpt:
+        if (
+            normalized_excerpt in normalized_chunk
+            or normalized_chunk in normalized_excerpt
+        ):
             return True
 
-        excerpt_tokens = [token for token in re.findall(r"\b[a-z0-9_]+\b", normalized_excerpt) if len(token) >= 3]
-        chunk_tokens = set(token for token in re.findall(r"\b[a-z0-9_]+\b", normalized_chunk) if len(token) >= 3)
+        excerpt_tokens = [
+            token
+            for token in re.findall(r"\b[a-z0-9_]+\b", normalized_excerpt)
+            if len(token) >= 3
+        ]
+        chunk_tokens = set(
+            token
+            for token in re.findall(r"\b[a-z0-9_]+\b", normalized_chunk)
+            if len(token) >= 3
+        )
         if not excerpt_tokens or not chunk_tokens:
             return False
 
@@ -322,7 +392,11 @@ class LessonScopedQuestionValidator:
         normalized = re.sub(r"\s+", " ", str(chunk_text or "")).strip()
         if not normalized:
             return ""
-        sentences = [item.strip() for item in re.split(r"(?<=[\.\!\?])\s+", normalized) if item.strip()]
+        sentences = [
+            item.strip()
+            for item in re.split(r"(?<=[\.\!\?])\s+", normalized)
+            if item.strip()
+        ]
         for sentence in sentences:
             if 60 <= len(sentence) <= 240:
                 return sentence

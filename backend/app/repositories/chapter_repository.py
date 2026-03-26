@@ -34,13 +34,20 @@ class ChapterRepository:
         document.setdefault("created_at", now)
         document.setdefault("updated_at", now)
         result = self.collection.insert_one(document)
-        return self.collection.find_one({"_id": result.inserted_id}) or {**document, "_id": result.inserted_id}
+        return self.collection.find_one({"_id": result.inserted_id}) or {
+            **document,
+            "_id": result.inserted_id,
+        }
 
     def get(self, chapter_id: str | ObjectId) -> Optional[Dict[str, Any]]:
         return self.collection.find_one({"_id": self._to_object_id(chapter_id)})
 
     def list(self) -> List[Dict[str, Any]]:
-        return list(self.collection.find().sort([("subject_id", 1), ("order", 1), ("created_at", -1)]))
+        return list(
+            self.collection.find().sort(
+                [("subject_id", 1), ("order", 1), ("created_at", -1)]
+            )
+        )
 
     def list_paginated(
         self,
@@ -80,12 +87,16 @@ class ChapterRepository:
 
     def list_by_subject(self, subject_id: str | ObjectId) -> List[Dict[str, Any]]:
         return list(
-            self.collection.find({"subject_id": self._to_object_id(subject_id)}).sort("order", 1)
+            self.collection.find({"subject_id": self._to_object_id(subject_id)}).sort(
+                "order", 1
+            )
         )
 
     def list_by_learning_path(self, learning_path_id: str) -> List[Dict[str, Any]]:
         return list(
-            self.collection.find({"metadata.learning_path_id": learning_path_id}).sort("order", 1)
+            self.collection.find({"metadata.learning_path_id": learning_path_id}).sort(
+                "order", 1
+            )
         )
 
     def delete_many(self, chapter_ids: List[str | ObjectId]) -> int:

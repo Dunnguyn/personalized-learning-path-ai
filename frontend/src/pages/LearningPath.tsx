@@ -254,7 +254,9 @@ export default function LearningPath() {
         <h1 className="page-title">Lộ trình học tập</h1>
 
         {error && (
-          <div className="white-panel mb-6 border border-red-200 px-4 py-3 text-[14px] text-red-700">{error}</div>
+          <div className="white-panel mb-6 border border-red-200 px-4 py-3 text-[14px] text-red-700">
+            {error}
+          </div>
         )}
 
         {notice && (
@@ -271,7 +273,11 @@ export default function LearningPath() {
         )}
 
         <div className="mb-10 flex flex-wrap gap-4">
-          <button type="button" onClick={() => setShowCreatePath((value) => !value)} className="theme-button">
+          <button
+            type="button"
+            onClick={() => setShowCreatePath((value) => !value)}
+            className="theme-button"
+          >
             + Tạo lộ trình mới
           </button>
           <button
@@ -301,7 +307,9 @@ export default function LearningPath() {
                 <label className="mb-2 block text-[14px] font-medium text-[#514942]">Môn học</label>
                 <select
                   value={pathForm.subjectId}
-                  onChange={(event) => setPathForm((previous) => ({ ...previous, subjectId: event.target.value }))}
+                  onChange={(event) =>
+                    setPathForm((previous) => ({ ...previous, subjectId: event.target.value }))
+                  }
                   className="theme-input rounded-[18px]"
                   required
                 >
@@ -320,7 +328,9 @@ export default function LearningPath() {
                 <input
                   type="text"
                   value={pathForm.goalDetail}
-                  onChange={(event) => setPathForm((previous) => ({ ...previous, goalDetail: event.target.value }))}
+                  onChange={(event) =>
+                    setPathForm((previous) => ({ ...previous, goalDetail: event.target.value }))
+                  }
                   placeholder="VD: backend, OOP, cấu trúc dữ liệu..."
                   className="theme-input rounded-[18px]"
                 />
@@ -345,7 +355,11 @@ export default function LearningPath() {
               </div>
 
               <div className="flex gap-3 md:col-span-2">
-                <button type="submit" disabled={generatingPath} className="theme-button disabled:opacity-60">
+                <button
+                  type="submit"
+                  disabled={generatingPath}
+                  className="theme-button disabled:opacity-60"
+                >
                   {generatingPath ? 'Đang tạo...' : 'Tạo lộ trình'}
                 </button>
                 <button
@@ -384,7 +398,9 @@ export default function LearningPath() {
                           key={path.path_id}
                           role="button"
                           tabIndex={0}
-                          onClick={() => navigate(`/learning-path/${path.path_id}`, { state: { path } })}
+                          onClick={() =>
+                            navigate(`/learning-path/${path.path_id}`, { state: { path } })
+                          }
                           onKeyDown={(event) => {
                             if (event.key === 'Enter' || event.key === ' ') {
                               event.preventDefault();
@@ -398,7 +414,9 @@ export default function LearningPath() {
                           }`}
                         >
                           <div className="mb-3 flex items-start justify-between gap-3">
-                            <p className="text-[13px] font-medium">{path.goal || 'Tên môn học - Mục tiêu'}</p>
+                            <p className="text-[13px] font-medium">
+                              {path.goal || 'Tên môn học - Mục tiêu'}
+                            </p>
                             <button
                               type="button"
                               onClick={(event) => {
@@ -426,12 +444,16 @@ export default function LearningPath() {
 
               <div>
                 <div className="soft-panel sticky top-[24px] p-[30px]">
-                  <h3 className="mb-4 text-[14px] font-medium text-[#8c3451]">Thông tin chi tiết môn học</h3>
+                  <h3 className="mb-4 text-[14px] font-medium text-[#8c3451]">
+                    Thông tin chi tiết môn học
+                  </h3>
 
                   {activePath?.curriculum && activePath.curriculum.length > 0 ? (
                     <div className="space-y-4">
                       <div className="mb-4 border-b border-[#8c3451]/10 pb-3">
-                        <p className="text-[14px] font-semibold text-[#8c3451]">{activePath.goal}</p>
+                        <p className="text-[14px] font-semibold text-[#8c3451]">
+                          {activePath.goal}
+                        </p>
                       </div>
 
                       {activePath.curriculum.map((chapter, index) => {
@@ -445,7 +467,9 @@ export default function LearningPath() {
                                 <p className="text-[13px] font-semibold text-[#8c3451]">
                                   {chapter.title || `Chương ${index + 1}`}
                                 </p>
-                                <p className="mt-1 text-[11px] text-[#66615b]">{lessons.length} bài học</p>
+                                <p className="mt-1 text-[11px] text-[#66615b]">
+                                  {lessons.length} bài học
+                                </p>
                               </div>
                               <span className="rounded-full border border-[#8c3451]/10 bg-white px-2 py-1 text-[10px] text-[#8c3451]">
                                 {status}
@@ -504,10 +528,13 @@ export default function LearningPath() {
             onClick={(event) => event.stopPropagation()}
           >
             <p className="page-kicker mb-2">Xóa lộ trình</p>
-            <h3 className="text-[28px] font-semibold tracking-[-0.04em] text-[#141217]">Bạn có chắc muốn xóa?</h3>
+            <h3 className="text-[28px] font-semibold tracking-[-0.04em] text-[#141217]">
+              Bạn có chắc muốn xóa?
+            </h3>
             <p className="mt-4 text-[15px] leading-7 text-[#5f5853]">
-              Lộ trình <span className="font-semibold text-[#8c3451]">{pendingDeletePath.goal}</span> sẽ bị xóa cùng
-              các chương, bài học và câu hỏi được sinh riêng cho lộ trình này.
+              Lộ trình{' '}
+              <span className="font-semibold text-[#8c3451]">{pendingDeletePath.goal}</span> sẽ bị
+              xóa cùng các chương, bài học và câu hỏi được sinh riêng cho lộ trình này.
             </p>
 
             <div className="mt-8 flex flex-wrap justify-end gap-3">

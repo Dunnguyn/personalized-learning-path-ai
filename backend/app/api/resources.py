@@ -6,7 +6,17 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 
 from backend.app.api.auth import get_current_user
@@ -63,7 +73,9 @@ def get_resources(
         )
     except Exception as exc:
         logger.exception("Failed to list resources: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        )
 
 
 @router.post(
@@ -80,12 +92,17 @@ def add_resource(
     """Submit text/manual resource into background ingestion pipeline."""
     user_id = current_user.get("user_id") or current_user.get("_id")
     try:
-        return add_resource_service(resource, background_tasks=background_tasks, user_id=str(user_id))
+        return add_resource_service(
+            resource, background_tasks=background_tasks, user_id=str(user_id)
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to submit manual resource: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit resource.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not submit resource.",
+        )
 
 
 @router.post(
@@ -102,12 +119,17 @@ def import_learning_resources(
     """Submit multiple manual resources; each item becomes its own ingestion job."""
     user_id = current_user.get("user_id") or current_user.get("_id")
     try:
-        return import_resources_service(payload, background_tasks=background_tasks, user_id=str(user_id))
+        return import_resources_service(
+            payload, background_tasks=background_tasks, user_id=str(user_id)
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to submit batch ingestion: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit batch ingestion.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not submit batch ingestion.",
+        )
 
 
 @router.get("/search", summary="Semantic search across resource chunks")
@@ -130,7 +152,9 @@ def search_resources(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
         logger.exception("Search failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Search failed.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Search failed."
+        )
 
 
 @router.post(
@@ -149,7 +173,10 @@ def import_pdf_resource(
 ):
     """Upload a PDF and process it asynchronously."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only PDF files are supported.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only PDF files are supported.",
+        )
     user_id = current_user.get("user_id") or current_user.get("_id")
     try:
         return import_pdf_service(
@@ -164,7 +191,10 @@ def import_pdf_resource(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
         logger.exception("PDF submission failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit PDF.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not submit PDF.",
+        )
 
 
 @router.post(
@@ -194,7 +224,10 @@ def import_youtube_resource(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
         logger.exception("YouTube submission failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit YouTube ingestion.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not submit YouTube ingestion.",
+        )
 
 
 @router.get(
@@ -210,7 +243,10 @@ def get_ingestion_job_status(job_id: str):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to fetch job status: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load job status.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load job status.",
+        )
 
 
 @router.get("/pdf/{resource_id}", summary="Download stored PDF")
@@ -222,16 +258,23 @@ def download_pdf(resource_id: str):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:
         logger.exception("Could not resolve PDF path for %s: %s", resource_id, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not resolve PDF path.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not resolve PDF path.",
+        )
 
     if not pdf_path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PDF file no longer exists.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="PDF file no longer exists."
+        )
 
     uploads_dir = Path("backend/uploads").resolve()
     try:
         pdf_path.resolve().relative_to(uploads_dir)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Access denied."
+        )
 
     return FileResponse(
         path=pdf_path,
@@ -241,7 +284,11 @@ def download_pdf(resource_id: str):
     )
 
 
-@router.get("/{resource_id}", response_model=ResourceDetailResponse, summary="Get resource detail")
+@router.get(
+    "/{resource_id}",
+    response_model=ResourceDetailResponse,
+    summary="Get resource detail",
+)
 def get_resource_detail(resource_id: str):
     """Return a single top-level resource by id."""
     try:
@@ -250,7 +297,10 @@ def get_resource_detail(resource_id: str):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to load resource %s: %s", resource_id, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load resource.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load resource.",
+        )
 
 
 @router.delete(
@@ -268,4 +318,7 @@ def delete_resource(resource_id: str, current_user=Depends(get_current_user)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to delete resource %s: %s", resource_id, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not delete resource.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not delete resource.",
+        )

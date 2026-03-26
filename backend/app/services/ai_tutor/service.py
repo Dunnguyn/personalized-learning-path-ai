@@ -6,7 +6,9 @@ from functools import lru_cache
 import re
 
 from backend.app.services.ai_tutor.rag import RAGPipeline
-from backend.app.services.progress_tracking.progress import update_progress_with_confidence
+from backend.app.services.progress_tracking.progress import (
+    update_progress_with_confidence,
+)
 from backend.app.services.learning_path.service import generate_learning_path
 from backend.app.services.embedding_service import embed_text, cosine_similarity
 from backend.app.services.progress_tracking.confidence_scorer import score_confidence
@@ -14,7 +16,7 @@ from backend.app.services.adaptive_engine import (
     decide_learning_mode,
     filter_resources_by_mode,
     adaptive_decision_summary,
-    LearningMode
+    LearningMode,
 )
 from backend.app.database.mongo import db
 
@@ -42,11 +44,11 @@ class ConceptDetector:
     2. Rule-based keywords
     3. Fallback (easiest concept)
     """
-    
+
     def __init__(self):
         self.keywords_map = self._build_keyword_map()
         self._concept_cache = {}
-    
+
     def _build_keyword_map(self) -> Dict[str, List[str]]:
         """
         Build rule-based keyword map for concept detection.
@@ -54,8 +56,10 @@ class ConceptDetector:
         """
         # Load from DB for flexibility
         try:
-            concepts = list(db.concepts.find({}, {"concept_id": 1, "concept_name": 1, "topic": 1}))
-            
+            concepts = list(
+                db.concepts.find({}, {"concept_id": 1, "concept_name": 1, "topic": 1})
+            )
+
             keyword_map = {}
             for c in concepts:
                 cid = c.get("concept_id")
@@ -75,176 +79,175 @@ class ConceptDetector:
                     keywords.extend(["method", "procedure", "def"])
                 if "class" in name or "oop" in name:
                     keywords.extend(["object", "inheritance", "encapsulation"])
-                
+
                 keyword_map[cid] = [k.strip() for k in keywords if k.strip()]
-            
+
             logger.info(f"Keyword map built: {len(keyword_map)} concepts")
             return keyword_map
-        
+
         except Exception as e:
             logger.warning(f"Failed to build keyword map: {e}")
             return {}
-    
+
     def detect_semantic(
-        self,
-        question: str,
-        threshold: float = DEFAULT_CONCEPT_MATCH_THRESHOLD
+        self, question: str, threshold: float = DEFAULT_CONCEPT_MATCH_THRESHOLD
     ) -> Optional[Dict]:
         """
         Detect concept using semantic similarity (embedding).
-        
+
         Returns:
             {concept_id, concept_name, score} or None
         """
         try:
             # Embed question
             q_vec = np.array(embed_text(question))
-            
+
             # Fetch all concepts with embeddings
-            concepts = list(db.concepts.find(
-                {"embedding": {"$exists": True}},
-                {"concept_id": 1, "concept_name": 1, "embedding": 1}
-            ))
-            
+            concepts = list(
+                db.concepts.find(
+                    {"embedding": {"$exists": True}},
+                    {"concept_id": 1, "concept_name": 1, "embedding": 1},
+                )
+            )
+
             if not concepts:
                 logger.debug("No concepts with embeddings found")
                 return None
-            
+
             # Score each concept
             best_match = None
             best_score = 0
-            
+
             for concept in concepts:
                 c_vec = np.array(concept.get("embedding", []))
-                
+
                 if len(c_vec) == 0:
                     continue
-                
+
                 try:
                     score = cosine_similarity(q_vec, c_vec)
-                    
+
                     if score > best_score:
                         best_score = score
                         best_match = {
                             "concept_id": concept.get("concept_id"),
                             "concept_name": concept.get("concept_name"),
-                            "score": round(score, 3)
+                            "score": round(score, 3),
                         }
                 except Exception as e:
                     logger.debug(f"Similarity calc error: {e}")
                     continue
-            
+
             if best_match and best_score >= threshold:
                 logger.info(
                     f"Semantic detection: '{question[:50]}...' → "
                     f"{best_match['concept_name']} (score={best_score:.3f})"
                 )
                 return best_match
-            
+
             return None
-        
+
         except Exception as e:
             logger.exception(f"Semantic detection error: {e}")
             return None
-    
+
     def detect_rule_based(self, question: str) -> Optional[Dict]:
         """
         Detect concept using rule-based keyword matching.
-        
+
         Returns:
             {concept_id, concept_name, method: "rule-based"} or None
         """
         if not self.keywords_map:
             return None
-        
+
         q_lower = question.lower()
         best_match = None
         max_keywords_matched = 0
-        
+
         for cid, keywords in self.keywords_map.items():
             matched_count = sum(1 for kw in keywords if kw in q_lower)
-            
+
             if matched_count > max_keywords_matched:
                 max_keywords_matched = matched_count
-                
+
                 concept = db.concepts.find_one({"concept_id": cid})
                 if concept:
                     best_match = {
                         "concept_id": cid,
                         "concept_name": concept.get("concept_name"),
                         "method": "rule-based",
-                        "matched_keywords": matched_count
+                        "matched_keywords": matched_count,
                     }
-        
+
         if best_match and best_match["matched_keywords"] > 0:
             logger.info(
                 f"Rule-based detection: '{question[:50]}...' → "
                 f"{best_match['concept_name']} ({best_match['matched_keywords']} keywords)"
             )
             return best_match
-        
+
         return None
-    
+
     def detect_fallback(self) -> Optional[Dict]:
         """
         Fallback: return easiest concept.
         """
         try:
             easiest = db.concepts.find_one(
-                {},
-                {"concept_id": 1, "concept_name": 1, "difficulty": 1}
+                {}, {"concept_id": 1, "concept_name": 1, "difficulty": 1}
             )
-            
+
             if not easiest:
                 logger.warning("No concepts found in database")
                 return None
-            
+
             logger.warning(f"Using fallback concept: {easiest['concept_name']}")
             return {
                 "concept_id": easiest["concept_id"],
                 "concept_name": easiest["concept_name"],
-                "method": "fallback"
+                "method": "fallback",
             }
-        
+
         except Exception as e:
             logger.exception(f"Fallback detection error: {e}")
             return None
-    
+
     def detect(self, question: str) -> Optional[Dict]:
         """
         Multi-strategy concept detection pipeline:
         1. Semantic (embedding similarity)
         2. Rule-based (keyword matching)
         3. Fallback (easiest concept)
-        
+
         Parameters
         ----------
         question : str
             Learner's question
-        
+
         Returns
         -------
         Dict : {concept_id, concept_name, method, ...} or None
         """
-        
+
         if not question or not question.strip():
             return None
-        
+
         # Strategy 1: Semantic
         result = self.detect_semantic(question)
         if result:
             return result
-        
+
         # Strategy 2: Rule-based
         result = self.detect_rule_based(question)
         if result:
             return result
-        
+
         # Strategy 3: Fallback
         result = self.detect_fallback()
         if result:
             return result
-        
+
         logger.warning(f"Could not detect concept for: '{question[:100]}'")
         return None
 
@@ -261,11 +264,11 @@ class AITutorService:
     Core AI tutoring orchestration service.
     Coordinates: RAG → progress → adaptive engine → learning path
     """
-    
+
     def __init__(self):
         self.rag = RAGPipeline()
         self.detector = concept_detector
-    
+
     def ask_ai(
         self,
         user_id: str,
@@ -273,11 +276,11 @@ class AITutorService:
         goal: str,
         level: str,
         completed: Optional[List[str]] = None,
-        retry_count: int = 0
+        retry_count: int = 0,
     ) -> Dict:
         """
         Main AI tutoring method - full orchestration.
-        
+
         Pipeline:
         1. RAG - get answer + context
         2. Confidence scoring - evaluate answer quality
@@ -285,7 +288,7 @@ class AITutorService:
         4. Progress update - EMA-based mastery update
         5. Adaptive decision - determine learning mode
         6. Learning path - generate next recommendations
-        
+
         Parameters
         ----------
         user_id : str
@@ -300,62 +303,63 @@ class AITutorService:
             List of completed concept IDs
         retry_count : int
             Internal retry counter
-        
+
         Returns
         -------
         Dict : full response with answer, path, adaptive info
         """
-        
+
         logger.info(
             f"ASK: user={user_id}, goal={goal}, level={level}, "
             f"question_len={len(question)}"
         )
-        
+
         try:
             # ===== 1. RAG ANSWER =====
             rag_result = self._get_rag_answer(question, goal, level, completed or [])
             answer_text = rag_result.get("answer", "")
             sources = rag_result.get("sources", [])
-            answer_method = rag_result.get("answer_method", "unknown")  # direct_from_context or ai_generated
-            
+            answer_method = rag_result.get(
+                "answer_method", "unknown"
+            )  # direct_from_context or ai_generated
+
             # ===== 2. CONFIDENCE SCORING =====
             confidence = self._score_confidence(question, answer_text)
-            
+
             # ===== 3. CONCEPT DETECTION =====
             concept_info = self.detector.detect(question)
-            
+
             # ===== 4. PROGRESS UPDATE =====
             progress_updated = False
             current_mastery = 0.0
             current_attempts = 0
-            
+
             if concept_info:
-                progress_updated, current_mastery, current_attempts = self._update_progress(
-                    user_id=user_id,
-                    concept_id=concept_info["concept_id"],
-                    confidence=confidence
+                progress_updated, current_mastery, current_attempts = (
+                    self._update_progress(
+                        user_id=user_id,
+                        concept_id=concept_info["concept_id"],
+                        confidence=confidence,
+                    )
                 )
-            
+
             # ===== 5. ADAPTIVE DECISION =====
             adaptive_info = None
             learning_mode = LearningMode.NORMAL.value
-            
+
             if progress_updated:
                 adaptive_info = adaptive_decision_summary(
                     mastery=current_mastery,
                     confidence=confidence,
-                    total_attempts=current_attempts
+                    total_attempts=current_attempts,
                 )
                 learning_mode = adaptive_info.get("mode", LearningMode.NORMAL.value)
-            
+
             # ===== 6. LEARNING PATH =====
             learning_path = self._generate_adaptive_path(
-                user_id=user_id,
-                goal=goal,
-                level=level,
-                learning_mode=learning_mode
+                user_id=user_id, goal=goal, level=level, learning_mode=learning_mode
             )
-            
+
             # ===== 7. RESPONSE =====
             response = {
                 "success": True,
@@ -363,36 +367,42 @@ class AITutorService:
                     "answer_text": answer_text,
                     "answer_method": answer_method,  # direct_from_context or ai_generated
                     "confidence": round(confidence, 3),
-                    "sources": sources
+                    "sources": sources,
                 },
                 "learning_path": learning_path,
                 "concept_detected": {
-                    "concept_id": concept_info.get("concept_id") if concept_info else None,
-                    "concept_name": concept_info.get("concept_name") if concept_info else None,
-                    "score": concept_info.get("score") if concept_info else None
+                    "concept_id": (
+                        concept_info.get("concept_id") if concept_info else None
+                    ),
+                    "concept_name": (
+                        concept_info.get("concept_name") if concept_info else None
+                    ),
+                    "score": concept_info.get("score") if concept_info else None,
                 },
                 "adaptive_info": adaptive_info,
-                "progress_updated": progress_updated
+                "progress_updated": progress_updated,
             }
-            
+
             logger.info(f"Ask completed: user={user_id}")
             return response
-        
+
         except Exception as e:
             logger.exception(f"Error in ask_ai (retry {retry_count}): {e}")
-            
+
             # Retry logic
             if retry_count < MAX_RETRIES:
-                logger.info(f"Retrying ask_ai (attempt {retry_count + 1}/{MAX_RETRIES})")
+                logger.info(
+                    f"Retrying ask_ai (attempt {retry_count + 1}/{MAX_RETRIES})"
+                )
                 return self.ask_ai(
                     user_id=user_id,
                     question=question,
                     goal=goal,
                     level=level,
                     completed=completed,
-                    retry_count=retry_count + 1
+                    retry_count=retry_count + 1,
                 )
-            
+
             # Final fallback
             logger.error(f"ask_ai failed after {MAX_RETRIES} retries")
             return {
@@ -401,12 +411,12 @@ class AITutorService:
                     "answer_text": "Xin lỗi, tôi gặp sự cố khi xử lý câu hỏi của bạn. Vui lòng thử lại.",
                     "answer_method": "error",
                     "confidence": 0.0,
-                    "sources": []
+                    "sources": [],
                 },
                 "learning_path": [],
                 "concept_detected": None,
                 "adaptive_info": None,
-                "progress_updated": False
+                "progress_updated": False,
             }
 
     def generate_assessment_questions(
@@ -416,7 +426,7 @@ class AITutorService:
         difficulty: str,
         question_type: str,
         chapter_content: str,
-        num_questions: int
+        num_questions: int,
     ) -> List[Dict[str, str]]:
         """
         Generate assessment questions grounded strictly in the provided learning material.
@@ -427,7 +437,7 @@ class AITutorService:
             difficulty=difficulty,
             question_type=question_type,
             chapter_content=chapter_content,
-            num_questions=num_questions
+            num_questions=num_questions,
         )
 
     def _generate_rule_based_assessment(
@@ -437,7 +447,7 @@ class AITutorService:
         difficulty: str,
         question_type: str,
         chapter_content: str,
-        num_questions: int
+        num_questions: int,
     ) -> List[Dict[str, str]]:
         excerpts = self._extract_assessment_excerpts(chapter_content, concept)
         lesson_label = lesson_title.strip() if lesson_title else concept
@@ -472,16 +482,18 @@ class AITutorService:
                 question = f"{question} (Cau {index + 1})"
             used_questions.add(question.lower())
 
-            results.append({
-                "question": question,
-                "answer": answer,
-                "explanation": self._build_explanation(concept, excerpt),
-                "difficulty": difficulty,
-                "question_type": normalized_type,
-                "concept": concept,
-                "source_excerpt": excerpt,
-                "options": options,
-            })
+            results.append(
+                {
+                    "question": question,
+                    "answer": answer,
+                    "explanation": self._build_explanation(concept, excerpt),
+                    "difficulty": difficulty,
+                    "question_type": normalized_type,
+                    "concept": concept,
+                    "source_excerpt": excerpt,
+                    "options": options,
+                }
+            )
 
         return results
 
@@ -499,7 +511,11 @@ class AITutorService:
 
         if not candidates:
             candidates = [
-                chapter_content.strip()[:250] if chapter_content.strip() else f"Nội dung liên quan đến {concept}."
+                (
+                    chapter_content.strip()[:250]
+                    if chapter_content.strip()
+                    else f"Nội dung liên quan đến {concept}."
+                )
             ]
 
         results: List[Dict[str, str]] = []
@@ -512,7 +528,9 @@ class AITutorService:
             keyword = " ".join(source.split()[:8]).strip()
 
             if difficulty == "easy":
-                question = f"Theo nội dung chương, phát biểu nào mô tả đúng nhất về {concept}?"
+                question = (
+                    f"Theo nội dung chương, phát biểu nào mô tả đúng nhất về {concept}?"
+                )
             elif difficulty == "medium":
                 question = f"Dựa vào chương học, hãy giải thích ý '{keyword}' trong bối cảnh {concept}."
             else:
@@ -523,17 +541,21 @@ class AITutorService:
                 question = f"{question} (Câu {i + 1})"
             used.add(question)
 
-            results.append({
-                "question": question,
-                "answer": short_source,
-                "explanation": "Giải thích dựa trực tiếp trên nội dung chương học đã cung cấp, không thêm thông tin ngoài tài liệu.",
-                "difficulty": difficulty,
-                "concept": concept
-            })
+            results.append(
+                {
+                    "question": question,
+                    "answer": short_source,
+                    "explanation": "Giải thích dựa trực tiếp trên nội dung chương học đã cung cấp, không thêm thông tin ngoài tài liệu.",
+                    "difficulty": difficulty,
+                    "concept": concept,
+                }
+            )
 
         return results
 
-    def _extract_assessment_excerpts(self, chapter_content: str, concept: str) -> List[str]:
+    def _extract_assessment_excerpts(
+        self, chapter_content: str, concept: str
+    ) -> List[str]:
         normalized = re.sub(r"\s+", " ", chapter_content or "").strip()
         if not normalized:
             return [f"Tai lieu chi nhac den {concept}."]
@@ -553,7 +575,9 @@ class AITutorService:
             cleaned = [normalized[:260] + ("..." if len(normalized) > 260 else "")]
 
         concept_lower = concept.lower().strip()
-        prioritized = [item for item in cleaned if concept_lower and concept_lower in item.lower()]
+        prioritized = [
+            item for item in cleaned if concept_lower and concept_lower in item.lower()
+        ]
         fallback = [item for item in cleaned if item not in prioritized]
         ordered = prioritized + fallback
 
@@ -605,7 +629,9 @@ class AITutorService:
     @staticmethod
     def _build_explanation(concept: str, excerpt: str) -> str:
         keyword = " ".join(excerpt.split()[:8]).strip(" ,.;:")
-        return f"Cau tra loi bam truc tiep vao doan trich neu ve {concept}: '{keyword}'."
+        return (
+            f"Cau tra loi bam truc tiep vao doan trich neu ve {concept}: '{keyword}'."
+        )
 
     def _build_assessment_answer(
         self,
@@ -658,7 +684,9 @@ class AITutorService:
 
         return unique_options[:4]
 
-    def _build_true_false_statement(self, *, concept: str, excerpt: str, answer: str) -> str:
+    def _build_true_false_statement(
+        self, *, concept: str, excerpt: str, answer: str
+    ) -> str:
         normalized_answer = re.sub(r"\s+", " ", answer or "").strip().lower()
         if normalized_answer == "dung":
             statement = self._build_short_answer(excerpt)
@@ -668,27 +696,20 @@ class AITutorService:
         return re.sub(r"\s+", " ", statement).strip()
 
     def _get_rag_answer(
-        self,
-        question: str,
-        goal: str,
-        level: str,
-        completed: List[str]
+        self, question: str, goal: str, level: str, completed: List[str]
     ) -> Dict:
         """Get RAG-based answer with fallback"""
         try:
             return self.rag.run(
-                question=question,
-                goal=goal,
-                level=level,
-                completed=completed
+                question=question, goal=goal, level=level, completed=completed
             )
         except Exception as e:
             logger.exception(f"RAG error: {e}")
             return {
                 "answer": "I couldn't retrieve an answer at the moment. Please check the learning materials.",
-                "sources": []
+                "sources": [],
             }
-    
+
     def _score_confidence(self, question: str, answer: str) -> float:
         """Score answer confidence with fallback"""
         try:
@@ -696,12 +717,9 @@ class AITutorService:
         except Exception as e:
             logger.warning(f"Confidence scoring error: {e}")
             return 0.5  # Conservative fallback
-    
+
     def _update_progress(
-        self,
-        user_id: int,
-        concept_id: int,
-        confidence: float
+        self, user_id: int, concept_id: int, confidence: float
     ) -> tuple:
         """Update progress and return (success, mastery, attempts)"""
         try:
@@ -709,61 +727,52 @@ class AITutorService:
             progress = db.progress.find_one(
                 {"user_id": user_id, "concept_id": concept_id}
             )
-            current_attempts = (progress.get("total_attempts", 0) if progress else 0)
-            
+            current_attempts = progress.get("total_attempts", 0) if progress else 0
+
             # Update
             mastery = update_progress_with_confidence(
-                user_id=user_id,
-                concept_id=concept_id,
-                confidence=confidence
+                user_id=user_id, concept_id=concept_id, confidence=confidence
             )
-            
+
             logger.info(
                 f"Progress updated: user={user_id}, concept={concept_id}, "
                 f"mastery={mastery}, attempts={current_attempts + 1}"
             )
-            
+
             return True, mastery, current_attempts + 1
-        
+
         except Exception as e:
             logger.exception(f"Progress update error: {e}")
             return False, 0.0, 0
-    
+
     def _generate_adaptive_path(
-        self,
-        user_id: int,
-        goal: str,
-        level: str,
-        learning_mode: str
+        self, user_id: int, goal: str, level: str, learning_mode: str
     ) -> List[Dict]:
         """Generate learning path adapted to learning mode"""
         try:
             path_result = generate_learning_path(
-                user_id=user_id,
-                goal=goal,
-                level=level
+                user_id=user_id, goal=goal, level=level
             )
-            
+
             recommended_path = path_result.get("recommended_path", [])
-            
+
             # Apply adaptive filtering by learning mode
             if learning_mode:
                 try:
                     mode_enum = LearningMode(learning_mode)
-                    
+
                     for item in recommended_path:
                         if "resources" in item and item["resources"]:
                             filtered = filter_resources_by_mode(
-                                item["resources"],
-                                mode_enum
+                                item["resources"], mode_enum
                             )
                             item["resources"] = filtered[:5]  # Top 5
-                
+
                 except Exception as e:
                     logger.warning(f"Resource filtering error: {e}")
-            
+
             return recommended_path
-        
+
         except Exception as e:
             logger.exception(f"Learning path generation error: {e}")
             return []
@@ -783,18 +792,14 @@ def ask_ai_service(
     question: str,
     goal: str,
     level: str,
-    completed: Optional[List[str]] = None
+    completed: Optional[List[str]] = None,
 ) -> Dict:
     """
     Convenience wrapper for ask_ai.
     (Backward compatible with old API)
     """
     return ai_tutor_service.ask_ai(
-        user_id=user_id,
-        question=question,
-        goal=goal,
-        level=level,
-        completed=completed
+        user_id=user_id, question=question, goal=goal, level=level, completed=completed
     )
 
 
@@ -805,18 +810,18 @@ def detect_concepts_batch(questions: List[str]) -> List[Optional[Dict]]:
     """
     Detect concepts for multiple questions in batch.
     Useful for batch processing or pre-analysis.
-    
+
     Parameters
     ----------
     questions : List[str]
         List of questions
-    
+
     Returns
     -------
     List[Optional[Dict]] : concept detections (may contain None for failures)
     """
     logger.info(f"Batch concept detection: {len(questions)} questions")
-    
+
     results = []
     for question in questions:
         try:
@@ -825,7 +830,7 @@ def detect_concepts_batch(questions: List[str]) -> List[Optional[Dict]]:
         except Exception as e:
             logger.warning(f"Batch detection error: {e}")
             results.append(None)
-    
+
     return results
 
 
@@ -833,35 +838,23 @@ def detect_concepts_batch(questions: List[str]) -> List[Optional[Dict]]:
 # OPTIONAL: CONCEPT RECOMMENDATION (without full QA)
 # =========================
 def recommend_next_concepts(
-    user_id: int,
-    goal: str,
-    level: str,
-    limit: int = 5
+    user_id: int, goal: str, level: str, limit: int = 5
 ) -> Dict:
     """
     Recommend next concepts to study without answering a question.
     Useful for browsing/exploring.
     """
     try:
-        path = generate_learning_path(
-            user_id=user_id,
-            goal=goal,
-            level=level
-        )
-        
+        path = generate_learning_path(user_id=user_id, goal=goal, level=level)
+
         recommended = path.get("recommended_path", [])[:limit]
-        
-        logger.info(f"Next concepts recommended: user={user_id}, count={len(recommended)}")
-        
-        return {
-            "success": True,
-            "recommended_concepts": recommended
-        }
-    
+
+        logger.info(
+            f"Next concepts recommended: user={user_id}, count={len(recommended)}"
+        )
+
+        return {"success": True, "recommended_concepts": recommended}
+
     except Exception as e:
         logger.exception(f"Concept recommendation error: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "recommended_concepts": []
-        }
+        return {"success": False, "error": str(e), "recommended_concepts": []}

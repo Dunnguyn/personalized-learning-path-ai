@@ -64,7 +64,9 @@ class ApiClient {
       const token = localStorage.getItem('token');
       if (token) {
         const headers = new Headers(
-          config.headers instanceof Headers ? config.headers : (config.headers as Record<string, string>) || {}
+          config.headers instanceof Headers
+            ? config.headers
+            : (config.headers as Record<string, string>) || {},
         );
         headers.set('Authorization', `Bearer ${token}`);
         config.headers = headers;
@@ -121,13 +123,13 @@ class ApiClient {
   async request(
     endpoint: string,
     options: RequestInit = {},
-    retries: number = 0
+    retries: number = 0,
   ): Promise<unknown> {
     const url = `${this.baseUrl}${this.basePath}${endpoint}`;
 
     const headersObj: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Accept': 'application/json',
+      Accept: 'application/json',
     };
 
     let config: RequestInit = {
@@ -148,8 +150,8 @@ class ApiClient {
       const timeoutPromise = new Promise<Response>((_, reject) =>
         setTimeout(
           () => reject(new Error(`Yêu cầu đã hết thời gian chờ sau ${this.timeout}ms`)),
-          this.timeout
-        )
+          this.timeout,
+        ),
       );
 
       // Race between fetch and timeout
@@ -162,10 +164,8 @@ class ApiClient {
       if (!finalResponse.ok) {
         const error = await finalResponse.json().catch(() => ({}));
         const message =
-          error.detail ||
-          error.message ||
-          `Yêu cầu thất bại: ${finalResponse.statusText}`;
-        
+          error.detail || error.message || `Yêu cầu thất bại: ${finalResponse.statusText}`;
+
         const apiError: ApiClientError = new Error(message);
         apiError.status = finalResponse.status;
         throw apiError;
@@ -174,13 +174,10 @@ class ApiClient {
       return await finalResponse.json();
     } catch (error) {
       const isNetworkError = error instanceof TypeError;
-      const shouldRetry =
-        isNetworkError && retries < this.maxRetries;
+      const shouldRetry = isNetworkError && retries < this.maxRetries;
 
       if (shouldRetry) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, RETRY_DELAY_MS * (retries + 1))
-        );
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS * (retries + 1)));
         return this.request(endpoint, options, retries + 1);
       }
 

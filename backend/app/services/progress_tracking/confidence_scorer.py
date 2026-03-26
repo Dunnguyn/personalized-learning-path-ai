@@ -18,6 +18,7 @@ client = None
 try:
     if GEMINI_API_KEY:
         from google import genai  # type: ignore
+
         client = genai.Client(api_key=GEMINI_API_KEY)
     else:
         logger.warning("GEMINI_API_KEY not set; confidence scoring will use fallback.")
@@ -41,37 +42,63 @@ def _extract_text_from_response_object(response) -> Optional[str]:
             return response.output_text
 
         # response.output -> list -> content -> text
-        out = getattr(response, "output", None) or (response.get("output") if isinstance(response, dict) else None)
+        out = getattr(response, "output", None) or (
+            response.get("output") if isinstance(response, dict) else None
+        )
         if out and isinstance(out, (list, tuple)) and len(out) > 0:
             first = out[0]
-            content = getattr(first, "content", None) or (first.get("content") if isinstance(first, dict) else None)
+            content = getattr(first, "content", None) or (
+                first.get("content") if isinstance(first, dict) else None
+            )
             if content:
                 if isinstance(content, (list, tuple)) and len(content) > 0:
                     piece = content[0]
-                    text = getattr(piece, "text", None) or (piece.get("text") if isinstance(piece, dict) else None)
+                    text = getattr(piece, "text", None) or (
+                        piece.get("text") if isinstance(piece, dict) else None
+                    )
                     if isinstance(text, str):
                         return text
                 elif isinstance(content, str):
                     return content
 
         # candidates pattern
-        cand = getattr(response, "candidates", None) or (response.get("candidates") if isinstance(response, dict) else None)
+        cand = getattr(response, "candidates", None) or (
+            response.get("candidates") if isinstance(response, dict) else None
+        )
         if cand and isinstance(cand, (list, tuple)) and len(cand) > 0:
             first = cand[0]
-            content = first.get("content") if isinstance(first, dict) else getattr(first, "content", None)
+            content = (
+                first.get("content")
+                if isinstance(first, dict)
+                else getattr(first, "content", None)
+            )
             if isinstance(content, (list, tuple)) and len(content) > 0:
                 piece = content[0]
-                text = piece.get("text") if isinstance(piece, dict) else getattr(piece, "text", None)
+                text = (
+                    piece.get("text")
+                    if isinstance(piece, dict)
+                    else getattr(piece, "text", None)
+                )
                 if isinstance(text, str):
                     return text
 
         # choices/chat-like pattern
-        choices = getattr(response, "choices", None) or (response.get("choices") if isinstance(response, dict) else None)
+        choices = getattr(response, "choices", None) or (
+            response.get("choices") if isinstance(response, dict) else None
+        )
         if choices and isinstance(choices, (list, tuple)) and len(choices) > 0:
             first = choices[0]
-            message = first.get("message") if isinstance(first, dict) else getattr(first, "message", None)
+            message = (
+                first.get("message")
+                if isinstance(first, dict)
+                else getattr(first, "message", None)
+            )
             if message:
-                content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+                content = (
+                    message.get("content")
+                    if isinstance(message, dict)
+                    else getattr(message, "content", None)
+                )
                 if isinstance(content, str):
                     return content
                 if isinstance(content, (list, tuple)) and len(content) > 0:
@@ -141,9 +168,7 @@ def _parse_numeric_from_response(response) -> Optional[float]:
 
 
 def score_confidence(
-    question: str,
-    answer: str,
-    context: Optional[str] = None
+    question: str, answer: str, context: Optional[str] = None
 ) -> float:
     """
     Score the confidence of an answer in [0.0, 1.0].
@@ -179,7 +204,9 @@ def score_confidence(
 
     # If client not initialized, return fallback
     if client is None:
-        logger.debug("Gemini client unavailable in score_confidence; returning fallback score.")
+        logger.debug(
+            "Gemini client unavailable in score_confidence; returning fallback score."
+        )
         return DEFAULT_FALLBACK_SCORE
 
     try:
@@ -188,7 +215,9 @@ def score_confidence(
 
         try:
             # Preferred method
-            resp = client.models.generate_content(model=CONFIDENCE_MODEL, contents=prompt)
+            resp = client.models.generate_content(
+                model=CONFIDENCE_MODEL, contents=prompt
+            )
             responses_to_try.append(resp)
         except Exception as e:
             logger.debug("generate_content failed: %s", e)
@@ -218,10 +247,14 @@ def score_confidence(
             text = _extract_text_from_response_object(responses_to_try[-1])
             num = _extract_number_from_text(text or "")
             if num is not None:
-                logger.debug("Confidence score extracted (fallback text parse): %s", num)
+                logger.debug(
+                    "Confidence score extracted (fallback text parse): %s", num
+                )
                 return max(0.0, min(num, 1.0))
 
-        logger.warning("No numeric confidence extracted from Gemini responses; returning fallback.")
+        logger.warning(
+            "No numeric confidence extracted from Gemini responses; returning fallback."
+        )
         return DEFAULT_FALLBACK_SCORE
 
     except Exception as e:

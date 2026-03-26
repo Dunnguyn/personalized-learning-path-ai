@@ -10,7 +10,9 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 LESSON_QA_PROVIDER = os.getenv("LESSON_QUESTION_LLM_PROVIDER", "gemini").lower()
-LESSON_QA_MODEL = os.getenv("LESSON_QUESTION_LLM_MODEL", os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash"))
+LESSON_QA_MODEL = os.getenv(
+    "LESSON_QUESTION_LLM_MODEL", os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash")
+)
 LESSON_QA_MAX_RETRIES = int(os.getenv("LESSON_QUESTION_LLM_MAX_RETRIES", "3"))
 
 
@@ -76,7 +78,9 @@ class LessonQuestionLLMClient:
                     return None
                 return genai.Client(api_key=api_key)
             except Exception as exc:  # pragma: no cover - external dependency
-                logger.warning("Could not initialize lesson question Gemini client: %s", exc)
+                logger.warning(
+                    "Could not initialize lesson question Gemini client: %s", exc
+                )
                 return None
 
         logger.warning("Unsupported lesson question provider: %s", self.provider)

@@ -16,6 +16,9 @@ from backend.app.services.progress_tracking.progress import (
     get_user_progress_summary,
     update_progress_with_confidence,
 )
+from backend.app.services.event_logging_service import event_logging_service
+from backend.app.services.knowledge_tracing_service import knowledge_tracing_service
+from backend.app.services.feedback_service import feedback_service
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -37,7 +40,9 @@ def _resolve_user_level(db, user_id: str) -> str:
     return user.get("level", "beginner") if user else "beginner"
 
 
-def _average_progress_confidence(db, user_id: str, start: datetime, end: datetime = None) -> tuple[float, int]:
+def _average_progress_confidence(
+    db, user_id: str, start: datetime, end: datetime = None
+) -> tuple[float, int]:
     query = {
         "user_id": user_id,
         "last_updated": {"$gte": start},
@@ -61,10 +66,11 @@ def _average_progress_confidence(db, user_id: str, start: datetime, end: datetim
     return total / count, count
 
 
-@router.post("/update", response_model=ProgressUpdateResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/update", response_model=ProgressUpdateResponse, status_code=status.HTTP_200_OK
+)
 def update_progress_api(
-    payload: ProgressUpdate,
-    current_user: dict = Depends(get_current_user)
+    payload: ProgressUpdate, current_user: dict = Depends(get_current_user)
 ):
     logger.info(
         "Progress update request: user=%s, concept=%s, mastery=%s, confidence=%s",
@@ -100,10 +106,49 @@ def update_progress_api(
                 detail="Concept ID must be positive",
             )
 
+        previous = get_progress(payload.user_id, payload.concept_id) or {}
+        prev_mastery = float(previous.get("mastery", 0.0) or 0.0)
+        prev_confidence = float(previous.get("confidence", 0.0) or 0.0)
+
         result = update_progress_with_confidence(
             user_id=payload.user_id,
             concept_id=payload.concept_id,
             confidence=payload.confidence,
+        )
+
+        event_logging_service.log_event(
+            "mastery_updated",
+            user_id=payload.user_id,
+            concept_id=payload.concept_id,
+            mastery_before=prev_mastery,
+            mastery_after=float(result.get("mastery", 0.0) or 0.0),
+            success=True,
+        )
+        event_logging_service.log_event(
+            "confidence_updated",
+            user_id=payload.user_id,
+            concept_id=payload.concept_id,
+            confidence_before=prev_confidence,
+            confidence_after=float(result.get("confidence", 0.0) or 0.0),
+            success=True,
+        )
+
+        mastery_after = float(result.get("mastery", 0.0) or 0.0)
+        confidence_after = float(result.get("confidence", 0.0) or 0.0)
+        knowledge_tracing_service.update_from_interaction(
+            user_id=payload.user_id,
+            event_type="progress_updated",
+            concept_id=payload.concept_id,
+            confidence=confidence_after,
+            is_correct=(confidence_after >= 0.6),
+            metadata={"source": "progress_api", "mastery": mastery_after},
+        )
+        feedback_service.process_outcome_feedback(
+            user_id=payload.user_id,
+            concept_id=payload.concept_id,
+            mastery_gain=(mastery_after - prev_mastery),
+            confidence_gain=(confidence_after - prev_confidence),
+            metadata={"source": "progress_api"},
         )
 
         return ProgressUpdateResponse(
@@ -128,8 +173,7 @@ def update_progress_api(
 
 @router.get("/summary", status_code=status.HTTP_200_OK)
 def get_progress_summary(
-    user_id: str = None,
-    current_user: dict = Depends(get_current_user)
+    user_id: str = None, current_user: dict = Depends(get_current_user)
 ):
     if user_id is None:
         user_id = str(current_user.get("_id", ""))
@@ -158,8 +202,7 @@ def get_progress_summary(
 
 @router.get("/overview", status_code=status.HTTP_200_OK)
 def get_progress_overview(
-    user_id: str = None,
-    current_user: dict = Depends(get_current_user)
+    user_id: str = None, current_user: dict = Depends(get_current_user)
 ):
     if user_id is None:
         user_id = str(current_user.get("_id", ""))
@@ -173,11 +216,15 @@ def get_progress_overview(
         summary = get_user_progress_summary(user_id=user_id)
         total = summary.get("total_concepts_started", 0)
         completed = summary.get("total_concepts_completed", 0)
-        overall_progress_percent = round((completed / total) * 100, 1) if total > 0 else 0.0
+        overall_progress_percent = (
+            round((completed / total) * 100, 1) if total > 0 else 0.0
+        )
 
         db = get_db()
         now = datetime.now(timezone.utc)
-        week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+        week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=7
+        )
         two_weeks_ago = week_ago - timedelta(days=7)
 
         recent_completed = db.progress.count_documents(
@@ -197,7 +244,10 @@ def get_progress_overview(
 
         weekly_comparison = 0.0
         if prev_week_completed > 0:
-            weekly_comparison = round(((recent_completed - prev_week_completed) / prev_week_completed) * 100, 1)
+            weekly_comparison = round(
+                ((recent_completed - prev_week_completed) / prev_week_completed) * 100,
+                1,
+            )
         elif recent_completed > 0:
             weekly_comparison = 100.0
 
@@ -220,8 +270,7 @@ def get_progress_overview(
 
 @router.get("/confidence", status_code=status.HTTP_200_OK)
 def get_progress_confidence(
-    user_id: str = None,
-    current_user: dict = Depends(get_current_user)
+    user_id: str = None, current_user: dict = Depends(get_current_user)
 ):
     if user_id is None:
         user_id = str(current_user.get("_id", ""))
@@ -240,11 +289,15 @@ def get_progress_confidence(
         level = _resolve_user_level(db, user_id)
 
         now = datetime.now(timezone.utc)
-        week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+        week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=7
+        )
         two_weeks_ago = week_ago - timedelta(days=7)
 
         recent_avg, recent_count = _average_progress_confidence(db, user_id, week_ago)
-        prev_avg, prev_count = _average_progress_confidence(db, user_id, two_weeks_ago, week_ago)
+        prev_avg, prev_count = _average_progress_confidence(
+            db, user_id, two_weeks_ago, week_ago
+        )
 
         if recent_count == 0:
             recent_avg = base_confidence
@@ -284,9 +337,7 @@ def get_progress_confidence(
 
 @router.get("/concept/{concept_id}", status_code=status.HTTP_200_OK)
 def get_concept_progress_api(
-    concept_id: int,
-    user_id: str = None,
-    current_user: dict = Depends(get_current_user)
+    concept_id: int, user_id: str = None, current_user: dict = Depends(get_current_user)
 ):
     if user_id is None:
         user_id = str(current_user.get("_id", ""))

@@ -1,25 +1,25 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import path from 'path'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import path from 'path';
 
 const getPackageName = (id: string) => {
-  const normalizedId = id.split('node_modules/')[1]?.replace(/\\/g, '/')
+  const normalizedId = id.split('node_modules/')[1]?.replace(/\\/g, '/');
   if (!normalizedId) {
-    return null
+    return null;
   }
 
-  const segments = normalizedId.split('/')
+  const segments = normalizedId.split('/');
   if (segments[0].startsWith('@')) {
-    return `${segments[0]}/${segments[1]}`
+    return `${segments[0]}/${segments[1]}`;
   }
 
-  return segments[0]
-}
+  return segments[0];
+};
 
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
-  
+
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -30,23 +30,23 @@ export default defineConfig({
     port: 5173,
     host: '127.0.0.1',
     strictPort: false,
-    
+
     // Proxy API requests to backend
     proxy: {
       '/api': {
         target: process.env.VITE_API_URL || 'http://localhost:8000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
-        
+
         // Connection pooling and timeouts
         ws: true,
         timeout: 30000,
       },
     },
-    
+
     // Enable CORS for development
     cors: true,
-    
+
     // Preload modules for faster HMR
     middlewareMode: false,
   },
@@ -54,10 +54,10 @@ export default defineConfig({
   build: {
     // Output directory
     outDir: 'dist',
-    
+
     // Source map for production debugging (can be disabled for smaller builds)
     sourcemap: false,
-    
+
     // Use esbuild minification for compatibility with the current Vite version.
     minify: 'esbuild',
 
@@ -69,7 +69,7 @@ export default defineConfig({
             return undefined;
           }
 
-          const packageName = getPackageName(id)
+          const packageName = getPackageName(id);
 
           if (!packageName) {
             return undefined;
@@ -116,7 +116,7 @@ export default defineConfig({
 
           return undefined;
         },
-        
+
         // Asset naming
         assetFileNames: (assetInfo) => {
           const info = assetInfo.name.split('.');
@@ -131,10 +131,10 @@ export default defineConfig({
             return `assets/[name]-[hash][extname]`;
           }
         },
-        
+
         // Chunk naming
         chunkFileNames: 'assets/js/[name]-[hash].js',
-        
+
         // Entry file naming
         entryFileNames: 'assets/js/[name]-[hash].js',
       },
@@ -154,12 +154,7 @@ export default defineConfig({
 
   // Optimization
   optimizeDeps: {
-    include: [
-      'react',
-      'react-dom',
-      'react-router-dom',
-      'axios',
-    ],
+    include: ['react', 'react-dom', 'react-router-dom', 'axios'],
     exclude: ['node_modules/.vite'],
   },
 
@@ -168,5 +163,4 @@ export default defineConfig({
     __DEV__: JSON.stringify(process.env.NODE_ENV === 'development'),
     __PROD__: JSON.stringify(process.env.NODE_ENV === 'production'),
   },
-})
-
+});

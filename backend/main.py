@@ -1,9 +1,11 @@
 import os
 import logging
 import time
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
 from dotenv import load_dotenv
+from jose import jwt, JWTError
 
 BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BACKEND_DIR.parent
@@ -35,15 +37,21 @@ from backend.app.api import (
     progress,
     ask,
     recommendations,
+    feedback,
+    kt,
+    path_refinement,
     concepts,
+    exercise_attempts,
+    analytics,
+    evaluation,
 )
+from backend.app.services.event_logging_service import event_logging_service
 
 # =========================
 # LOGGING SETUP
 # =========================
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -75,12 +83,44 @@ async def logging_middleware(request: Request, call_next):
     """Log request/response with timing."""
     start_time = time.time()
     path = f"{request.method} {request.url.path}"
-    
-    response = await call_next(request)
-    
+    request_path = request.url.path
+
+    session_id = request.headers.get("x-session-id") or request.cookies.get(
+        "session_id"
+    )
+    auth_header = request.headers.get("authorization")
+    user_id = None
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        try:
+            payload = jwt.decode(
+                token,
+                os.getenv("SECRET_KEY") or "CHANGE_THIS_SECRET_KEY",
+                algorithms=["HS256"],
+            )
+            user_id = payload.get("sub")
+        except JWTError:
+            user_id = None
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration = time.time() - start_time
+        event_logging_service.log_api_event(
+            event_type="api_failed",
+            method=request.method,
+            path=request_path,
+            status_code=500,
+            duration_ms=int(duration * 1000),
+            user_id=user_id,
+            session_id=session_id,
+            error_code=exc.__class__.__name__,
+        )
+        raise
+
     duration = time.time() - start_time
     status_code = response.status_code
-    
+
     # Color-code based on status
     if status_code >= 500:
         level = "ERROR"
@@ -88,12 +128,23 @@ async def logging_middleware(request: Request, call_next):
         level = "WARNING"
     else:
         level = "INFO"
-    
+
     logger.log(
         getattr(logging, level),
-        f"{path} | Status: {status_code} | Time: {duration:.3f}s"
+        f"{path} | Status: {status_code} | Time: {duration:.3f}s",
     )
-    
+
+    event_logging_service.log_api_event(
+        event_type="api_called" if status_code < 400 else "api_failed",
+        method=request.method,
+        path=request_path,
+        status_code=status_code,
+        duration_ms=int(duration * 1000),
+        user_id=user_id,
+        session_id=session_id,
+        error_code=None if status_code < 400 else str(status_code),
+    )
+
     return response
 
 
@@ -107,9 +158,9 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting Backend API...")
     validate_env()
     logger.info("✅ Backend API started successfully")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("🛑 Shutting down Backend API...")
 
@@ -123,7 +174,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # =========================
@@ -133,7 +184,10 @@ app = FastAPI(
 app.middleware("http")(logging_middleware)
 
 # CORS middleware
-allowed_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000").split(",")
+allowed_origins = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000",
+).split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -141,6 +195,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # =========================
 # EXCEPTION HANDLERS
@@ -151,7 +206,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     logger.warning(f"Validation error: {exc}")
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": "Validation error", "errors": exc.errors()}
+        content={"detail": "Validation error", "errors": exc.errors()},
     )
 
 
@@ -161,8 +216,9 @@ async def general_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Internal server error"}
+        content={"detail": "Internal server error"},
     )
+
 
 # =========================
 # REGISTER ROUTERS
@@ -178,7 +234,14 @@ app.include_router(learning_paths.router, prefix="/api")
 app.include_router(progress.router, prefix="/api")
 app.include_router(ask.router, prefix="/api")
 app.include_router(recommendations.router, prefix="/api")
+app.include_router(feedback.router, prefix="/api")
+app.include_router(kt.router, prefix="/api")
+app.include_router(path_refinement.router, prefix="/api")
 app.include_router(concepts.router, prefix="/api")
+app.include_router(exercise_attempts.router, prefix="/api")
+app.include_router(analytics.router, prefix="/api")
+app.include_router(evaluation.router, prefix="/api")
+
 
 # =========================
 # HEALTH CHECK ENDPOINTS
@@ -189,20 +252,24 @@ def root():
     return {
         "message": "Backend hệ thống cá nhân hóa lộ trình học tập",
         "status": "running",
-        "version": "1.0.0"
+        "version": "1.0.0",
     }
 
 
 @app.get("/docs", include_in_schema=False)
 async def docs_redirect():
     """Redirect the conventional Swagger URL to the API-prefixed docs route."""
-    return RedirectResponse(url="/api/docs", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    return RedirectResponse(
+        url="/api/docs", status_code=status.HTTP_307_TEMPORARY_REDIRECT
+    )
 
 
 @app.get("/openapi.json", include_in_schema=False)
 async def openapi_redirect():
     """Redirect the conventional OpenAPI URL to the API-prefixed schema route."""
-    return RedirectResponse(url="/api/openapi.json", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    return RedirectResponse(
+        url="/api/openapi.json", status_code=status.HTTP_307_TEMPORARY_REDIRECT
+    )
 
 
 @app.get("/api/health")
@@ -211,7 +278,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "AI Learning Path Backend",
-        "timestamp": time.time()
+        "timestamp": time.time(),
     }
 
 
@@ -220,18 +287,16 @@ async def readiness_check():
     """Readiness check - verify dependencies are available."""
     try:
         from backend.app.database.mongo import get_db
+
         db = get_db()
-        
+
         # Test database connection
         db.command("ping")
-        
-        return {
-            "status": "ready",
-            "database": "connected"
-        }
+
+        return {"status": "ready", "database": "connected"}
     except Exception as e:
         logger.error(f"Readiness check failed: {e}")
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"status": "not_ready", "error": str(e)}
+            content={"status": "not_ready", "error": str(e)},
         )

@@ -9,6 +9,13 @@ from .lesson_recommended_chunk_repository import LessonRecommendedChunkRepositor
 from .lesson_repository import LessonRepository
 from .question_repository import QuestionBankRepository
 from .subject_repository import SubjectRepository
+from .event_log_repository import EventLogRepository
+from .analytics_repository import AnalyticsRepository
+from .experiment_repository import ExperimentRepository
+from .recommendation_repository import RecommendationRepository
+from .kt_repository import KnowledgeTracingRepository
+from .learner_signal_repository import LearnerSignalRepository
+from .path_refinement_repository import PathRefinementRepository
 
 __all__ = [
     "ChapterRepository",
@@ -20,4 +27,11 @@ __all__ = [
     "ResourceChunkRepository",
     "ResourceRepository",
     "SubjectRepository",
+    "EventLogRepository",
+    "AnalyticsRepository",
+    "ExperimentRepository",
+    "RecommendationRepository",
+    "KnowledgeTracingRepository",
+    "LearnerSignalRepository",
+    "PathRefinementRepository",
 ]

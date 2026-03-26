@@ -26,7 +26,9 @@ class ResourceChunkRepository:
         return ObjectId(value)
 
     def ensure_indexes(self) -> None:
-        self.collection.create_index([("resource_id", 1), ("chunk_index", 1)], unique=True)
+        self.collection.create_index(
+            [("resource_id", 1), ("chunk_index", 1)], unique=True
+        )
         self.collection.create_index([("created_at", -1)])
         self.collection.create_index([("metadata.topic", 1), ("metadata.level", 1)])
 
@@ -43,17 +45,23 @@ class ResourceChunkRepository:
         return len(result.inserted_ids)
 
     def count_for_resource(self, resource_id: str | ObjectId) -> int:
-        return self.collection.count_documents({"resource_id": self._to_object_id(resource_id)})
+        return self.collection.count_documents(
+            {"resource_id": self._to_object_id(resource_id)}
+        )
 
     def delete_for_resource(self, resource_id: str | ObjectId) -> int:
-        result = self.collection.delete_many({"resource_id": self._to_object_id(resource_id)})
+        result = self.collection.delete_many(
+            {"resource_id": self._to_object_id(resource_id)}
+        )
         return result.deleted_count
 
     def get_by_ids(self, ids: List[str]) -> List[Dict[str, Any]]:
         object_ids = [self._to_object_id(item) for item in ids]
         return list(self.collection.find({"_id": {"$in": object_ids}}))
 
-    def get_by_resource_ids(self, resource_ids: List[str | ObjectId]) -> List[Dict[str, Any]]:
+    def get_by_resource_ids(
+        self, resource_ids: List[str | ObjectId]
+    ) -> List[Dict[str, Any]]:
         object_ids = [self._to_object_id(item) for item in resource_ids]
         return list(self.collection.find({"resource_id": {"$in": object_ids}}))
 
@@ -71,7 +79,9 @@ class ResourceChunkRepository:
         if level:
             query["metadata.level"] = level
         if resource_ids:
-            query["resource_id"] = {"$in": [self._to_object_id(item) for item in resource_ids]}
+            query["resource_id"] = {
+                "$in": [self._to_object_id(item) for item in resource_ids]
+            }
         return list(
             self.collection.find(
                 query,

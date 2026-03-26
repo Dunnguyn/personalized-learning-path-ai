@@ -150,7 +150,12 @@ class ResourceRepository:
                     "dedupe_key": {
                         "$ifNull": [
                             "$metadata.video_id",
-                            {"$ifNull": ["$metadata.file_hash", "$metadata.content_hash"]},
+                            {
+                                "$ifNull": [
+                                    "$metadata.file_hash",
+                                    "$metadata.content_hash",
+                                ]
+                            },
                         ]
                     },
                     "created_at": 1,

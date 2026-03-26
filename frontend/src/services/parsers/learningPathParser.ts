@@ -27,8 +27,11 @@ export const asRecord = (value: unknown): ApiRecord =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as ApiRecord) : {};
 
 export const normalizeLessonStatus = (value: unknown): LessonStatus => {
-  if (value === 'complete' || value === 'in_progress') {
+  if (value === 'in_progress') {
     return value;
+  }
+  if (value === 'complete' || value === 'completed') {
+    return 'complete';
   }
   return 'not_started';
 };
@@ -61,7 +64,13 @@ const normalizeLearningLevel = (value: unknown): LearningLevel => {
 };
 
 const normalizeSubjectId = (value: unknown): LearningPathSubjectId | undefined => {
-  if (value === 'python' || value === 'cpp' || value === 'csharp' || value === 'java' || value === 'web') {
+  if (
+    value === 'python' ||
+    value === 'cpp' ||
+    value === 'csharp' ||
+    value === 'java' ||
+    value === 'web'
+  ) {
     return value;
   }
   return undefined;
@@ -89,7 +98,8 @@ const normalizeLesson = (lesson: unknown): LearningPathLesson => {
 
 const normalizeConceptNode = (item: unknown, index: number): ConceptNode => {
   const conceptRecord = asRecord(item);
-  const conceptId = typeof conceptRecord.concept_id === 'number' ? conceptRecord.concept_id : 900000 + index;
+  const conceptId =
+    typeof conceptRecord.concept_id === 'number' ? conceptRecord.concept_id : 900000 + index;
   const resources = Array.isArray(conceptRecord.resources)
     ? conceptRecord.resources.map((resource) => {
         const resourceRecord = asRecord(resource);
@@ -105,9 +115,11 @@ const normalizeConceptNode = (item: unknown, index: number): ConceptNode => {
     concept_id: conceptId,
     concept_name: String(conceptRecord.concept_name ?? `Khái niệm ${index}`),
     difficulty: typeof conceptRecord.difficulty === 'number' ? conceptRecord.difficulty : 1,
-    bloom_level: typeof conceptRecord.bloom_level === 'string' ? conceptRecord.bloom_level : undefined,
+    bloom_level:
+      typeof conceptRecord.bloom_level === 'string' ? conceptRecord.bloom_level : undefined,
     mode: String(conceptRecord.mode ?? 'normal'),
-    priority_score: typeof conceptRecord.priority_score === 'number' ? conceptRecord.priority_score : 0.5,
+    priority_score:
+      typeof conceptRecord.priority_score === 'number' ? conceptRecord.priority_score : 0.5,
     resources,
   };
 };
@@ -121,7 +133,8 @@ const normalizeLlmStatus = (value: unknown): LearningPathLlmStatus | null => {
   return {
     provider: String(llmRecord.provider ?? ''),
     enabled: Boolean(llmRecord.enabled),
-    cooldown_active: typeof llmRecord.cooldown_active === 'boolean' ? llmRecord.cooldown_active : undefined,
+    cooldown_active:
+      typeof llmRecord.cooldown_active === 'boolean' ? llmRecord.cooldown_active : undefined,
     reason: typeof llmRecord.reason === 'string' ? llmRecord.reason : null,
     model: typeof llmRecord.model === 'string' ? llmRecord.model : null,
   };
@@ -165,8 +178,8 @@ export const normalizeLearningPath = (payload: unknown): LearningPath => {
   const chapters = Array.isArray(source.chapters)
     ? source.chapters.map(normalizeChapter)
     : Array.isArray(source.curriculum)
-    ? source.curriculum.map(normalizeChapter)
-    : [];
+      ? source.curriculum.map(normalizeChapter)
+      : [];
 
   const recommendedPath = Array.isArray(source.recommended_path)
     ? source.recommended_path.map((item, index) => normalizeConceptNode(item, index + 1))
@@ -182,8 +195,10 @@ export const normalizeLearningPath = (payload: unknown): LearningPath => {
     recommended_path: recommendedPath,
     chapters,
     curriculum: chapters,
-    curriculum_source: typeof source.curriculum_source === 'string' ? source.curriculum_source : undefined,
-    curriculum_notice: typeof source.curriculum_notice === 'string' ? source.curriculum_notice : null,
+    curriculum_source:
+      typeof source.curriculum_source === 'string' ? source.curriculum_source : undefined,
+    curriculum_notice:
+      typeof source.curriculum_notice === 'string' ? source.curriculum_notice : null,
     llm_status: normalizeLlmStatus(source.llm_status),
     message: String(source.message ?? ''),
   };
@@ -197,8 +212,11 @@ export const normalizeHistoryItem = (item: unknown): LearningPathHistory => {
     subject_id: normalizeSubjectId(itemRecord.subject_id),
     goal: String(itemRecord.goal ?? ''),
     level: normalizeLearningLevel(itemRecord.level),
-    generated_at: String(itemRecord.generated_at ?? itemRecord.created_at ?? DEFAULT_GENERATED_AT()),
-    chapter_count: typeof itemRecord.chapter_count === 'number' ? itemRecord.chapter_count : undefined,
+    generated_at: String(
+      itemRecord.generated_at ?? itemRecord.created_at ?? DEFAULT_GENERATED_AT(),
+    ),
+    chapter_count:
+      typeof itemRecord.chapter_count === 'number' ? itemRecord.chapter_count : undefined,
     lesson_count: typeof itemRecord.lesson_count === 'number' ? itemRecord.lesson_count : undefined,
   };
 };
@@ -230,7 +248,9 @@ const normalizeLessonQuestion = (item: unknown): LessonQuestion => {
     llm_provider: itemRecord.llm_provider ? String(itemRecord.llm_provider) : null,
     llm_model: itemRecord.llm_model ? String(itemRecord.llm_model) : null,
     metadata:
-      itemRecord.metadata && typeof itemRecord.metadata === 'object' && !Array.isArray(itemRecord.metadata)
+      itemRecord.metadata &&
+      typeof itemRecord.metadata === 'object' &&
+      !Array.isArray(itemRecord.metadata)
         ? (itemRecord.metadata as Record<string, unknown>)
         : {},
     created_at: String(itemRecord.created_at ?? DEFAULT_GENERATED_AT()),
@@ -243,7 +263,9 @@ export const normalizeLessonQuestionBank = (payload: unknown): LessonQuestionBan
   return {
     lesson_id: String(payloadRecord.lesson_id ?? ''),
     total: typeof payloadRecord.total === 'number' ? payloadRecord.total : 0,
-    questions: Array.isArray(payloadRecord.questions) ? payloadRecord.questions.map(normalizeLessonQuestion) : [],
+    questions: Array.isArray(payloadRecord.questions)
+      ? payloadRecord.questions.map(normalizeLessonQuestion)
+      : [],
   };
 };
 
@@ -263,22 +285,32 @@ export const normalizeLessonRecommendedChunks = (payload: unknown): LessonRecomm
       : [],
     selection_strategy: String(payloadRecord.selection_strategy ?? ''),
     metadata:
-      payloadRecord.metadata && typeof payloadRecord.metadata === 'object' && !Array.isArray(payloadRecord.metadata)
+      payloadRecord.metadata &&
+      typeof payloadRecord.metadata === 'object' &&
+      !Array.isArray(payloadRecord.metadata)
         ? (payloadRecord.metadata as Record<string, unknown>)
         : {},
     recommended_chunks: Array.isArray(payloadRecord.recommended_chunks)
-        ? payloadRecord.recommended_chunks.map((item: unknown) => {
+      ? payloadRecord.recommended_chunks.map((item: unknown) => {
           const chunkRecord = asRecord(item);
           return {
             chunk_id: String(chunkRecord.chunk_id ?? ''),
             resource_id: String(chunkRecord.resource_id ?? ''),
             chunk_index: typeof chunkRecord.chunk_index === 'number' ? chunkRecord.chunk_index : 0,
-            page_number: typeof chunkRecord.page_number === 'number' ? chunkRecord.page_number : undefined,
+            page_number:
+              typeof chunkRecord.page_number === 'number' ? chunkRecord.page_number : undefined,
             score: typeof chunkRecord.score === 'number' ? chunkRecord.score : 0,
             preview: String(chunkRecord.preview ?? ''),
-            resource_title: typeof chunkRecord.resource_title === 'string' ? chunkRecord.resource_title : undefined,
-            resource_source: typeof chunkRecord.resource_source === 'string' ? chunkRecord.resource_source : undefined,
-            resource_url: typeof chunkRecord.resource_url === 'string' ? chunkRecord.resource_url : undefined,
+            resource_title:
+              typeof chunkRecord.resource_title === 'string'
+                ? chunkRecord.resource_title
+                : undefined,
+            resource_source:
+              typeof chunkRecord.resource_source === 'string'
+                ? chunkRecord.resource_source
+                : undefined,
+            resource_url:
+              typeof chunkRecord.resource_url === 'string' ? chunkRecord.resource_url : undefined,
           };
         })
       : [],
@@ -288,7 +320,7 @@ export const normalizeLessonRecommendedChunks = (payload: unknown): LessonRecomm
 
 export const normalizeLearningPathDeleteResponse = (
   payload: unknown,
-  fallbackPathId: string
+  fallbackPathId: string,
 ): LearningPathDeleteResponse => {
   const response = asRecord(payload);
   return {
@@ -296,14 +328,16 @@ export const normalizeLearningPathDeleteResponse = (
     deleted: Boolean(response.deleted),
     removed_lessons: typeof response.removed_lessons === 'number' ? response.removed_lessons : 0,
     removed_chapters: typeof response.removed_chapters === 'number' ? response.removed_chapters : 0,
-    removed_recommendations: typeof response.removed_recommendations === 'number' ? response.removed_recommendations : 0,
-    removed_questions: typeof response.removed_questions === 'number' ? response.removed_questions : 0,
+    removed_recommendations:
+      typeof response.removed_recommendations === 'number' ? response.removed_recommendations : 0,
+    removed_questions:
+      typeof response.removed_questions === 'number' ? response.removed_questions : 0,
   };
 };
 
 export const normalizeLessonProgressResponse = (
   payload: unknown,
-  fallback: { path_id: string; lesson_id: string }
+  fallback: { path_id: string; lesson_id: string },
 ): LessonProgressApiResponse => {
   const response = asRecord(payload);
   return {
@@ -311,19 +345,31 @@ export const normalizeLessonProgressResponse = (
     lesson_id: String(response.lesson_id ?? fallback.lesson_id),
     status: normalizeLessonStatus(response.status),
     updated_at: String(response.updated_at ?? DEFAULT_GENERATED_AT()),
+    auto_completed: Boolean(response.auto_completed),
+    is_locked: Boolean(response.is_locked),
+    reason_locked: response.reason_locked ? String(response.reason_locked) : undefined,
+    last_confidence:
+      response.last_confidence === null || response.last_confidence === undefined
+        ? undefined
+        : Number(response.last_confidence),
+    confidence_updated_at: response.confidence_updated_at
+      ? String(response.confidence_updated_at)
+      : undefined,
   };
 };
 
 export const normalizeLessonStudyTimeResponse = (
   payload: unknown,
-  fallback: { path_id: string; lesson_id: string; seconds_spent: number }
+  fallback: { path_id: string; lesson_id: string; seconds_spent: number },
 ): LessonStudyTimeResponse => {
   const response = asRecord(payload);
   return {
     path_id: String(response.path_id ?? fallback.path_id),
     lesson_id: String(response.lesson_id ?? fallback.lesson_id),
-    seconds_spent: typeof response.seconds_spent === 'number' ? response.seconds_spent : fallback.seconds_spent,
-    total_seconds: typeof response.total_seconds === 'number' ? response.total_seconds : fallback.seconds_spent,
+    seconds_spent:
+      typeof response.seconds_spent === 'number' ? response.seconds_spent : fallback.seconds_spent,
+    total_seconds:
+      typeof response.total_seconds === 'number' ? response.total_seconds : fallback.seconds_spent,
     tracked_date: String(response.tracked_date ?? DEFAULT_GENERATED_AT()),
     updated_at: String(response.updated_at ?? DEFAULT_GENERATED_AT()),
   };
@@ -351,7 +397,7 @@ export const normalizeStudySummary = (payload: unknown): StudySummary => {
 
 export const normalizeLessonQuestionGenerationResponse = (
   payload: unknown,
-  fallbackLessonId: string
+  fallbackLessonId: string,
 ): LessonQuestionGenerationResponse => {
   const response = asRecord(payload);
   return {

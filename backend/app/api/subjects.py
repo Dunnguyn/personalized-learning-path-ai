@@ -19,7 +19,9 @@ router = APIRouter(prefix="/subjects", tags=["Subjects"])
 def list_subjects(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    q: str | None = Query(None, min_length=1, description="Search by title, slug, or description"),
+    q: str | None = Query(
+        None, min_length=1, description="Search by title, slug, or description"
+    ),
     topic: str | None = Query(None, min_length=1),
     level: str | None = Query(None, min_length=1),
     current_user=Depends(get_current_user),
@@ -36,10 +38,15 @@ def list_subjects(
         )
     except Exception as exc:
         logger.exception("Failed to list subjects: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load subjects.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load subjects.",
+        )
 
 
-@router.get("/{subject_id}", response_model=SubjectResponse, status_code=status.HTTP_200_OK)
+@router.get(
+    "/{subject_id}", response_model=SubjectResponse, status_code=status.HTTP_200_OK
+)
 def get_subject(subject_id: str, current_user=Depends(get_current_user)):
     """Get a single subject."""
     del current_user
@@ -49,7 +56,10 @@ def get_subject(subject_id: str, current_user=Depends(get_current_user)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to get subject %s: %s", subject_id, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load subject.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load subject.",
+        )
 
 
 @router.post("/", response_model=SubjectResponse, status_code=status.HTTP_201_CREATED)
@@ -62,4 +72,7 @@ def create_subject(payload: SubjectCreate, current_user=Depends(get_current_user
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
         logger.exception("Failed to create subject: %s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create subject.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not create subject.",
+        )

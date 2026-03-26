@@ -84,7 +84,7 @@ export default function Settings() {
       } catch (fetchError) {
         console.error('Failed to load settings profile:', fetchError);
         setError(
-          fetchError instanceof Error ? fetchError.message : 'Không thể tải cài đặt tài khoản.'
+          fetchError instanceof Error ? fetchError.message : 'Không thể tải cài đặt tài khoản.',
         );
         setForm({
           name: user.name || '',
@@ -102,7 +102,7 @@ export default function Settings() {
 
   const activeLevelDescription = useMemo(
     () => LEVEL_OPTIONS.find((option) => option.value === form.level)?.description || '',
-    [form.level]
+    [form.level],
   );
 
   const handleFieldChange = (field: keyof SettingsFormState, value: string) => {
@@ -167,8 +167,8 @@ export default function Settings() {
           <div>
             <h1 className="page-title mb-3">Hồ sơ học tập</h1>
             <p className="max-w-[760px] text-[15px] leading-7 text-[#5b544d]">
-              Bạn có thể cập nhật cấp độ hiện tại và mục tiêu học tập để hệ thống cá nhân hóa
-              lộ trình, tài nguyên và gợi ý học tập phù hợp hơn.
+              Bạn có thể cập nhật cấp độ hiện tại và mục tiêu học tập để hệ thống cá nhân hóa lộ
+              trình, tài nguyên và gợi ý học tập phù hợp hơn.
             </p>
           </div>
           <button
@@ -205,7 +205,9 @@ export default function Settings() {
 
               <div className="grid gap-5 md:grid-cols-2">
                 <label className="block">
-                  <span className="mb-2 block text-[13px] font-medium text-[#6a625d]">Họ và tên</span>
+                  <span className="mb-2 block text-[13px] font-medium text-[#6a625d]">
+                    Họ và tên
+                  </span>
                   <input
                     value={form.name}
                     disabled
@@ -234,7 +236,9 @@ export default function Settings() {
 
               <div className="space-y-6">
                 <label className="block">
-                  <span className="mb-2 block text-[13px] font-medium text-[#6a625d]">Cấp độ hiện tại</span>
+                  <span className="mb-2 block text-[13px] font-medium text-[#6a625d]">
+                    Cấp độ hiện tại
+                  </span>
                   <select
                     value={form.level}
                     onChange={(event) => handleFieldChange('level', event.target.value)}
@@ -246,11 +250,15 @@ export default function Settings() {
                       </option>
                     ))}
                   </select>
-                  <p className="mt-3 text-[13px] leading-6 text-[#7a726c]">{activeLevelDescription}</p>
+                  <p className="mt-3 text-[13px] leading-6 text-[#7a726c]">
+                    {activeLevelDescription}
+                  </p>
                 </label>
 
                 <label className="block">
-                  <span className="mb-2 block text-[13px] font-medium text-[#6a625d]">Mục tiêu học tập</span>
+                  <span className="mb-2 block text-[13px] font-medium text-[#6a625d]">
+                    Mục tiêu học tập
+                  </span>
                   <textarea
                     value={form.learningGoal}
                     onChange={(event) => handleFieldChange('learningGoal', event.target.value)}
@@ -272,13 +280,17 @@ export default function Settings() {
               <h2 className="page-section-title mb-5">Tóm tắt nhanh</h2>
               <div className="space-y-4">
                 <div className="metric-card">
-                  <p className="text-[12px] uppercase tracking-[0.18em] text-[#8c3451]/55">Cấp độ</p>
+                  <p className="text-[12px] uppercase tracking-[0.18em] text-[#8c3451]/55">
+                    Cấp độ
+                  </p>
                   <p className="mt-3 text-[26px] font-semibold text-[#121019]">
                     {LEVEL_OPTIONS.find((option) => option.value === form.level)?.label}
                   </p>
                 </div>
                 <div className="metric-card">
-                  <p className="text-[12px] uppercase tracking-[0.18em] text-[#8c3451]/55">Mục tiêu</p>
+                  <p className="text-[12px] uppercase tracking-[0.18em] text-[#8c3451]/55">
+                    Mục tiêu
+                  </p>
                   <p className="mt-3 text-[14px] leading-6 text-[#564f49]">
                     {form.learningGoal.trim() || 'Bạn chưa thêm mục tiêu học tập cụ thể.'}
                   </p>
