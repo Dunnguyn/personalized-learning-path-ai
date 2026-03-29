@@ -1,16 +1,21 @@
-import { useCallback, useEffect, useState } from 'react';
+﻿import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import AdminDashboard from './AdminDashboard';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { useAuth } from '../contexts/AuthContext';
-import { analyticsService } from '../services/analyticsService';
+import { adaptiveService } from '../services/adaptiveService';
 import { dashboardService } from '../services/dashboardService';
 import { learningPathService } from '../services/learningPathService';
 import { recommendationInteractionService } from '../services/recommendationInteractionService';
-import type { LearnerAnalyticsDashboard } from '../types/analytics';
+import type {
+  AdaptiveNextAction,
+  AdaptiveRecommendationPayload,
+} from '../types/adaptive';
 import type {
   AdaptiveRecommendation,
   ConfidenceOverview,
   ProgressOverview,
+  RecommendedResourceItem,
 } from '../types/dashboard';
 import type { LearningPath, LearningPathSubjectId, StudySummary } from '../types/learningPath';
 import type { RecommendationFeedbackType } from '../types/recommendation';
@@ -19,6 +24,11 @@ import { SUBJECTS } from '../utils/subjects';
 type SubjectFilter = 'all' | LearningPathSubjectId;
 type UtilityPanel = 'notifications' | null;
 type ActivityView = 'lessons' | 'paths' | 'concepts';
+type ResourceRecommendationMode =
+  | 'continue_learning'
+  | 'reinforce_weaknesses'
+  | 'learn_new'
+  | 'quick_review';
 
 interface ActivityBar {
   label: string;
@@ -34,6 +44,47 @@ interface StudyCalendarDay {
   intensity: number;
   isToday: boolean;
 }
+
+const RESOURCE_RECOMMENDATION_MODES: Array<{
+  value: ResourceRecommendationMode;
+  label: string;
+}> = [
+  { value: 'continue_learning', label: 'Continue learning' },
+  { value: 'reinforce_weaknesses', label: 'Weak areas' },
+  { value: 'learn_new', label: 'New lesson' },
+  { value: 'quick_review', label: 'Quick review' },
+];
+
+const formatReasonTag = (tag: string) =>
+  tag
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+
+const getAdaptiveActionTitle = (action?: string) => {
+  switch (action) {
+    case 'study_worked_example':
+      return 'Xem ví dụ có hướng dẫn';
+    case 'quick_review_session':
+      return 'Ôn nhanh 10 phút';
+    case 'return_to_prerequisite':
+      return 'Quay lại prerequisite';
+    case 'review_summary':
+      return 'Đọc bản tóm tắt';
+    case 'retry_with_easier_resource':
+      return 'Học lại với tài liệu dễ hơn';
+    case 'move_to_next_lesson':
+      return 'Sang bài học tiếp theo';
+    case 'resume_unfinished':
+      return 'Tiếp tục tài liệu dang dở';
+    case 'switch_format_to_video':
+      return 'Chuyển sang video';
+    case 'switch_format_to_text':
+      return 'Chuyển sang tài liệu chữ';
+    default:
+      return 'Bước học tiếp theo';
+  }
+};
 
 const renderSubjectIcon = (subjectId: SubjectFilter) => {
   switch (subjectId) {
@@ -357,7 +408,7 @@ const getWeekdayLabel = (date: Date) => {
   return `T${day + 1}`;
 };
 
-export default function Dashboard() {
+function LearnerDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
@@ -366,9 +417,15 @@ export default function Dashboard() {
   const [progressOverview, setProgressOverview] = useState<ProgressOverview | null>(null);
   const [confidenceOverview, setConfidenceOverview] = useState<ConfidenceOverview | null>(null);
   const [recommendations, setRecommendations] = useState<AdaptiveRecommendation[]>([]);
+  const [nextBestAction, setNextBestAction] = useState<AdaptiveNextAction | null>(null);
+  const [adaptiveRecommendation, setAdaptiveRecommendation] =
+    useState<AdaptiveRecommendationPayload | null>(null);
+  const [personalizedResources, setPersonalizedResources] = useState<RecommendedResourceItem[]>([]);
+  const [resourceRecommendationGoal, setResourceRecommendationGoal] = useState('');
+  const [resourceRecommendationMode, setResourceRecommendationMode] =
+    useState<ResourceRecommendationMode>('continue_learning');
   const [learningPaths, setLearningPaths] = useState<LearningPath[]>([]);
   const [studySummary, setStudySummary] = useState<StudySummary | null>(null);
-  const [learnerAnalytics, setLearnerAnalytics] = useState<LearnerAnalyticsDashboard | null>(null);
   const [selectedSubjectId, setSelectedSubjectId] = useState<SubjectFilter>('all');
   const [activeUtilityPanel, setActiveUtilityPanel] = useState<UtilityPanel>(null);
   const [activityView, setActivityView] = useState<ActivityView>('paths');
@@ -392,18 +449,14 @@ export default function Dashboard() {
           learningPathService.getStudySummary(),
         ]);
 
-      const learnerAnalyticsData = await analyticsService
-        .getLearnerDashboard(user.user_id)
-        .catch(() => null);
-
       setProgressOverview(progressData);
       setConfidenceOverview(confidenceData);
       setRecommendations(recommendationsData);
       setStudySummary(studyTimeData);
-      setLearnerAnalytics(learnerAnalyticsData);
 
+      let pathsWithDetails: LearningPath[] = [];
       if (pathHistory && pathHistory.length > 0) {
-        const pathsWithDetails = await Promise.all(
+        pathsWithDetails = await Promise.all(
           pathHistory.map(async (path) => {
             try {
               return await learningPathService.getLearningPathById(path.path_id);
@@ -423,10 +476,39 @@ export default function Dashboard() {
             }
           }),
         );
+      }
+      setLearningPaths(pathsWithDetails);
 
-        setLearningPaths(pathsWithDetails);
+      const recommendationGoal =
+        user.learning_goal?.trim() ||
+        pathsWithDetails[0]?.goal?.trim() ||
+        pathHistory[0]?.goal?.trim() ||
+        '';
+      setResourceRecommendationGoal(recommendationGoal);
+      const [nextActionData, adaptiveRecommendationData] = await Promise.all([
+        adaptiveService.getNextBestAction({ user_id: user.user_id }).catch(() => null),
+        adaptiveService
+          .getAdaptiveRecommendation({
+            user_id: user.user_id,
+            goal: recommendationGoal || undefined,
+            level: user.level || 'beginner',
+          })
+          .catch(() => null),
+      ]);
+      setNextBestAction(nextActionData);
+      setAdaptiveRecommendation(adaptiveRecommendationData);
+
+      if (recommendationGoal) {
+        const personalized = await dashboardService.getPersonalizedResourceRecommendations(
+          user.user_id,
+          recommendationGoal,
+          user.level || 'beginner',
+          6,
+          resourceRecommendationMode,
+        );
+        setPersonalizedResources(personalized.recommended_resources);
       } else {
-        setLearningPaths([]);
+        setPersonalizedResources([]);
       }
     } catch (err) {
       console.error('Error fetching dashboard data:', err);
@@ -434,7 +516,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [resourceRecommendationMode, user]);
 
   useEffect(() => {
     if (!user) {
@@ -461,29 +543,51 @@ export default function Dashboard() {
     navigate(`/resources?q=${encodeURIComponent(query)}`);
   };
 
-  const handleRecommendationFeedback = async (
-    recommendation: AdaptiveRecommendation,
+  const handleViewPersonalizedResource = (resource: RecommendedResourceItem) => {
+    void recommendationInteractionService.trackClick({
+      recommendation_id: `dashboard-resource-${String(resource.resource_id)}`,
+      resource_id: resource.resource_id,
+      goal: resourceRecommendationGoal || resource.topic || resource.title,
+      level: confidenceLevel,
+      metadata: {
+        source_screen: 'dashboard',
+        action: 'view_personalized_resource',
+        recommendation_mode: resource.recommendation_mode || resourceRecommendationMode,
+      },
+    });
+
+    if (resource.url) {
+      window.open(resource.url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    navigate(`/resources?q=${encodeURIComponent(resource.title || resource.topic)}`);
+  };
+
+  const handlePersonalizedResourceFeedback = async (
+    resource: RecommendedResourceItem,
     feedbackType: RecommendationFeedbackType,
   ) => {
-    if (!recommendation || isSendingRecommendationFeedback) {
+    if (isSendingRecommendationFeedback) {
       return;
     }
 
     try {
       setIsSendingRecommendationFeedback(true);
       await recommendationInteractionService.submitFeedback({
-        recommendation_id: `dashboard-${recommendation.concept_id}`,
-        concept_id: recommendation.concept_id,
+        recommendation_id: `dashboard-resource-${String(resource.resource_id)}`,
+        resource_id: resource.resource_id,
         feedback_type: feedbackType,
-        comment: recommendation.reasons?.[0],
+        comment: resource.reason,
         metadata: {
           source_screen: 'dashboard',
-          goal: recommendation.concept_name,
+          goal: resourceRecommendationGoal || resource.topic || resource.title,
           level: confidenceLevel,
+          recommendation_mode: resource.recommendation_mode || resourceRecommendationMode,
         },
       });
     } catch (feedbackError) {
-      console.error('Failed to submit recommendation feedback:', feedbackError);
+      console.error('Failed to submit personalized resource feedback:', feedbackError);
     } finally {
       setIsSendingRecommendationFeedback(false);
     }
@@ -491,6 +595,51 @@ export default function Dashboard() {
 
   const handleOpenLearningPath = (path: LearningPath) => {
     navigate(`/learning-path/${path.path_id}`, { state: { path } });
+  };
+
+  const handleOpenAdaptiveSuggestion = () => {
+    if (!adaptiveRecommendation) {
+      return;
+    }
+
+    const firstItem = adaptiveRecommendation.items[0];
+    const firstItemRecord =
+      firstItem && typeof firstItem === 'object' ? (firstItem as Record<string, unknown>) : null;
+
+    if (
+      adaptiveRecommendation.recommendation_type === 'resource' &&
+      firstItemRecord &&
+      typeof firstItemRecord.url === 'string' &&
+      firstItemRecord.url
+    ) {
+      window.open(firstItemRecord.url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    if (adaptiveRecommendation.recommendation_type === 'resource' && firstItemRecord) {
+      const query =
+        (typeof firstItemRecord.title === 'string' && firstItemRecord.title) ||
+        (typeof firstItemRecord.topic === 'string' && firstItemRecord.topic) ||
+        resourceRecommendationGoal;
+      navigate(`/resources?q=${encodeURIComponent(query || 'learning')}`);
+      return;
+    }
+
+    if (adaptiveRecommendation.recommendation_type === 'lesson' && learningPaths[0]) {
+      handleOpenLearningPath(learningPaths[0]);
+      return;
+    }
+
+    if (adaptiveRecommendation.recommendation_type === 'chunk' && firstItemRecord) {
+      const query =
+        (typeof firstItemRecord.resource_title === 'string' && firstItemRecord.resource_title) ||
+        (typeof firstItemRecord.preview === 'string' && firstItemRecord.preview) ||
+        resourceRecommendationGoal;
+      navigate(`/resources?q=${encodeURIComponent(query || 'lesson review')}`);
+      return;
+    }
+
+    handleAskAIForGoal(resourceRecommendationGoal || 'learning review', confidenceLevel);
   };
 
   const handleAskAIForGoal = (goal: string, level?: string) => {
@@ -565,6 +714,13 @@ export default function Dashboard() {
   const weeklyComparison = progressOverview?.weekly_comparison_percent || 0;
   const confidenceLevel = confidenceOverview?.level || 'beginner';
   const topRecommendation = recommendations[0];
+  const topResourceRecommendation = personalizedResources[0];
+  const adaptivePrimaryItem =
+    adaptiveRecommendation?.items?.[0] &&
+    typeof adaptiveRecommendation.items[0] === 'object' &&
+    !Array.isArray(adaptiveRecommendation.items[0])
+      ? (adaptiveRecommendation.items[0] as Record<string, unknown>)
+      : null;
   const filteredLearningPaths =
     selectedSubjectId === 'all'
       ? learningPaths
@@ -589,18 +745,29 @@ export default function Dashboard() {
       actionLabel: learningPaths.length > 0 ? 'Mở lộ trình' : 'Tạo lộ trình',
       action: () => navigate('/learning-path'),
     },
-    {
-      id: 'resources',
-      title: topRecommendation
-        ? `Gợi ý tiếp theo: ${topRecommendation.concept_name}`
-        : 'Kho tài nguyên đang chờ bạn',
-      description: topRecommendation
-        ? topRecommendation.reasons?.[0] ||
-          'Bạn có thể mở tài nguyên liên quan để tiếp tục học ngay.'
-        : 'Thêm hoặc duyệt tài nguyên hiện có để làm giàu môi trường học local.',
-      actionLabel: topRecommendation ? 'Xem tài nguyên' : 'Mở tài nguyên',
-      action: () => handleViewResources(topRecommendation?.concept_name || '', topRecommendation),
-    },
+      {
+        id: 'resources',
+        title: topResourceRecommendation
+          ? `Tài liệu tiếp theo: ${topResourceRecommendation.title}`
+          : topRecommendation
+            ? `Gợi ý tiếp theo: ${topRecommendation.concept_name}`
+          : 'Kho tài nguyên đang chờ bạn',
+        description: topResourceRecommendation
+          ? topResourceRecommendation.reason ||
+            'Bạn có thể mở tài liệu liên quan để tiếp tục học ngay.'
+          : topRecommendation
+            ? topRecommendation.reasons?.[0] ||
+              'Bạn có thể mở tài nguyên liên quan để tiếp tục học ngay.'
+          : 'Thêm hoặc duyệt tài nguyên hiện có để làm giàu môi trường học local.',
+        actionLabel: topResourceRecommendation || topRecommendation ? 'Xem tài nguyên' : 'Mở tài nguyên',
+        action: () => {
+          if (topResourceRecommendation) {
+            handleViewPersonalizedResource(topResourceRecommendation);
+            return;
+          }
+          handleViewResources(topRecommendation?.concept_name || '', topRecommendation);
+        },
+      },
     {
       id: 'settings',
       title: 'Hồ sơ học tập có thể tinh chỉnh',
@@ -857,10 +1024,203 @@ export default function Dashboard() {
               </button>
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-2">
+            <div className="grid gap-4 xl:grid-cols-3">
               <div className="white-panel p-6">
-                <p className="mb-2 text-[14px] font-medium text-[#5b544d]">Gợi ý thích ứng</p>
-                {topRecommendation ? (
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[14px] font-medium text-[#5b544d]">Next best action</p>
+                  {nextBestAction?.priority ? (
+                    <span
+                      className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
+                        nextBestAction.priority === 'high'
+                          ? 'bg-[#fff1f4] text-[#8c3451]'
+                          : 'bg-white text-[#6f5260]'
+                      }`}
+                    >
+                      {nextBestAction.priority.toUpperCase()}
+                    </span>
+                  ) : null}
+                </div>
+                {nextBestAction ? (
+                  <>
+                    <h3 className="mt-4 text-[24px] font-medium leading-[1.2] tracking-[-0.03em] text-[#131017]">
+                      {getAdaptiveActionTitle(nextBestAction.next_best_action)}
+                    </h3>
+                    <p className="mt-3 text-[14px] leading-6 text-[#5f5954]">
+                      {nextBestAction.reason}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {nextBestAction.target_concepts.slice(0, 3).map((concept) => (
+                        <span
+                          key={`adaptive-concept-${concept}`}
+                          className="rounded-full bg-[#f8edf3] px-3 py-1 text-[11px] font-semibold text-[#8c3451]"
+                        >
+                          {concept}
+                        </span>
+                      ))}
+                      {nextBestAction.estimated_total_time ? (
+                        <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#6f5260]">
+                          {nextBestAction.estimated_total_time} phút
+                        </span>
+                      ) : null}
+                      {adaptiveRecommendation?.recommendation_mode ? (
+                        <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#6f5260]">
+                          {formatReasonTag(adaptiveRecommendation.recommendation_mode)}
+                        </span>
+                      ) : null}
+                    </div>
+                    {adaptivePrimaryItem ? (
+                      <div className="mt-5 rounded-[18px] border border-[#f0e4ea] bg-[#fff8fb] px-4 py-4">
+                        <p className="text-[13px] font-semibold text-[#17141b]">
+                          {typeof adaptivePrimaryItem.title === 'string'
+                            ? adaptivePrimaryItem.title
+                            : typeof adaptivePrimaryItem.resource_title === 'string'
+                              ? adaptivePrimaryItem.resource_title
+                              : typeof adaptivePrimaryItem.lesson_id === 'string'
+                                ? `Lesson ${adaptivePrimaryItem.lesson_id}`
+                                : 'Adaptive suggestion'}
+                        </p>
+                        {adaptiveRecommendation?.reason ? (
+                          <p className="mt-2 text-[12px] leading-5 text-[#706963]">
+                            {adaptiveRecommendation.reason}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    <div className="mt-6 flex gap-3">
+                      <button onClick={handleOpenAdaptiveSuggestion} className="theme-button">
+                        Mở gợi ý
+                      </button>
+                      <button
+                        onClick={() =>
+                          handleAskAIForGoal(
+                            nextBestAction.target_concepts[0] || resourceRecommendationGoal || 'study review',
+                            confidenceLevel,
+                          )
+                        }
+                        className="theme-button-secondary"
+                      >
+                        Hỏi AI
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-4 text-[14px] leading-6 text-[#5f5954]">
+                    Chưa có adaptive action mới. Hãy tiếp tục học hoặc làm quiz để hệ thống cập nhật vòng lặp cá nhân hóa.
+                  </p>
+                )}
+              </div>
+              <div className="white-panel p-6">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[14px] font-medium text-[#5b544d]">Gợi ý tài liệu cá nhân hóa</p>
+                  {resourceRecommendationGoal ? (
+                    <span className="rounded-full bg-[#fff1f6] px-3 py-1 text-[11px] font-semibold text-[#8c3451]">
+                      {resourceRecommendationGoal}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {RESOURCE_RECOMMENDATION_MODES.map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      onClick={() => setResourceRecommendationMode(item.value)}
+                      className={`rounded-full px-3 py-2 text-[12px] font-semibold transition ${
+                        resourceRecommendationMode === item.value
+                          ? 'bg-[#8c3451] text-white'
+                          : 'border border-[#ebdbe2] bg-white text-[#8c3451]'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                {topResourceRecommendation ? (
+                  <>
+                    <h3 className="text-[26px] font-medium leading-[1.2] tracking-[-0.03em] text-[#131017]">
+                      {topResourceRecommendation.title}
+                    </h3>
+                    <p className="mt-3 text-[14px] leading-6 text-[#5f5954]">
+                      {topResourceRecommendation.reason}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {topResourceRecommendation.reason_tags.slice(0, 4).map((tag) => (
+                        <span
+                          key={`${topResourceRecommendation.resource_id}-${tag}`}
+                          className="rounded-full bg-[#f8edf3] px-3 py-1 text-[11px] font-semibold text-[#8c3451]"
+                        >
+                          {formatReasonTag(tag)}
+                        </span>
+                      ))}
+                      {topResourceRecommendation.estimated_time ? (
+                        <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#6f5260]">
+                          {topResourceRecommendation.estimated_time} phút
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-6 flex gap-3">
+                      <button
+                        onClick={() => handleViewPersonalizedResource(topResourceRecommendation)}
+                        className="theme-button"
+                      >
+                        Xem tài nguyên
+                      </button>
+                      <button
+                        onClick={() =>
+                          handleAskAIForGoal(resourceRecommendationGoal || topResourceRecommendation.topic, confidenceLevel)
+                        }
+                        className="theme-button-secondary"
+                      >
+                        Hỏi AI
+                      </button>
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        disabled={isSendingRecommendationFeedback}
+                        onClick={() =>
+                          void handlePersonalizedResourceFeedback(topResourceRecommendation, 'helpful')
+                        }
+                        className="rounded-full border border-[#ebdbe2] px-3 py-2 text-[12px] font-medium text-[#8c3451] transition hover:bg-[#fff7fb] disabled:opacity-60"
+                      >
+                        Hữu ích
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isSendingRecommendationFeedback}
+                        onClick={() =>
+                          void handlePersonalizedResourceFeedback(topResourceRecommendation, 'hide')
+                        }
+                        className="rounded-full border border-[#ebdbe2] px-3 py-2 text-[12px] font-medium text-[#8c3451] transition hover:bg-[#fff7fb] disabled:opacity-60"
+                      >
+                        Ẩn gợi ý này
+                      </button>
+                    </div>
+                    {personalizedResources.length > 1 ? (
+                      <div className="mt-5 space-y-3">
+                        {personalizedResources.slice(1, 4).map((resource) => (
+                          <button
+                            key={String(resource.resource_id)}
+                            type="button"
+                            onClick={() => handleViewPersonalizedResource(resource)}
+                            className="w-full rounded-[18px] border border-[#f0e4ea] bg-[#fff8fb] px-4 py-4 text-left transition hover:border-[#d8b8c6]"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-[14px] font-semibold text-[#17141b]">
+                                {resource.title}
+                              </p>
+                              <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#8c3451]">
+                                {Math.round(resource.relevance_score * 100)}%
+                              </span>
+                            </div>
+                            <p className="mt-2 text-[12px] leading-5 text-[#706963]">
+                              {resource.reason}
+                            </p>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </>
+                ) : topRecommendation ? (
                   <>
                     <h3 className="text-[26px] font-medium leading-[1.2] tracking-[-0.03em] text-[#131017]">
                       {topRecommendation.concept_name}
@@ -885,26 +1245,6 @@ export default function Dashboard() {
                         className="theme-button-secondary"
                       >
                         Hỏi AI
-                      </button>
-                    </div>
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        type="button"
-                        disabled={isSendingRecommendationFeedback}
-                        onClick={() =>
-                          void handleRecommendationFeedback(topRecommendation, 'helpful')
-                        }
-                        className="rounded-full border border-[#ebdbe2] px-3 py-2 text-[12px] font-medium text-[#8c3451] transition hover:bg-[#fff7fb] disabled:opacity-60"
-                      >
-                        Hữu ích
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isSendingRecommendationFeedback}
-                        onClick={() => void handleRecommendationFeedback(topRecommendation, 'hide')}
-                        className="rounded-full border border-[#ebdbe2] px-3 py-2 text-[12px] font-medium text-[#8c3451] transition hover:bg-[#fff7fb] disabled:opacity-60"
-                      >
-                        Ẩn gợi ý này
                       </button>
                     </div>
                   </>
@@ -954,40 +1294,6 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {learnerAnalytics && (
-                <div className="mt-4 rounded-[16px] border border-[#f1e5eb] bg-[#fff9fc] p-3">
-                  <p className="text-[12px] font-semibold text-[#8c3451]">Analytics cá nhân</p>
-                  <div className="mt-2 grid grid-cols-2 gap-2 text-[12px] text-[#5f5954]">
-                    <p>
-                      Streak:{' '}
-                      <span className="font-semibold text-[#141217]">
-                        {learnerAnalytics.time_and_streak.learning_streak_days} ngày
-                      </span>
-                    </p>
-                    <p>
-                      CTR gợi ý:{' '}
-                      <span className="font-semibold text-[#141217]">
-                        {(
-                          learnerAnalytics.recommendation_and_quiz.recommendation_ctr * 100
-                        ).toFixed(1)}
-                        %
-                      </span>
-                    </p>
-                    <p>
-                      Quiz accuracy:{' '}
-                      <span className="font-semibold text-[#141217]">
-                        {(learnerAnalytics.recommendation_and_quiz.quiz_accuracy * 100).toFixed(1)}%
-                      </span>
-                    </p>
-                    <p>
-                      Completion:{' '}
-                      <span className="font-semibold text-[#141217]">
-                        {(learnerAnalytics.completion.completion_rate * 100).toFixed(1)}%
-                      </span>
-                    </p>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </section>
@@ -1205,4 +1511,14 @@ export default function Dashboard() {
       </div>
     </DashboardLayout>
   );
+}
+
+export default function Dashboard() {
+  const { user } = useAuth();
+
+  if (user?.role === 'admin') {
+    return <AdminDashboard />;
+  }
+
+  return <LearnerDashboard />;
 }

@@ -30,7 +30,7 @@ import logging
 
 from backend.app.database.mongo import get_db
 from backend.app.api.schemas import UserCreate, UserResponse, LevelEnum
-from backend.app.api.auth import get_current_user
+from backend.app.api.auth import get_current_user, resolve_user_role
 from pymongo.errors import DuplicateKeyError
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,7 @@ def create_user(user: UserCreate):
             "level": (
                 user.level.value if isinstance(user.level, LevelEnum) else user.level
             ),
+            "role": resolve_user_role({"email": email}),
             "created_at": datetime.now(timezone.utc),
             "is_active": True,
         }
@@ -161,6 +162,7 @@ def create_user(user: UserCreate):
             name=doc["name"],
             email=doc["email"],
             level=doc["level"],
+            role=resolve_user_role(doc),
             learning_goal=doc.get("learning_goal"),
             created_at=doc["created_at"],
         )
@@ -203,6 +205,7 @@ def get_current_user_profile(current_user: dict = Depends(get_current_user)):
             name=current_user["name"],
             email=current_user["email"],
             level=current_user.get("level", "beginner"),
+            role=resolve_user_role(current_user),
             learning_goal=current_user.get("learning_goal"),
             created_at=current_user["created_at"],
         )

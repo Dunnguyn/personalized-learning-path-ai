@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
 
 from backend.app.api import (
+    adaptive,
     auth,
     users,
     resources,
@@ -43,7 +44,6 @@ from backend.app.api import (
     concepts,
     exercise_attempts,
     analytics,
-    evaluation,
 )
 from backend.app.services.event_logging_service import event_logging_service
 
@@ -224,6 +224,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 # REGISTER ROUTERS
 # =========================
 app.include_router(auth.router, prefix="/api")
+app.include_router(adaptive.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(resources.router, prefix="/api")
 app.include_router(subjects.router, prefix="/api")
@@ -240,7 +241,6 @@ app.include_router(path_refinement.router, prefix="/api")
 app.include_router(concepts.router, prefix="/api")
 app.include_router(exercise_attempts.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
-app.include_router(evaluation.router, prefix="/api")
 
 
 # =========================

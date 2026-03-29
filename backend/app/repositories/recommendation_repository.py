@@ -122,11 +122,26 @@ class RecommendationRepository:
         if not concept_ids:
             return []
 
+        concept_query = {
+            "$or": [
+                {"concept_id": {"$in": concept_ids}},
+                {"metadata.concept_id": {"$in": concept_ids}},
+            ]
+        }
+        level_query = {
+            "$or": [
+                {"level": {"$in": preferred_levels}},
+                {"metadata.level": {"$in": preferred_levels}},
+            ]
+        }
+
         docs = list(
             self.resources.find(
                 {
-                    "concept_id": {"$in": concept_ids},
-                    "level": {"$in": preferred_levels},
+                    "$and": [
+                        concept_query,
+                        level_query,
+                    ]
                 }
             ).limit(max(limit, 1))
         )
@@ -134,9 +149,7 @@ class RecommendationRepository:
         if len(docs) < limit:
             seen_ids = {str(item.get("_id")) for item in docs}
             fallback_docs = list(
-                self.resources.find({"concept_id": {"$in": concept_ids}}).limit(
-                    limit * 2
-                )
+                self.resources.find(concept_query).limit(limit * 2)
             )
             for item in fallback_docs:
                 key = str(item.get("_id"))

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import PDFViewer from '../components/PDFViewer';
+import { useAuth } from '../contexts/AuthContext';
 import { resourceService } from '../services/resourceService';
 import { recommendationInteractionService } from '../services/recommendationInteractionService';
 import type { Resource, SearchResponse } from '../types/resource';
@@ -76,10 +77,18 @@ const toNumericResourceId = (resource: Resource): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+const isSameResource = (left: Resource, right: Resource): boolean => {
+  const leftId = left.resource_id || left.id || left._id;
+  const rightId = right.resource_id || right.id || right._id;
+  return Boolean(leftId && rightId && leftId === rightId);
+};
+
 export default function Resources() {
+  const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const conceptIdParam = searchParams.get('concept');
   const queryParam = searchParams.get('q');
+  const canManageResources = user?.role === 'admin';
 
   const [searchQuery, setSearchQuery] = useState('');
   const [resources, setResources] = useState<Resource[]>([]);
@@ -206,6 +215,10 @@ export default function Resources() {
 
   const handlePDFUpload = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canManageResources) {
+      showToast('error', 'Ban khong co quyen them tai nguyen.');
+      return;
+    }
     const form = new FormData(e.currentTarget as HTMLFormElement);
     const file = form.get('pdf_file') as File;
     const topic = form.get('topic') as string;
@@ -239,6 +252,10 @@ export default function Resources() {
 
   const handleYouTubeAdd = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canManageResources) {
+      showToast('error', 'Ban khong co quyen them tai nguyen.');
+      return;
+    }
     const form = new FormData(e.currentTarget as HTMLFormElement);
     const url = form.get('youtube_url') as string;
     const title = form.get('title') as string;
@@ -273,6 +290,10 @@ export default function Resources() {
 
   const handleWebAdd = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canManageResources) {
+      showToast('error', 'Ban khong co quyen them tai nguyen.');
+      return;
+    }
     const form = new FormData(e.currentTarget as HTMLFormElement);
     const url = form.get('web_url') as string;
     const title = form.get('title') as string;
@@ -366,6 +387,10 @@ export default function Resources() {
   };
 
   const handleDeleteResource = async (resource: Resource) => {
+    if (!canManageResources) {
+      showToast('error', 'Chi admin moi co the xoa tai nguyen.');
+      return;
+    }
     setPendingDeleteResource(resource);
   };
 
@@ -374,6 +399,11 @@ export default function Resources() {
   };
 
   const handleConfirmDeleteResource = async () => {
+    if (!canManageResources) {
+      showToast('error', 'Chi admin moi co the xoa tai nguyen.');
+      setPendingDeleteResource(null);
+      return;
+    }
     if (!pendingDeleteResource) {
       return;
     }
@@ -564,6 +594,10 @@ export default function Resources() {
     resource: Resource,
     context: string = 'resource_card',
   ) => {
+    if (resource.is_completed) {
+      return;
+    }
+
     try {
       await recommendationInteractionService.trackResourceCompleted({
         resource_id: toNumericResourceId(resource),
@@ -577,6 +611,16 @@ export default function Resources() {
           resource_identifier: resource.resource_id || resource.id || resource._id,
         },
       });
+      setResources((previous) =>
+        previous.map((current) =>
+          isSameResource(current, resource)
+            ? {
+                ...current,
+                is_completed: true,
+              }
+            : current,
+        ),
+      );
       showToast('success', 'Đã ghi nhận hoàn thành tài nguyên.');
     } catch (completionError) {
       console.error('Failed to track resource completion:', completionError);
@@ -601,6 +645,18 @@ export default function Resources() {
             {statusMessage}
           </div>
         )}
+
+        <div
+          className={`mb-6 rounded-[24px] border px-5 py-4 text-[14px] leading-6 ${
+            canManageResources
+              ? 'border-[#ead7df] bg-[#fff7fb] text-[#6f5260]'
+              : 'border-[#dbe8f2] bg-[#f6fbff] text-[#2f657f]'
+          }`}
+        >
+          {canManageResources
+            ? 'Bạn đang ở chế độ Admin. Tại màn này bạn có thể tìm kiếm, xem và quản lý resource học tập.'
+            : 'Tài khoản learner chỉ có quyền xem, tìm kiếm và mở resource. Các thao tác thêm hoặc xóa chỉ dành cho Admin.'}
+        </div>
 
         <div className="soft-panel sticky top-4 z-10 mb-[40px] space-y-4 p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -647,15 +703,16 @@ export default function Resources() {
             </select>
 
             <button
-              onClick={() => setShowAddResource(!showAddResource)}
-              className="theme-button-secondary w-full justify-center sm:ml-auto sm:w-auto"
+              disabled={!canManageResources}
+              onClick={() => canManageResources && setShowAddResource(!showAddResource)}
+              className="theme-button-secondary w-full justify-center disabled:cursor-not-allowed disabled:opacity-50 sm:ml-auto sm:w-auto"
             >
               + Thêm tài nguyên
             </button>
           </div>
         </div>
 
-        {showAddResource && (
+        {canManageResources && showAddResource && (
           <div className="white-panel mb-[40px] p-8">
             <div className="mb-6 flex flex-wrap gap-3">
               {(['web', 'youtube', 'pdf'] as const).map((type) => (
@@ -865,6 +922,11 @@ export default function Resources() {
                         </h3>
                       </div>
                       <div className="flex shrink-0 items-start gap-2">
+                        {resource.is_completed ? (
+                          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-semibold text-emerald-700">
+                            Đã học xong
+                          </span>
+                        ) : null}
                         <span
                           className={`rounded-full px-3 py-1.5 text-[11px] font-medium ${getLevelColor(resource.level)}`}
                         >
@@ -873,7 +935,7 @@ export default function Resources() {
                         <button
                           type="button"
                           onClick={() => void handleDeleteResource(resource)}
-                          disabled={deletingResourceId === resourceId}
+                          disabled={!canManageResources || deletingResourceId === resourceId}
                           className="rounded-full border border-[#ebe2e7] bg-white px-3 py-1.5 text-[11px] font-medium text-[#8c3451] transition-colors hover:bg-[#fff4f8] disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {deletingResourceId === resourceId ? 'Đang xóa...' : 'Xóa'}
@@ -1080,9 +1142,14 @@ export default function Resources() {
                           <button
                             type="button"
                             onClick={() => void handleMarkResourceCompleted(resource)}
-                            className="rounded-full border border-emerald-200 bg-white px-4 py-2 text-[12px] font-medium text-emerald-700 transition hover:bg-emerald-50"
+                            disabled={resource.is_completed}
+                            className={`rounded-full border px-4 py-2 text-[12px] font-medium transition ${
+                              resource.is_completed
+                                ? 'cursor-not-allowed border-emerald-200 bg-emerald-50 text-emerald-700'
+                                : 'border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50'
+                            }`}
                           >
-                            Đã học xong
+                            {resource.is_completed ? 'Đã học xong' : 'Đánh dấu đã học'}
                           </button>
                         </div>
                       </div>
@@ -1201,7 +1268,7 @@ export default function Resources() {
         </div>
       )}
 
-      {pendingDeleteResource && (
+      {canManageResources && pendingDeleteResource && (
         <div
           className="ui-fade-in fixed inset-0 z-50 flex items-center justify-center bg-[#3d1f2c]/30 px-4 backdrop-blur-sm"
           onClick={() => setPendingDeleteResource(null)}

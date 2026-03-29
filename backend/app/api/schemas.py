@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, ConfigDict, model_validator
-from typing import List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 from datetime import date, datetime
 from enum import Enum
 
@@ -8,6 +8,11 @@ class LevelEnum(str, Enum):
     beginner = "beginner"
     intermediate = "intermediate"
     advanced = "advanced"
+
+
+class UserRoleEnum(str, Enum):
+    learner = "learner"
+    admin = "admin"
 
 
 class SubjectIdEnum(str, Enum):
@@ -80,6 +85,7 @@ class UserResponse(BaseModel):
     name: str
     email: EmailStr
     level: LevelEnum
+    role: UserRoleEnum = UserRoleEnum.learner
     learning_goal: Optional[str] = None
     created_at: datetime
 
@@ -319,6 +325,19 @@ class RecommendedChunkItem(BaseModel):
     resource_title: Optional[str] = None
     resource_source: Optional[str] = None
     resource_url: Optional[str] = None
+    instruction_role: Optional[str] = None
+    difficulty: Optional[str] = None
+    covered_objectives: List[str] = Field(default_factory=list)
+    covered_concepts: List[str] = Field(default_factory=list)
+    estimated_read_time: Optional[int] = None
+    sequence_position: Optional[int] = None
+    questionability_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    fact_density_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    concept_explicitness_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    example_presence_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    score_breakdown: dict = Field(default_factory=dict)
+    cluster_id: Optional[str] = None
+    selected_as_representative: Optional[bool] = None
 
 
 class LessonRecommendedChunksResponse(BaseModel):
@@ -330,6 +349,7 @@ class LessonRecommendedChunksResponse(BaseModel):
     resource_ids: List[str]
     selection_strategy: str
     metadata: dict = Field(default_factory=dict)
+    sequence_metadata: dict = Field(default_factory=dict)
     recommended_chunks: List[RecommendedChunkItem] = Field(default_factory=list)
     created_at: datetime
 
@@ -343,6 +363,9 @@ class LessonQuestionGenerationRequest(BaseModel):
     bloom_levels: List[BloomLevelEnum] = Field(
         default_factory=lambda: [BloomLevelEnum.remember, BloomLevelEnum.understand]
     )
+    allow_llm: bool = True
+    mastery: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    success_rate: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     overwrite: bool = False
     metadata: dict = Field(default_factory=dict)
 
@@ -361,9 +384,13 @@ class QuestionBankItemResponse(BaseModel):
     explanation: str
     difficulty: LevelEnum
     bloom_level: BloomLevelEnum
+    concept_id: Optional[str] = None
+    retry_strategy: Optional[str] = None
     is_ai_generated: bool = True
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
+    generation_source: Optional[str] = None
+    confidence_score: Optional[float] = None
     metadata: dict = Field(default_factory=dict)
     created_at: datetime
 
@@ -372,11 +399,14 @@ class LessonQuestionGenerationResponse(BaseModel):
     lesson_id: str
     status: str
     generated_count: int
+    saved_count: int = 0
     question_ids: List[str] = Field(default_factory=list)
     chunks_used: List[str] = Field(default_factory=list)
     insufficient_data: bool = False
     reused_existing: bool = False
     existing_count: int = 0
+    sources: dict = Field(default_factory=dict)
+    filtered_count: int = 0
     message: str = ""
 
 
@@ -553,6 +583,9 @@ class LessonAnsweredQuestion(BaseModel):
     is_correct: bool
     difficulty: LevelEnum
     bloom_level: BloomLevelEnum
+    chunk_id: Optional[str] = None
+    concept_id: Optional[str] = None
+    confidence_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class LessonProgressUpdate(BaseModel):
@@ -583,7 +616,24 @@ class LessonProgressResponse(BaseModel):
     auto_completed: bool = False
     last_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     confidence_updated_at: Optional[datetime] = None
+    attempt_id: Optional[str] = None
+    accuracy: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    updated_mastery: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    next_action: Optional[dict] = None
+    adaptive_next_quiz: Optional[dict] = None
     updated_at: datetime
+
+
+class AdaptiveQuizNextRequest(BaseModel):
+    path_id: Optional[str] = None
+    target_count: int = Field(default=6, ge=1, le=20)
+
+
+class AdaptiveQuizNextResponse(BaseModel):
+    lesson_id: str
+    next_action: dict = Field(default_factory=dict)
+    generation_request: dict = Field(default_factory=dict)
+    generated: dict = Field(default_factory=dict)
 
 
 class LessonStudyTimeUpdate(BaseModel):
@@ -698,3 +748,142 @@ class GenerateAssessmentQuestionsRequest(BaseModel):
 class GenerateAssessmentQuestionsResponse(BaseModel):
     success: bool
     questions: List[AssessmentQuestionItem]
+
+
+# =========================
+# ADAPTIVE LEARNING LOOP
+# =========================
+class LearningEventTypeEnum(str, Enum):
+    resource_opened = "resource_opened"
+    resource_completed = "resource_completed"
+    resource_abandoned = "resource_abandoned"
+    resource_feedback_submitted = "resource_feedback_submitted"
+    quiz_started = "quiz_started"
+    quiz_submitted = "quiz_submitted"
+    lesson_started = "lesson_started"
+    lesson_completed = "lesson_completed"
+    lesson_retried = "lesson_retried"
+    recommendation_clicked = "recommendation_clicked"
+
+
+class AdaptiveActionEnum(str, Enum):
+    continue_resource = "continue_resource"
+    resume_unfinished = "resume_unfinished"
+    review_summary = "review_summary"
+    practice_quiz = "practice_quiz"
+    retry_with_easier_resource = "retry_with_easier_resource"
+    study_worked_example = "study_worked_example"
+    study_misconception_fix = "study_misconception_fix"
+    reinforce_weak_concept = "reinforce_weak_concept"
+    move_to_next_lesson = "move_to_next_lesson"
+    return_to_prerequisite = "return_to_prerequisite"
+    switch_format_to_video = "switch_format_to_video"
+    switch_format_to_text = "switch_format_to_text"
+    quick_review_session = "quick_review_session"
+
+
+class AdaptivePriorityEnum(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+class AdaptiveRiskLevelEnum(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+class AdaptiveRecommendationTypeEnum(str, Enum):
+    resource = "resource"
+    chunk = "chunk"
+    lesson = "lesson"
+
+
+class LearningEventIngestRequest(BaseModel):
+    event_type: LearningEventTypeEnum
+    resource_id: Optional[str] = None
+    lesson_id: Optional[str] = None
+    path_id: Optional[str] = None
+    concept_ids: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class LearningEventResponse(BaseModel):
+    event_id: str
+    user_id: str
+    event_type: LearningEventTypeEnum
+    resource_id: Optional[str] = None
+    lesson_id: Optional[str] = None
+    path_id: Optional[str] = None
+    concept_ids: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class LearnerStateSnapshotResponse(BaseModel):
+    user_id: str
+    snapshot_time: datetime
+    mastery_by_concept: Dict[str, float] = Field(default_factory=dict)
+    confidence_by_concept: Dict[str, float] = Field(default_factory=dict)
+    recent_active_days: int = 0
+    avg_session_duration: float = 0.0
+    unfinished_resources: int = 0
+    quiz_fail_streak: int = 0
+    retry_count: int = 0
+    learning_velocity: float = 0.0
+    preferred_time_window: str = "evening"
+    current_focus_concepts: List[str] = Field(default_factory=list)
+    frustration_score: float = 0.0
+    recovery_need_flag: bool = False
+    risk_level: AdaptiveRiskLevelEnum = AdaptiveRiskLevelEnum.low
+    last_event_type: Optional[str] = None
+    last_recommended_action: Optional[str] = None
+
+
+class AdaptiveNextActionResponse(BaseModel):
+    user_id: str
+    next_best_action: AdaptiveActionEnum
+    reason: str
+    priority: AdaptivePriorityEnum
+    recommended_mode: Literal[
+        "continue_learning",
+        "reinforce_weaknesses",
+        "learn_new",
+        "quick_review",
+    ]
+    target_concepts: List[str] = Field(default_factory=list)
+    lesson_id: Optional[str] = None
+    resource_id: Optional[str] = None
+    estimated_total_time: Optional[int] = None
+
+
+class AdaptiveRecommendationResponse(BaseModel):
+    user_id: str
+    action: AdaptiveActionEnum
+    recommendation_type: AdaptiveRecommendationTypeEnum
+    recommendation_mode: Optional[
+        Literal[
+            "continue_learning",
+            "reinforce_weaknesses",
+            "learn_new",
+            "quick_review",
+        ]
+    ] = None
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+    reason: str
+    target_concepts: List[str] = Field(default_factory=list)
+    estimated_total_time: int = 0
+    lesson_id: Optional[str] = None
+    resource_id: Optional[str] = None
+
+
+class AdaptiveRecomputeRequest(BaseModel):
+    user_id: Optional[str] = None
+    event_id: Optional[str] = None
+
+
+class AdaptiveRecomputeResponse(BaseModel):
+    user_id: str
+    snapshot: LearnerStateSnapshotResponse
+    next_action: AdaptiveNextActionResponse

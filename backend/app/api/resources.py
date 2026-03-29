@@ -19,7 +19,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 
-from backend.app.api.auth import get_current_user
+from backend.app.api.auth import get_current_user, require_admin_user
 from backend.app.api.schemas import (
     BatchResourceIngestionResponse,
     IngestionJobStatusResponse,
@@ -59,6 +59,7 @@ def get_resources(
     source: Optional[str] = Query(None),
     concept_id: Optional[int] = Query(None, ge=1),
     resource_type: Optional[ResourceTypeEnum] = Query(None, alias="type"),
+    current_user=Depends(get_current_user),
 ):
     """Return top-level resources only; chunk documents live in `resource_chunks`."""
     try:
@@ -70,6 +71,7 @@ def get_resources(
             source=source,
             concept_id=concept_id,
             resource_type=resource_type.value if resource_type else None,
+            user_id=str(current_user.get("_id")),
         )
     except Exception as exc:
         logger.exception("Failed to list resources: %s", exc)
@@ -87,7 +89,7 @@ def get_resources(
 def add_resource(
     resource: ResourceCreate,
     background_tasks: BackgroundTasks,
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_admin_user),
 ):
     """Submit text/manual resource into background ingestion pipeline."""
     user_id = current_user.get("user_id") or current_user.get("_id")
@@ -114,7 +116,7 @@ def add_resource(
 def import_learning_resources(
     payload: ResourceImportRequest,
     background_tasks: BackgroundTasks,
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_admin_user),
 ):
     """Submit multiple manual resources; each item becomes its own ingestion job."""
     user_id = current_user.get("user_id") or current_user.get("_id")
@@ -139,6 +141,7 @@ def search_resources(
     size: int = Query(10, ge=1, le=100),
     topic: Optional[str] = Query(None),
     level: Optional[str] = Query(None),
+    current_user=Depends(get_current_user),
 ):
     """Search via chunk embeddings and return parent resource hits."""
     try:
@@ -147,6 +150,7 @@ def search_resources(
             page=page,
             size=size,
             filters={"topic": topic, "level": level},
+            user_id=str(current_user.get("_id")),
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -169,7 +173,7 @@ def import_pdf_resource(
     topic: str = Form(..., min_length=1, max_length=100),
     level: LevelEnum = Form(LevelEnum.beginner),
     concept_id: Optional[int] = Form(None),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_admin_user),
 ):
     """Upload a PDF and process it asynchronously."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
@@ -206,7 +210,7 @@ def import_pdf_resource(
 def import_youtube_resource(
     request: YouTubeImportRequest,
     background_tasks: BackgroundTasks,
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_admin_user),
 ):
     """Queue a YouTube transcript or summary ingestion job."""
     user_id = current_user.get("user_id") or current_user.get("_id")
@@ -235,8 +239,11 @@ def import_youtube_resource(
     response_model=IngestionJobStatusResponse,
     summary="Get ingestion job status",
 )
-def get_ingestion_job_status(job_id: str):
+def get_ingestion_job_status(
+    job_id: str, current_user=Depends(require_admin_user)
+):
     """Check background ingestion progress."""
+    del current_user
     try:
         return get_ingestion_job_status_service(job_id)
     except ValueError as exc:
@@ -309,7 +316,7 @@ def get_resource_detail(resource_id: str):
     status_code=status.HTTP_200_OK,
     summary="Delete a resource and its derived chunks",
 )
-def delete_resource(resource_id: str, current_user=Depends(get_current_user)):
+def delete_resource(resource_id: str, current_user=Depends(require_admin_user)):
     """Delete a top-level resource plus generated chunk documents."""
     del current_user
     try:

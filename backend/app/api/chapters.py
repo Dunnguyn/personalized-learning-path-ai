@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from backend.app.api.auth import get_current_user
+from backend.app.api.auth import get_current_user, require_admin_user
 from backend.app.api.schemas import ChapterCreate, ChapterListResponse, ChapterResponse
 from backend.app.services.lesson_service import lesson_structure_service
 
@@ -68,7 +68,7 @@ def get_chapter(chapter_id: str, current_user=Depends(get_current_user)):
 
 
 @router.post("/", response_model=ChapterResponse, status_code=status.HTTP_201_CREATED)
-def create_chapter(payload: ChapterCreate, current_user=Depends(get_current_user)):
+def create_chapter(payload: ChapterCreate, current_user=Depends(require_admin_user)):
     """Create a chapter under a subject."""
     del current_user
     try:

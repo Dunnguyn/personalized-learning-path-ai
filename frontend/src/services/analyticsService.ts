@@ -1,10 +1,8 @@
 import { apiClient } from '../utils/apiClient';
 import type {
-  AdminOverviewMetrics,
-  AdminRecommendationMetrics,
-  AdminRetentionMetrics,
+  AdminAverageStudyHoursMetrics,
+  AdminDashboardMetrics,
   LearnerAnalyticsDashboard,
-  SystemPerformanceMetrics,
 } from '../types/analytics';
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -19,20 +17,14 @@ export const analyticsService = {
     )) as LearnerAnalyticsDashboard;
   },
 
-  async getAdminOverview(): Promise<AdminOverviewMetrics> {
-    return (await apiClient.get('/analytics/admin/overview')) as AdminOverviewMetrics;
+  async getAdminDashboard(): Promise<AdminDashboardMetrics> {
+    return (await apiClient.get('/analytics/admin/dashboard')) as AdminDashboardMetrics;
   },
 
-  async getAdminRetention(): Promise<AdminRetentionMetrics> {
-    return (await apiClient.get('/analytics/admin/retention')) as AdminRetentionMetrics;
-  },
-
-  async getAdminRecommendation(): Promise<AdminRecommendationMetrics> {
-    return (await apiClient.get('/analytics/admin/recommendation')) as AdminRecommendationMetrics;
-  },
-
-  async getSystemPerformance(): Promise<SystemPerformanceMetrics> {
-    return (await apiClient.get('/analytics/system/performance')) as SystemPerformanceMetrics;
+  async getAdminAverageStudyHours(): Promise<AdminAverageStudyHoursMetrics> {
+    return (await apiClient.get(
+      '/analytics/admin/average-study-hours',
+    )) as AdminAverageStudyHoursMetrics;
   },
 
   formatPercent(value: number): string {

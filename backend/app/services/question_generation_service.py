@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
 from typing import Any, Dict, List
 import unicodedata
 
@@ -17,16 +19,55 @@ from backend.app.repositories import (
 )
 from backend.app.services.lesson_service import lesson_structure_service
 from backend.app.services.lesson_chunk_service import lesson_chunk_service
-from backend.app.services.prompt_builder import (
-    LessonQuestionPromptContext,
-    LessonScopedPromptBuilder,
-)
+from backend.app.services.prompt_builder import LessonScopedPromptBuilder
+from backend.app.services.question_fallback_service import QuestionFallbackService
+from backend.app.services.question_llm_service import QuestionLLMService
+from backend.app.services.question_template_service import QuestionTemplateService
+from backend.app.services.question_validation_service import QuestionValidationService
 from backend.app.services.question_validator import (
     LessonScopedQuestionValidator,
     ValidatedLessonQuestion,
 )
 
 logger = logging.getLogger(__name__)
+
+LOW_COUNT_REGEN_RETRY_ENABLED = (
+    os.getenv("LESSON_QUESTION_LOW_COUNT_RETRY_ENABLED", "true").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+LOW_COUNT_REGEN_RETRY_DELAY_SECONDS = float(
+    os.getenv("LESSON_QUESTION_LOW_COUNT_RETRY_DELAY_SECONDS", "1.5")
+)
+PREGEN_CHUNK_EXPANSION_ENABLED = (
+    os.getenv("LESSON_QUESTION_PREGEN_CHUNK_EXPANSION_ENABLED", "true")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
+)
+PREGEN_MIN_RECOMMENDED_CHUNKS = int(
+    os.getenv("LESSON_QUESTION_PREGEN_MIN_RECOMMENDED_CHUNKS", "12")
+)
+QUESTION_GENERATION_REFRESH_MAX_CHUNKS = int(
+    os.getenv("LESSON_QUESTION_REFRESH_MAX_CHUNKS", "16")
+)
+LOW_COUNT_FORCE_FILL_ENABLED = (
+    os.getenv("LESSON_QUESTION_LOW_COUNT_FORCE_FILL_ENABLED", "true")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
+)
+REINFORCEMENT_TRUE_FALSE_RATIO = float(
+    os.getenv("LESSON_QUESTION_REINFORCEMENT_TRUE_FALSE_RATIO", "0.35")
+)
+REINFORCEMENT_STATEMENT_MAX_LEN = int(
+    os.getenv("LESSON_QUESTION_REINFORCEMENT_STATEMENT_MAX_LEN", "170")
+)
+QUESTION_DIVERSITY_MAX_PER_CHUNK = int(
+    os.getenv("LESSON_QUESTION_DIVERSITY_MAX_PER_CHUNK", "2")
+)
+QUESTION_CONFIDENCE_BASELINE = float(
+    os.getenv("LESSON_QUESTION_CONFIDENCE_BASELINE", "0.2")
+)
 
 
 class LessonScopedQuestionGenerationService:
@@ -137,6 +178,17 @@ class LessonScopedQuestionGenerationService:
         "class",
         "boolean",
     ]
+    _WEAK_DISTRACTOR_TERMS = {
+        "module",
+        "class",
+        "value",
+        "values",
+        "item",
+        "items",
+        "type",
+        "types",
+        "data",
+    }
     _FALLBACK_STOP_WORDS = {
         "about",
         "after",
@@ -177,6 +229,13 @@ class LessonScopedQuestionGenerationService:
         "used",
         "maintained",
         "github",
+        "probably",
+        "production",
+        "fundamental",
+        "includes",
+        "include",
+        "library",
+        "libraries",
     }
     _IRRELEVANT_EXCERPT_PATTERNS = (
         r"\bcontributor list\b",
@@ -188,6 +247,9 @@ class LessonScopedQuestionGenerationService:
     )
     _CATEGORY_POOLS = {
         "data_structure": [
+            "ndarray",
+            "array",
+            "numpy",
             "list",
             "dict",
             "tuple",
@@ -198,6 +260,16 @@ class LessonScopedQuestionGenerationService:
             "items",
         ],
         "method": [
+            "reshape",
+            "astype",
+            "sum",
+            "mean",
+            "index",
+            "slice",
+            "slicing",
+            "iterator",
+            "generator",
+            "comprehension",
             "append",
             "sort",
             "items",
@@ -227,6 +299,9 @@ class LessonScopedQuestionGenerationService:
             "assignment",
         ],
         "general": [
+            "numpy",
+            "ndarray",
+            "array",
             "variable",
             "value",
             "expression",
@@ -248,6 +323,41 @@ class LessonScopedQuestionGenerationService:
         "value",
         "values",
     }
+    _EXPLICIT_DOMAIN_TERMS = {
+        "numpy",
+        "ndarray",
+        "array",
+        "arrays",
+        "matrix",
+        "vector",
+        "list",
+        "dict",
+        "dictionary",
+        "tuple",
+        "set",
+        "shape",
+        "dtype",
+        "ndim",
+        "size",
+        "index",
+        "slice",
+        "slicing",
+        "iterator",
+        "iterators",
+        "generator",
+        "generators",
+        "comprehension",
+        "comprehensions",
+        "function",
+        "operator",
+        "boolean",
+        "integer",
+        "float",
+        "string",
+        "method",
+        "loop",
+        "conditional",
+    }
 
     def __init__(self) -> None:
         self.lesson_structure_service = lesson_structure_service
@@ -260,6 +370,14 @@ class LessonScopedQuestionGenerationService:
         self.prompt_builder = LessonScopedPromptBuilder()
         self.validator = LessonScopedQuestionValidator()
         self.llm_client = LessonQuestionLLMClient()
+        self.question_template_service = QuestionTemplateService()
+        self.question_fallback_service = QuestionFallbackService()
+        self.question_validation_service = QuestionValidationService(self.validator)
+        self.question_llm_service = QuestionLLMService(
+            llm_client=self.llm_client,
+            prompt_builder=self.prompt_builder,
+            validator=self.validator,
+        )
 
         self.recommendation_repository.ensure_indexes()
         self.resource_repository.ensure_indexes()
@@ -273,9 +391,25 @@ class LessonScopedQuestionGenerationService:
         question_types: List[str],
         difficulty: str,
         bloom_levels: List[str],
+        allow_llm: bool,
+        mastery: float | None,
+        success_rate: float | None,
         overwrite: bool,
         metadata: Dict[str, Any],
     ) -> Dict[str, Any]:
+        source_stats = {
+            "template": 0,
+            "llm": 0,
+            "local_fallback": 0,
+            "existing_reuse": 0,
+        }
+        filtered_count = 0
+        effective_difficulty = self._resolve_adaptive_difficulty(
+            requested_difficulty=difficulty,
+            mastery=mastery,
+            success_rate=success_rate,
+            metadata=metadata,
+        )
         context = self.lesson_structure_service.get_lesson_context(lesson_id)
         recommendation = self._resolve_recommendation(lesson_id, context)
         existing_questions = self.question_repository.list_by_lesson(lesson_id)
@@ -286,43 +420,107 @@ class LessonScopedQuestionGenerationService:
             context=context,
             recommendation=recommendation,
         )
-        if not overwrite and existing_count > 0:
-            self._log_generation_outcome(
+
+        if (
+            PREGEN_CHUNK_EXPANSION_ENABLED
+            and len(chunk_ids) < PREGEN_MIN_RECOMMENDED_CHUNKS
+        ):
+            expanded = self._refresh_recommendation(
                 lesson_id=lesson_id,
-                status="reused_existing",
-                generation_mode="reused_existing",
-                question_count=existing_count,
-                chunk_count=len(chunk_ids),
-                covered_chunk_count=0,
-                llm_error=self.llm_client.get_last_error(),
-                message=f"Reusing existing question bank with {existing_count} questions.",
+                metadata={
+                    **metadata,
+                    "trigger": "question_generation_pregen_expand",
+                    "previous_chunk_count": len(chunk_ids),
+                },
+                max_chunks=QUESTION_GENERATION_REFRESH_MAX_CHUNKS,
             )
-            return {
-                "lesson_id": lesson_id,
-                "status": "reused_existing",
-                "generated_count": 0,
-                "question_ids": [],
-                "chunks_used": chunk_ids,
-                "insufficient_data": False,
-                "reused_existing": True,
-                "existing_count": existing_count,
-                "message": f"Đang dùng lại {existing_count} câu hỏi đã tạo trước đó cho bài học này.",
-            }
+            if expanded:
+                expanded_recommendation, expanded_chunk_ids, expanded_chunks = (
+                    self._load_generation_scope(
+                        lesson_id=lesson_id,
+                        context=context,
+                        recommendation=expanded,
+                    )
+                )
+                if len(expanded_chunk_ids) > len(chunk_ids):
+                    previous_chunk_count = len(chunk_ids)
+                    recommendation = expanded_recommendation
+                    chunk_ids = expanded_chunk_ids
+                    chunks = expanded_chunks
+                    logger.info(
+                        "lesson_question_generation_pregen_expand | lesson_id=%s | chunks_before=%s | chunks_after=%s",
+                        lesson_id,
+                        previous_chunk_count,
+                        len(chunk_ids),
+                    )
+
         context = {
             **context,
             "recommendation_scores": recommendation.get("metadata", {}).get(
                 "scores", {}
             ),
         }
-        validation = self._run_generation(
-            context=context,
-            chunks=chunks,
-            chunk_ids=chunk_ids,
-            target_count=target_count,
-            question_types=question_types,
-            difficulty=difficulty,
-            bloom_levels=bloom_levels,
-        )
+        chunk_text_by_id = {
+            str(chunk["_id"]): str(chunk.get("content") or "") for chunk in chunks
+        }
+        seeded_questions: List[ValidatedLessonQuestion] = []
+        remaining_target = target_count
+        if allow_llm:
+            validation = self._run_generation(
+                context=context,
+                chunks=chunks,
+                chunk_ids=chunk_ids,
+                target_count=target_count,
+                question_types=question_types,
+                difficulty=effective_difficulty,
+                bloom_levels=bloom_levels,
+            )
+        else:
+            template_validation = self._build_template_validation(
+                lesson_title=str(context["lesson"].get("title") or ""),
+                chunks=chunks,
+                target_count=target_count,
+                question_types=question_types,
+                difficulty=effective_difficulty,
+                bloom_levels=bloom_levels,
+                chunk_ids=chunk_ids,
+                chunk_text_by_id=chunk_text_by_id,
+            )
+            seeded_questions = template_validation.questions[:target_count]
+            source_stats["template"] = len(seeded_questions)
+            filtered_count += template_validation.filtered_count
+
+            remaining_target = max(0, target_count - len(seeded_questions))
+            if remaining_target <= 0:
+                validation = self._build_validation_from_fallback(
+                    questions=[],
+                    message="Template generator reached requested question count.",
+                    status="ok",
+                )
+            else:
+                local_candidates = self.question_fallback_service.build_candidates(
+                    lesson_title=str(context["lesson"].get("title") or ""),
+                    chunks=chunks,
+                    target_count=remaining_target,
+                    question_types=question_types,
+                    difficulty=effective_difficulty,
+                    bloom_levels=bloom_levels,
+                )
+                local_validation = self.question_validation_service.validate_candidates(
+                    candidates=local_candidates,
+                    allowed_chunk_ids=chunk_ids,
+                    chunk_text_by_id=chunk_text_by_id,
+                    default_difficulty=effective_difficulty,
+                    default_bloom_levels=bloom_levels,
+                )
+                filtered_count += local_validation.filtered_count
+                validation = self._build_validation_from_fallback(
+                    questions=local_validation.questions,
+                    message="LLM disabled; used deterministic local fallback only.",
+                    status="ok"
+                    if local_validation.questions
+                    else "insufficient_context",
+                )
 
         if validation.status == "insufficient_context":
             refreshed = self._refresh_recommendation(
@@ -341,15 +539,45 @@ class LessonScopedQuestionGenerationService:
                         "scores", {}
                     ),
                 }
-                validation = self._run_generation(
-                    context=context,
-                    chunks=chunks,
-                    chunk_ids=chunk_ids,
-                    target_count=target_count,
-                    question_types=question_types,
-                    difficulty=difficulty,
-                    bloom_levels=bloom_levels,
-                )
+                if allow_llm:
+                    validation = self._run_generation(
+                        context=context,
+                        chunks=chunks,
+                        chunk_ids=chunk_ids,
+                        target_count=remaining_target,
+                        question_types=question_types,
+                        difficulty=effective_difficulty,
+                        bloom_levels=bloom_levels,
+                    )
+                else:
+                    refreshed_chunk_text = {
+                        str(chunk["_id"]): str(chunk.get("content") or "")
+                        for chunk in chunks
+                    }
+                    local_candidates = self.question_fallback_service.build_candidates(
+                        lesson_title=str(context["lesson"].get("title") or ""),
+                        chunks=chunks,
+                        target_count=remaining_target,
+                        question_types=question_types,
+                        difficulty=effective_difficulty,
+                        bloom_levels=bloom_levels,
+                        retry_attempts=3,
+                    )
+                    local_validation = self.question_validation_service.validate_candidates(
+                        candidates=local_candidates,
+                        allowed_chunk_ids=chunk_ids,
+                        chunk_text_by_id=refreshed_chunk_text,
+                        default_difficulty=effective_difficulty,
+                        default_bloom_levels=bloom_levels,
+                    )
+                    filtered_count += local_validation.filtered_count
+                    validation = self._build_validation_from_fallback(
+                        questions=local_validation.questions,
+                        message="LLM disabled; fallback retried with refreshed chunks.",
+                        status="ok"
+                        if local_validation.questions
+                        else "insufficient_context",
+                    )
 
         if validation is None:
             self._log_generation_outcome(
@@ -362,11 +590,21 @@ class LessonScopedQuestionGenerationService:
                 llm_error=self.llm_client.get_last_error(),
                 message="Question generation returned no valid validation payload.",
             )
-            return self._build_existing_or_insufficient_response(
+            if allow_llm:
+                validation = self._build_validation_from_fallback(
+                    questions=[],
+                    message=self._build_llm_fallback_message(
+                        "KhÃ´ng thá»ƒ nháº­n pháº£n há»“i há»£p lá»‡ tá»« dá»‹ch vá»¥ táº¡o cÃ¢u há»i."
+                    ),
+                )
+            else:
+                return self._build_existing_or_insufficient_response(
                 lesson_id=lesson_id,
                 chunk_ids=chunk_ids,
                 existing_count=existing_count,
                 default_message="Không thể nhận phản hồi hợp lệ từ dịch vụ tạo câu hỏi.",
+                source_stats=source_stats,
+                filtered_count=filtered_count,
             )
         if validation.status == "insufficient_context":
             self._log_generation_outcome(
@@ -379,17 +617,26 @@ class LessonScopedQuestionGenerationService:
                 llm_error=self.llm_client.get_last_error(),
                 message=validation.message,
             )
-            return {
-                "lesson_id": lesson_id,
-                "status": "insufficient_context",
-                "generated_count": 0,
-                "question_ids": [],
-                "chunks_used": chunk_ids,
-                "insufficient_data": True,
-                "reused_existing": False,
-                "existing_count": existing_count,
-                "message": validation.message,
-            }
+            if allow_llm:
+                validation = self._build_validation_from_fallback(
+                    questions=[],
+                    message=self._build_llm_fallback_message(validation.message),
+                )
+            else:
+                return {
+                    "lesson_id": lesson_id,
+                    "status": "insufficient_context",
+                    "generated_count": 0,
+                    "saved_count": 0,
+                    "question_ids": [],
+                    "chunks_used": chunk_ids,
+                    "insufficient_data": True,
+                    "reused_existing": False,
+                    "existing_count": existing_count,
+                    "sources": source_stats,
+                    "filtered_count": filtered_count,
+                    "message": validation.message,
+                }
         if validation.status != "ok":
             refreshed = self._refresh_recommendation(
                 lesson_id=lesson_id,
@@ -410,20 +657,44 @@ class LessonScopedQuestionGenerationService:
                         "scores", {}
                     ),
                 }
-            fallback_questions = self._build_fallback_questions(
-                context=context,
+            fallback_chunk_text = {
+                str(chunk["_id"]): str(chunk.get("content") or "") for chunk in chunks
+            }
+            fallback_candidates = self.question_fallback_service.build_candidates(
+                lesson_title=str(context["lesson"].get("title") or ""),
                 chunks=chunks,
                 target_count=target_count,
                 question_types=question_types,
-                difficulty=difficulty,
+                difficulty=effective_difficulty,
                 bloom_levels=bloom_levels,
+                retry_attempts=3,
             )
+            fallback_validation = self.question_validation_service.validate_candidates(
+                candidates=fallback_candidates,
+                allowed_chunk_ids=chunk_ids,
+                chunk_text_by_id=fallback_chunk_text,
+                default_difficulty=effective_difficulty,
+                default_bloom_levels=bloom_levels,
+            )
+            filtered_count += fallback_validation.filtered_count
+            fallback_questions = fallback_validation.questions
+            if not fallback_questions:
+                fallback_questions = self._build_fallback_questions(
+                    context=context,
+                    chunks=chunks,
+                    target_count=target_count,
+                    question_types=question_types,
+                    difficulty=effective_difficulty,
+                    bloom_levels=bloom_levels,
+                )
             if not fallback_questions:
                 return self._build_existing_or_insufficient_response(
                     lesson_id=lesson_id,
                     chunk_ids=chunk_ids,
                     existing_count=existing_count,
                     default_message="Hệ thống tạm thời chưa tạo được câu hỏi tự động từ nội dung bài học hiện tại.",
+                    source_stats=source_stats,
+                    filtered_count=filtered_count,
                 )
             validation_message = validation.message or "LLM output invalid."
             validation = self._build_validation_from_fallback(
@@ -433,16 +704,126 @@ class LessonScopedQuestionGenerationService:
                 ),
             )
 
+        chunk_text_by_id = {
+            str(chunk["_id"]): str(chunk.get("content") or "") for chunk in chunks
+        }
+        if allow_llm:
+            remaining_target = max(0, target_count - len(validation.questions))
+            if remaining_target > 0:
+                template_validation = self._build_template_validation(
+                    lesson_title=str(context["lesson"].get("title") or ""),
+                    chunks=chunks,
+                    target_count=remaining_target,
+                    question_types=question_types,
+                    difficulty=effective_difficulty,
+                    bloom_levels=bloom_levels,
+                    chunk_ids=chunk_ids,
+                    chunk_text_by_id=chunk_text_by_id,
+                )
+                seeded_questions = template_validation.questions[:remaining_target]
+                source_stats["template"] = len(seeded_questions)
+                filtered_count += template_validation.filtered_count
+
+        merged_validation = self.question_validation_service.merge_deduplicate(
+            question_groups=(
+                [validation.questions, seeded_questions]
+                if allow_llm
+                else [seeded_questions, validation.questions]
+            ),
+            target_count=target_count,
+            max_per_chunk=QUESTION_DIVERSITY_MAX_PER_CHUNK,
+        )
+        filtered_count += merged_validation.filtered_count
+        llm_count = 0
+        for item in merged_validation.questions:
+            mode = str(item.metadata.get("generation_mode") or "").strip().lower()
+            if mode == "template":
+                continue
+            if mode in {"local_fallback", "local_fill"}:
+                source_stats["local_fallback"] += 1
+                continue
+            llm_count += 1
+        source_stats["llm"] = llm_count
+
         finalized_questions, finalized_message = self._finalize_questions(
             context=context,
             chunks=chunks,
-            questions=validation.questions,
+            questions=merged_validation.questions,
             target_count=target_count,
             question_types=question_types,
-            difficulty=difficulty,
+            difficulty=effective_difficulty,
             bloom_levels=bloom_levels,
             base_message=validation.message,
         )
+
+        if 0 < len(finalized_questions) < target_count and existing_questions:
+            existing_fill = self._build_existing_fill_questions(
+                existing_questions=existing_questions,
+                target_count=target_count - len(finalized_questions),
+            )
+            if existing_fill:
+                known_signatures = {
+                    self._question_signature(item)
+                    for item in finalized_questions
+                    if self._question_signature(item)
+                }
+                for candidate in existing_fill:
+                    signature = self._question_signature(candidate)
+                    if not signature or signature in known_signatures:
+                        continue
+                    known_signatures.add(signature)
+                    finalized_questions.append(candidate)
+                    source_stats["existing_reuse"] += 1
+                    if len(finalized_questions) >= target_count:
+                        break
+                if len(finalized_questions) > 0:
+                    finalized_message = (
+                        f"{finalized_message} Hệ thống đã tái sử dụng câu hỏi đã kiểm chứng từ ngân hàng trước đó để bù số lượng còn thiếu."
+                    )
+
+        if (
+            LOW_COUNT_REGEN_RETRY_ENABLED
+            and 0 < len(finalized_questions) < target_count
+            and validation.status == "ok"
+        ):
+            logger.info(
+                "lesson_question_generation_low_count_retry | lesson_id=%s | generated=%s | target=%s | delay=%.2fs",
+                lesson_id,
+                len(finalized_questions),
+                target_count,
+                LOW_COUNT_REGEN_RETRY_DELAY_SECONDS,
+            )
+            time.sleep(max(0.0, LOW_COUNT_REGEN_RETRY_DELAY_SECONDS))
+            retry_validation = self._run_generation(
+                context=context,
+                chunks=chunks,
+                chunk_ids=chunk_ids,
+                target_count=target_count,
+                question_types=question_types,
+                difficulty=effective_difficulty,
+                bloom_levels=bloom_levels,
+            )
+            if retry_validation and retry_validation.status == "ok":
+                retried_questions, retried_message = self._finalize_questions(
+                    context=context,
+                    chunks=chunks,
+                    questions=retry_validation.questions,
+                    target_count=target_count,
+                    question_types=question_types,
+                    difficulty=effective_difficulty,
+                    bloom_levels=bloom_levels,
+                    base_message=retry_validation.message,
+                )
+                if len(retried_questions) > len(finalized_questions):
+                    finalized_questions = retried_questions
+                    finalized_message = retried_message
+                    logger.info(
+                        "lesson_question_generation_low_count_retry_improved | lesson_id=%s | generated=%s | target=%s",
+                        lesson_id,
+                        len(finalized_questions),
+                        target_count,
+                    )
+
         if not finalized_questions:
             self._log_generation_outcome(
                 lesson_id=lesson_id,
@@ -459,9 +840,13 @@ class LessonScopedQuestionGenerationService:
                 chunk_ids=chunk_ids,
                 existing_count=existing_count,
                 default_message="Không đủ dữ liệu phù hợp để tạo bộ câu hỏi chất lượng cho bài học này.",
+                source_stats=source_stats,
+                filtered_count=filtered_count,
             )
 
-        if overwrite:
+        # Always replace existing question bank when a new valid set is generated.
+        # This keeps one authoritative lesson-scoped set and avoids duplicate buildup.
+        if overwrite or existing_count > 0:
             self.question_repository.delete_by_lesson(lesson_id)
 
         chunk_map = {str(chunk["_id"]): chunk for chunk in chunks}
@@ -495,6 +880,17 @@ class LessonScopedQuestionGenerationService:
                     if chunk_id in chunk_map
                 }
             )
+            resolved_concept = str(
+                question.metadata.get("concept_id")
+                or question.metadata.get("question_focus")
+                or (metadata.get("target_concepts", [""])[0] if isinstance(metadata.get("target_concepts"), list) and metadata.get("target_concepts") else "")
+                or "general"
+            ).strip().lower()
+            retry_strategy = str(
+                metadata.get("retry_strategy")
+                or metadata.get("generation_strategy", {}).get("retry_strategy")
+                or "same_question"
+            ).strip()
             documents.append(
                 {
                     "subject_id": context["subject"]["_id"],
@@ -517,6 +913,8 @@ class LessonScopedQuestionGenerationService:
                     "explanation": question.explanation,
                     "difficulty": question.difficulty,
                     "bloom_level": question.bloom_level,
+                    "concept_id": resolved_concept,
+                    "retry_strategy": retry_strategy,
                     "is_ai_generated": question.metadata.get("generation_mode")
                     != "local_fallback",
                     "llm_provider": (
@@ -532,6 +930,18 @@ class LessonScopedQuestionGenerationService:
                     "metadata": {
                         **metadata,
                         **question.metadata,
+                        "generation_source": str(
+                            question.metadata.get("generation_source")
+                            or question.metadata.get("generation_mode")
+                            or "llm"
+                        ),
+                        "tracked_bloom_level": question.bloom_level,
+                        "tracked_difficulty": question.difficulty,
+                        "tracked_confidence_score": float(
+                            question.metadata.get("confidence_score")
+                            or question.metadata.get("quality_score")
+                            or 0.0
+                        ),
                         "lesson_recommendation_id": str(recommendation["_id"]),
                         "allowed_resource_ids": resource_ids,
                         "resolved_resource_ids": question_resource_ids,
@@ -565,11 +975,14 @@ class LessonScopedQuestionGenerationService:
             "lesson_id": lesson_id,
             "status": "ok",
             "generated_count": len(inserted_ids),
+            "saved_count": len(inserted_ids),
             "question_ids": inserted_ids,
             "chunks_used": chunk_ids,
             "insufficient_data": False,
             "reused_existing": False,
             "existing_count": existing_count,
+            "sources": source_stats,
+            "filtered_count": filtered_count,
             "message": finalized_message,
         }
 
@@ -594,9 +1007,21 @@ class LessonScopedQuestionGenerationService:
                     "explanation": question.get("explanation"),
                     "difficulty": question.get("difficulty"),
                     "bloom_level": question.get("bloom_level"),
+                    "concept_id": question.get("concept_id"),
+                    "retry_strategy": question.get("retry_strategy"),
                     "is_ai_generated": bool(question.get("is_ai_generated", True)),
                     "llm_provider": question.get("llm_provider"),
                     "llm_model": question.get("llm_model"),
+                    "generation_source": (
+                        question.get("metadata", {}).get("generation_source")
+                        if isinstance(question.get("metadata"), dict)
+                        else None
+                    ),
+                    "confidence_score": (
+                        question.get("metadata", {}).get("confidence_score")
+                        if isinstance(question.get("metadata"), dict)
+                        else None
+                    ),
                     "metadata": question.get("metadata", {}),
                     "created_at": question.get("created_at"),
                 }
@@ -697,6 +1122,67 @@ class LessonScopedQuestionGenerationService:
                 if len(finalized) >= target_count:
                     break
 
+        if LOW_COUNT_FORCE_FILL_ENABLED and len(finalized) < target_count:
+            remaining = target_count - len(finalized)
+            relaxed_fallback_questions = self._build_fallback_questions(
+                context=context,
+                chunks=chunks,
+                target_count=max(remaining * 3, target_count),
+                question_types=(
+                    question_types
+                    if len(set(question_types or [])) > 1
+                    else ["multiple_choice", "true_false"]
+                ),
+                difficulty=difficulty,
+                bloom_levels=bloom_levels,
+                relaxed_mode=True,
+            )
+            for candidate in relaxed_fallback_questions:
+                signature = self._question_signature(candidate)
+                if not signature or signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                finalized.append(
+                    self._enrich_question_metadata(
+                        question=candidate,
+                        chunk_map=chunk_map,
+                        resource_map=resource_map,
+                        score_map=score_map,
+                        quality_score=self._score_question_quality(
+                            candidate, chunk_map=chunk_map, score_map=score_map
+                        ),
+                    )
+                )
+                if len(finalized) >= target_count:
+                    break
+
+        if len(finalized) < target_count:
+            medium_fill_questions = self._build_reinforcement_questions(
+                context=context,
+                chunks=chunks,
+                target_count=target_count - len(finalized),
+                difficulty=difficulty,
+                bloom_levels=bloom_levels,
+            )
+            for candidate in medium_fill_questions:
+                signature = self._question_signature(candidate)
+                if not signature or signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                finalized.append(
+                    self._enrich_question_metadata(
+                        question=candidate,
+                        chunk_map=chunk_map,
+                        resource_map=resource_map,
+                        score_map=score_map,
+                        quality_score=self._score_question_quality(
+                            candidate, chunk_map=chunk_map, score_map=score_map
+                        ),
+                    )
+                )
+                if len(finalized) >= target_count:
+                    break
+
         if not finalized:
             return [], base_message or "Không thể tạo câu hỏi hợp lệ từ lesson này."
 
@@ -704,7 +1190,7 @@ class LessonScopedQuestionGenerationService:
             {chunk_id for item in finalized for chunk_id in item.chunk_ids}
         )
         used_local_fallback = any(
-            item.metadata.get("generation_mode") == "local_fallback"
+            item.metadata.get("generation_mode") in {"local_fallback", "local_fill"}
             for item in finalized
         )
         average_quality_score = round(
@@ -720,6 +1206,10 @@ class LessonScopedQuestionGenerationService:
             message = f"{message} Điểm chất lượng trung bình: {average_quality_score}."
         if used_local_fallback and "cục bộ" not in message.lower():
             message = f"{message} Hệ thống đã bổ sung thêm câu hỏi cục bộ để tăng độ phủ lesson."
+        if len(finalized) < target_count:
+            message = (
+                f"{message} Hiện tạo được {len(finalized)}/{target_count} câu hỏi từ nội dung đủ tin cậy trong lesson."
+            )
         return finalized, message
 
     def _round_robin_questions_by_chunk_order(
@@ -850,6 +1340,18 @@ class LessonScopedQuestionGenerationService:
             metadata.setdefault("source_score", max(source_scores.values()))
             metadata["source_scores"] = source_scores
         metadata["quality_score"] = round(float(quality_score), 4)
+        metadata["confidence_score"] = self._compute_confidence_score(
+            question=question,
+            quality_score=quality_score,
+            max_chunk_score=max(source_scores.values(), default=0.0),
+        )
+        metadata["generation_source"] = str(
+            metadata.get("generation_source")
+            or metadata.get("generation_mode")
+            or "llm"
+        )
+        metadata["tracked_bloom_level"] = question.bloom_level
+        metadata["tracked_difficulty"] = question.difficulty
         metadata.setdefault(
             "reasoning_note", "Question grounded on recommended lesson chunk(s)."
         )
@@ -955,6 +1457,57 @@ class LessonScopedQuestionGenerationService:
 
         return round(score, 4)
 
+    def _compute_confidence_score(
+        self,
+        *,
+        question: ValidatedLessonQuestion,
+        quality_score: float,
+        max_chunk_score: float,
+    ) -> float:
+        normalized_quality = max(0.0, min(1.0, float(quality_score) / 5.0))
+        normalized_chunk = max(0.0, min(1.0, float(max_chunk_score)))
+        coverage = max(0.0, min(1.0, len(question.chunk_ids) / 2.0))
+        distractor_quality = 0.0
+        if question.question_type == "multiple_choice":
+            unique_choices = {
+                self._normalize_text(item)
+                for item in [question.correct_answer, *question.distractors]
+                if self._normalize_text(item)
+            }
+            distractor_quality = max(0.0, min(1.0, len(unique_choices) / 4.0))
+        elif question.question_type == "short_answer":
+            distractor_quality = 0.7
+        else:
+            distractor_quality = 0.6
+        weighted = (
+            QUESTION_CONFIDENCE_BASELINE
+            + normalized_quality * 0.42
+            + normalized_chunk * 0.24
+            + coverage * 0.18
+            + distractor_quality * 0.16
+        )
+        return round(max(0.0, min(1.0, weighted)), 4)
+
+    @staticmethod
+    def _resolve_adaptive_difficulty(
+        *,
+        requested_difficulty: str,
+        mastery: float | None,
+        success_rate: float | None,
+        metadata: Dict[str, Any],
+    ) -> str:
+        if mastery is None:
+            mastery = metadata.get("mastery") if isinstance(metadata, dict) else None
+        if success_rate is None:
+            success_rate = (
+                metadata.get("success_rate") if isinstance(metadata, dict) else None
+            )
+        return QuestionTemplateService.resolve_difficulty_from_progress(
+            requested_difficulty=requested_difficulty,
+            mastery=mastery,
+            success_rate=success_rate,
+        )
+
     def _extract_question_focus(self, question_text: str) -> str:
         quoted = re.findall(r"'([^']+)'|\"([^\"]+)\"", question_text or "")
         for left, right in quoted:
@@ -982,9 +1535,13 @@ class LessonScopedQuestionGenerationService:
             str(question.metadata.get("generation_mode") or "llm")
             for question in questions
         }
-        if generation_modes == {"local_fallback"}:
+        if generation_modes <= {"local_fallback", "local_fill", "existing_reuse"}:
             return "local_fallback"
-        if "local_fallback" in generation_modes:
+        if (
+            "local_fallback" in generation_modes
+            or "local_fill" in generation_modes
+            or "existing_reuse" in generation_modes
+        ):
             return "hybrid"
         return "llm"
 
@@ -1115,65 +1672,27 @@ class LessonScopedQuestionGenerationService:
             }
             for chunk in chunks
         ]
-        chunk_text_by_id = {item["chunk_id"]: item["content"] for item in chunk_payload}
-        prompt = self.prompt_builder.build(
-            context=LessonQuestionPromptContext(
-                subject_title=str(context["subject"].get("title") or ""),
-                chapter_title=str(context["chapter"].get("title") or ""),
-                lesson_id=str(context["lesson"]["_id"]),
-                lesson_title=str(context["lesson"].get("title") or ""),
-                lesson_summary=str(context["lesson"].get("summary") or ""),
-                target_count=target_count,
-                question_types=question_types,
-                difficulty=difficulty,
-                bloom_levels=bloom_levels,
-            ),
-            chunks=chunk_payload,
+        return self.question_llm_service.generate(
+            context=context,
+            chunk_payload=chunk_payload,
+            allowed_chunk_ids=chunk_ids,
+            target_count=target_count,
+            question_types=question_types,
+            difficulty=difficulty,
+            bloom_levels=bloom_levels,
         )
 
-        validation = None
-        retry_prompt = None
-        for attempt in range(3):
-            raw_text = self.llm_client.generate(retry_prompt or prompt)
-            validation = self.validator.parse_and_validate(
-                raw_text=raw_text,
-                allowed_chunk_ids=chunk_ids,
-                chunk_text_by_id=chunk_text_by_id,
-                target_count=target_count,
-                default_difficulty=difficulty,
-                default_bloom_levels=bloom_levels,
-            )
-            if validation.status in {"ok", "insufficient_context"}:
-                break
-            logger.warning(
-                "lesson_question_generation_validation_retry | lesson_id=%s | attempt=%s | errors=%s | raw_preview=%s",
-                str(context["lesson"]["_id"]),
-                attempt + 1,
-                validation.errors,
-                (raw_text or "")[:400].replace("\n", " "),
-            )
-            repair_hint = (
-                "Retry and return only valid JSON following the required schema. "
-                "Normalize question_type to one of: multiple_choice, short_answer, true_false. "
-                "If source_excerpt is missing, copy a short direct excerpt from the cited chunk. "
-                "If difficulty or bloom_level is missing, fill them from the requested lesson context. "
-                "For true_false, use correct_answer exactly True or False."
-            )
-            retry_prompt = (
-                f"{prompt}\n\nPrevious output was invalid for these reasons: {validation.errors}. "
-                f"{repair_hint}"
-            )
-            if attempt == 1:
-                retry_prompt += "\nKeep the wording concise, avoid duplicate questions, and ensure every question has chunk_ids and metadata.source_excerpt."
-        return validation
-
     def _refresh_recommendation(
-        self, *, lesson_id: str, metadata: Dict[str, Any]
+        self,
+        *,
+        lesson_id: str,
+        metadata: Dict[str, Any],
+        max_chunks: int | None = None,
     ) -> Dict[str, Any] | None:
         try:
             refreshed = self.lesson_chunk_service.recommend_chunks(
                 lesson_id=lesson_id,
-                max_chunks=8,
+                max_chunks=max_chunks or QUESTION_GENERATION_REFRESH_MAX_CHUNKS,
                 selection_strategy="local_semantic_lexical_refresh_v2",
                 enable_diversity_reranking=True,
                 diversity_lambda=None,
@@ -1203,6 +1722,7 @@ class LessonScopedQuestionGenerationService:
         question_types: List[str],
         difficulty: str,
         bloom_levels: List[str],
+        relaxed_mode: bool = False,
     ) -> List[ValidatedLessonQuestion]:
         lesson_title = str(context["lesson"].get("title") or "this lesson").strip()
         keyword_profile = self._build_keyword_profile(context)
@@ -1242,7 +1762,7 @@ class LessonScopedQuestionGenerationService:
                     chunk_candidates.append((0.0, chunk, excerpt))
 
         questions: List[ValidatedLessonQuestion] = []
-        for index, (_, chunk, excerpt) in enumerate(chunk_candidates):
+        for index, (excerpt_score, chunk, excerpt) in enumerate(chunk_candidates):
             if len(questions) >= target_count:
                 break
             question_type = selected_types[index % len(selected_types)]
@@ -1253,8 +1773,11 @@ class LessonScopedQuestionGenerationService:
                 excerpt=excerpt,
                 strict_keywords=strict_keywords,
                 broad_keywords=broad_keywords,
+                relaxed_mode=relaxed_mode,
             )
             if not question:
+                continue
+            if not relaxed_mode and float(excerpt_score) < 1.0:
                 continue
             questions.append(
                 ValidatedLessonQuestion(
@@ -1262,17 +1785,171 @@ class LessonScopedQuestionGenerationService:
                     question=question["question"],
                     correct_answer=question["correct_answer"],
                     distractors=question["distractors"],
-                    explanation=f"Câu hỏi được tạo trực tiếp từ đoạn trích của bài học '{lesson_title}'.",
+                    explanation=question.get("explanation")
+                    or f"Câu hỏi được tạo trực tiếp từ đoạn trích của bài học '{lesson_title}'.",
                     difficulty=difficulty,
                     bloom_level=bloom_level,
                     chunk_ids=[str(chunk["_id"])],
                     metadata={
                         "source_excerpt": excerpt,
+                        "question_focus": question.get("focus_term") or "",
+                        "fallback_excerpt_score": round(float(excerpt_score), 4),
                         "reasoning_note": "Generated by deterministic local fallback from recommended chunk.",
                         "generation_mode": "local_fallback",
                     },
                 )
             )
+        return questions
+
+    def _build_reinforcement_questions(
+        self,
+        *,
+        context: Dict[str, Any],
+        chunks: List[Dict[str, Any]],
+        target_count: int,
+        difficulty: str,
+        bloom_levels: List[str],
+    ) -> List[ValidatedLessonQuestion]:
+        if target_count <= 0:
+            return []
+
+        lesson_title = str(context["lesson"].get("title") or "this lesson").strip()
+        keyword_profile = self._build_keyword_profile(context)
+        strict_keywords = keyword_profile["strict"]
+        broad_keywords = keyword_profile["broad"]
+        selected_bloom_levels = bloom_levels or ["understand"]
+
+        chunk_candidates = []
+        for chunk in chunks:
+            excerpt = self._select_excerpt(
+                content=str(chunk.get("content") or ""),
+                strict_keywords=strict_keywords,
+                broad_keywords=broad_keywords,
+            )
+            if not excerpt:
+                continue
+            score = self._score_excerpt_for_fallback(
+                excerpt=excerpt,
+                strict_keywords=strict_keywords,
+                broad_keywords=broad_keywords,
+            )
+            if score <= 0:
+                continue
+            chunk_candidates.append((score, chunk, excerpt))
+
+        chunk_candidates.sort(key=lambda item: item[0], reverse=True)
+        questions: List[ValidatedLessonQuestion] = []
+        true_false_budget = max(
+            1,
+            int(round(float(target_count) * max(0.0, min(1.0, REINFORCEMENT_TRUE_FALSE_RATIO)))),
+        )
+        used_true_false = 0
+        focus_usage: Dict[str, int] = {}
+        max_per_focus = 2 if target_count >= 5 else 1
+        for index, (_, chunk, excerpt) in enumerate(chunk_candidates):
+            if len(questions) >= target_count:
+                break
+
+            excerpt_norm = self._normalize_text(excerpt)
+            focus = self._find_focus_term(
+                excerpt=excerpt_norm,
+                strict_keywords=strict_keywords,
+                broad_keywords=broad_keywords,
+            ) or self._find_specific_focus_term(
+                excerpt=excerpt_norm,
+                strict_keywords=strict_keywords,
+                broad_keywords=broad_keywords,
+            )
+            if not focus:
+                continue
+            normalized_focus = self._normalize_term_key(focus)
+            if focus_usage.get(normalized_focus, 0) >= max_per_focus:
+                continue
+
+            question_type = (
+                "true_false"
+                if (index % 3 == 2 and used_true_false < true_false_budget)
+                else "multiple_choice"
+            )
+            bloom_level = selected_bloom_levels[index % len(selected_bloom_levels)]
+
+            if question_type == "multiple_choice":
+                distractors = self._build_distractors(
+                    answer=focus,
+                    excerpt=excerpt_norm,
+                    keywords=strict_keywords or broad_keywords,
+                    category=self._classify_term(focus),
+                    relaxed_mode=False,
+                )
+                if len(distractors) < 3:
+                    distractors = self._build_distractors(
+                        answer=focus,
+                        excerpt=excerpt_norm,
+                        keywords=strict_keywords or broad_keywords,
+                        category=self._classify_term(focus),
+                        relaxed_mode=True,
+                    )
+                if len(distractors) < 3:
+                    continue
+                mc_templates = [
+                    f"Theo đoạn trích của bài '{lesson_title}', thuật ngữ nào được nhắc đến như một trọng tâm nội dung?",
+                    f"Dựa trên đoạn trích của bài '{lesson_title}', khái niệm nào xuất hiện trực tiếp trong nội dung?",
+                    f"Theo nội dung bài '{lesson_title}', đáp án nào khớp nhất với thuật ngữ đã nêu trong đoạn trích?",
+                ]
+                question_text = mc_templates[index % len(mc_templates)]
+                correct_answer = focus
+                distractors = distractors[:3]
+                explanation = (
+                    f"Đoạn trích có nhắc trực tiếp '{focus}', vì vậy đây là đáp án phù hợp nhất trong các lựa chọn."
+                )
+            else:
+                statement = self._clean_true_false_statement(
+                    self._summarize_excerpt(excerpt=excerpt, focus_term=focus)
+                )
+                if (
+                    len(statement) < 20
+                    or not re.match(r"^[A-Za-z].{18,}$", statement)
+                    or statement.startswith("]")
+                    or "range(" in statement
+                    or "#" in statement
+                    or len(statement) > REINFORCEMENT_STATEMENT_MAX_LEN
+                    or statement.count("(") >= 2
+                    or statement.count("[") >= 2
+                    or statement.count("{") >= 1
+                ):
+                    continue
+                tf_templates = [
+                    f"Phát biểu sau là đúng hay sai theo đoạn trích của bài '{lesson_title}'? \"{statement}\"",
+                    f"Theo nội dung bài '{lesson_title}', mệnh đề sau đúng hay sai? \"{statement}\"",
+                ]
+                question_text = tf_templates[index % len(tf_templates)]
+                correct_answer = "True"
+                distractors = ["False"]
+                explanation = (
+                    "Phát biểu được giữ từ nội dung chunk đã chọn, nên được xem là đúng theo ngữ cảnh bài học."
+                )
+                used_true_false += 1
+
+            questions.append(
+                ValidatedLessonQuestion(
+                    question_type=question_type,
+                    question=question_text,
+                    correct_answer=correct_answer,
+                    distractors=distractors,
+                    explanation=explanation,
+                    difficulty=difficulty,
+                    bloom_level=bloom_level,
+                    chunk_ids=[str(chunk["_id"])],
+                    metadata={
+                        "source_excerpt": excerpt,
+                        "question_focus": focus,
+                        "reasoning_note": "Generated by medium-quality reinforcement fill from lesson chunk.",
+                        "generation_mode": "local_fill",
+                    },
+                )
+            )
+            focus_usage[normalized_focus] = focus_usage.get(normalized_focus, 0) + 1
+
         return questions
 
     def _build_validation_from_fallback(
@@ -1293,6 +1970,94 @@ class LessonScopedQuestionGenerationService:
             },
         )()
 
+    def _build_template_validation(
+        self,
+        *,
+        lesson_title: str,
+        chunks: List[Dict[str, Any]],
+        target_count: int,
+        question_types: List[str],
+        difficulty: str,
+        bloom_levels: List[str],
+        chunk_ids: List[str],
+        chunk_text_by_id: Dict[str, str],
+    ):
+        template_candidates = self.question_template_service.build_candidates(
+            lesson_title=lesson_title,
+            chunks=chunks,
+            target_count=target_count,
+            question_types=question_types,
+            difficulty=difficulty,
+            bloom_levels=bloom_levels,
+            max_per_chunk=QUESTION_DIVERSITY_MAX_PER_CHUNK,
+        )
+        return self.question_validation_service.validate_candidates(
+            candidates=template_candidates,
+            allowed_chunk_ids=chunk_ids,
+            chunk_text_by_id=chunk_text_by_id,
+            default_difficulty=difficulty,
+            default_bloom_levels=bloom_levels,
+        )
+
+    def _build_existing_fill_questions(
+        self,
+        *,
+        existing_questions: List[Dict[str, Any]],
+        target_count: int,
+    ) -> List[ValidatedLessonQuestion]:
+        if target_count <= 0:
+            return []
+
+        filled: List[ValidatedLessonQuestion] = []
+        for item in existing_questions:
+            if len(filled) >= target_count:
+                break
+            question_text = str(item.get("question") or "").strip()
+            correct_answer = str(item.get("correct_answer") or "").strip()
+            explanation = str(item.get("explanation") or "").strip()
+            question_type = str(item.get("question_type") or "multiple_choice").strip()
+            difficulty = str(item.get("difficulty") or "beginner").strip()
+            bloom_level = str(item.get("bloom_level") or "understand").strip()
+            chunk_ids = [str(chunk_id) for chunk_id in item.get("chunk_ids", []) if str(chunk_id)]
+            raw_distractors = item.get("distractors") or []
+            distractors = [
+                str(choice).strip()
+                for choice in raw_distractors
+                if str(choice).strip()
+            ]
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+
+            if not question_text or not correct_answer or not explanation or not chunk_ids:
+                continue
+            if question_type not in {"multiple_choice", "short_answer", "true_false"}:
+                continue
+            if question_type == "multiple_choice" and len(distractors) < 2:
+                continue
+            if question_type == "true_false":
+                if correct_answer not in {"True", "False"}:
+                    continue
+                distractors = ["False" if correct_answer == "True" else "True"]
+
+            filled.append(
+                ValidatedLessonQuestion(
+                    question_type=question_type,
+                    question=question_text,
+                    correct_answer=correct_answer,
+                    distractors=distractors[:3],
+                    explanation=explanation,
+                    difficulty=difficulty,
+                    bloom_level=bloom_level,
+                    chunk_ids=chunk_ids,
+                    metadata={
+                        **metadata,
+                        "generation_mode": "existing_reuse",
+                        "reasoning_note": "Reused from existing question bank to maintain minimum target count.",
+                    },
+                )
+            )
+
+        return filled
+
     def _build_existing_or_insufficient_response(
         self,
         *,
@@ -1300,30 +2065,45 @@ class LessonScopedQuestionGenerationService:
         chunk_ids: List[str],
         existing_count: int,
         default_message: str,
+        source_stats: Dict[str, int] | None = None,
+        filtered_count: int = 0,
     ) -> Dict[str, Any]:
+        stats = source_stats or {
+            "template": 0,
+            "llm": 0,
+            "local_fallback": 0,
+            "existing_reuse": 0,
+        }
         if existing_count > 0:
+            stats = {**stats, "existing_reuse": max(stats.get("existing_reuse", 0), existing_count)}
             return {
                 "lesson_id": lesson_id,
                 "status": "reused_existing",
                 "generated_count": 0,
+                "saved_count": 0,
                 "question_ids": [],
                 "chunks_used": chunk_ids,
                 "insufficient_data": False,
                 "reused_existing": True,
                 "existing_count": existing_count,
+                "sources": stats,
+                "filtered_count": filtered_count,
                 "message": self._build_llm_fallback_message(
-                    f"{default_message} Hệ thống đang dùng lại {existing_count} câu hỏi đã tạo trước đó cho bài học này."
+                    f"AI hiện chưa sinh được bộ câu hỏi mới. Hệ thống đang dùng lại {existing_count} câu hỏi đã tạo trước đó cho bài học này."
                 ),
             }
         return {
             "lesson_id": lesson_id,
             "status": "insufficient_context",
             "generated_count": 0,
+            "saved_count": 0,
             "question_ids": [],
             "chunks_used": chunk_ids,
             "insufficient_data": True,
             "reused_existing": False,
             "existing_count": 0,
+            "sources": stats,
+            "filtered_count": filtered_count,
             "message": self._build_llm_fallback_message(default_message),
         }
 
@@ -1415,6 +2195,8 @@ class LessonScopedQuestionGenerationService:
             for token in re.findall(r"\b[a-z][a-z0-9_]{2,}\b", normalized):
                 if token in cls._FALLBACK_STOP_WORDS or token in seen:
                     continue
+                if not cls._is_domain_term(token):
+                    continue
                 seen.add(token)
                 keywords.append(token)
         return keywords
@@ -1427,6 +2209,7 @@ class LessonScopedQuestionGenerationService:
         excerpt: str,
         strict_keywords: List[str],
         broad_keywords: List[str],
+        relaxed_mode: bool = False,
     ) -> Dict[str, Any] | None:
         excerpt_lower = self._normalize_text(excerpt)
         focus_term = self._find_focus_term(
@@ -1434,10 +2217,24 @@ class LessonScopedQuestionGenerationService:
             strict_keywords=strict_keywords,
             broad_keywords=broad_keywords,
         )
+        if focus_term in self._AMBIGUOUS_TERMS:
+            focus_term = self._find_specific_focus_term(
+                excerpt=excerpt_lower,
+                strict_keywords=strict_keywords,
+                broad_keywords=broad_keywords,
+            )
+        if not focus_term and relaxed_mode:
+            focus_term = self._find_specific_focus_term(
+                excerpt=excerpt_lower,
+                strict_keywords=strict_keywords,
+                broad_keywords=broad_keywords,
+            ) or self._first_meaningful_word(excerpt_lower)
         if not focus_term:
             return None
-        if focus_term in self._AMBIGUOUS_TERMS and not self._has_context_anchor(
-            excerpt=excerpt_lower, focus_term=focus_term
+        if (
+            not relaxed_mode
+            and focus_term in self._AMBIGUOUS_TERMS
+            and not self._has_context_anchor(excerpt=excerpt_lower, focus_term=focus_term)
         ):
             return None
         category = self._classify_term(focus_term)
@@ -1447,8 +2244,10 @@ class LessonScopedQuestionGenerationService:
                 return None
             distractors = self._build_distractors(
                 answer=answer,
+                excerpt=excerpt_lower,
                 keywords=strict_keywords or broad_keywords,
                 category=category,
+                relaxed_mode=relaxed_mode,
             )
             if len(distractors) < 3:
                 return None
@@ -1460,44 +2259,155 @@ class LessonScopedQuestionGenerationService:
                 ),
                 "correct_answer": answer,
                 "distractors": distractors[:3],
+                "focus_term": answer,
+                "explanation": (
+                    f"Đoạn trích nêu trực tiếp khái niệm '{answer}', vì vậy đây là đáp án phù hợp nhất."
+                ),
             }
         if question_type == "true_false":
-            statement = self._summarize_excerpt(excerpt=excerpt, focus_term=focus_term)
+            statement = self._clean_true_false_statement(
+                self._summarize_excerpt(excerpt=excerpt, focus_term=focus_term)
+            )
+            if len(statement) < 20:
+                return None
             return {
                 "question": f"Phát biểu sau là đúng hay sai theo đoạn trích của bài '{lesson_title}'? \"{statement}\"",
                 "correct_answer": "True",
                 "distractors": ["False"],
+                "focus_term": focus_term,
+                "explanation": "Phát biểu được giữ nguyên từ đoạn trích nên được xem là đúng theo ngữ cảnh bài học.",
             }
+        short_answer = self._summarize_excerpt(excerpt=excerpt, focus_term=focus_term)
         return {
             "question": self._build_short_answer_prompt(
                 lesson_title=lesson_title,
                 focus_term=focus_term,
             ),
-            "correct_answer": self._summarize_excerpt(
-                excerpt=excerpt, focus_term=focus_term
-            ),
+            "correct_answer": short_answer,
             "distractors": [],
+            "focus_term": focus_term,
+            "explanation": (
+                f"Câu trả lời tóm tắt trực tiếp câu/ý có chứa '{focus_term}' trong đoạn trích."
+            ),
         }
 
     def _build_distractors(
-        self, *, answer: str, keywords: List[str], category: str
+        self,
+        *,
+        answer: str,
+        excerpt: str,
+        keywords: List[str],
+        category: str,
+        relaxed_mode: bool,
     ) -> List[str]:
         normalized_answer = answer.strip().lower()
-        candidates = list(self._CATEGORY_POOLS.get(category, []))
+        answer_category = self._classify_term(normalized_answer)
+        contextual_terms = self._extract_contextual_terms(
+            excerpt=excerpt,
+            keywords=keywords,
+            category=answer_category,
+            limit=12,
+        )
+        candidates = list(contextual_terms)
+        candidates.extend(self._CATEGORY_POOLS.get(answer_category, []))
+        if answer_category != category:
+            candidates.extend(self._CATEGORY_POOLS.get(category, []))
         candidates.extend(
             item for item in keywords if item.strip().lower() != normalized_answer
         )
         candidates.extend(self._FALLBACK_DISTRACTORS)
         unique: List[str] = []
-        seen = {normalized_answer}
+        seen = {normalized_answer, self._normalize_term_key(normalized_answer)}
         for item in candidates:
             cleaned = item.strip()
             key = cleaned.lower()
-            if len(cleaned) < 3 or key in seen or key in self._FALLBACK_STOP_WORDS:
+            stem_key = self._normalize_term_key(key)
+            if len(cleaned) < 3 or key in self._FALLBACK_STOP_WORDS:
+                continue
+            if key in seen or stem_key in seen:
+                continue
+            if not relaxed_mode and key in self._WEAK_DISTRACTOR_TERMS:
+                continue
+            if self._classify_term(cleaned) == answer_category and cleaned.lower() == normalized_answer:
+                continue
+            if not relaxed_mode and self._classify_term(cleaned) == "general":
                 continue
             seen.add(key)
+            seen.add(stem_key)
             unique.append(cleaned)
         return unique
+
+    def _find_specific_focus_term(
+        self,
+        *,
+        excerpt: str,
+        strict_keywords: List[str],
+        broad_keywords: List[str],
+    ) -> str:
+        candidates = self._extract_contextual_terms(
+            excerpt=excerpt,
+            keywords=strict_keywords + broad_keywords,
+            category="general",
+            limit=10,
+        )
+        for token in candidates:
+            if token in self._AMBIGUOUS_TERMS or token in self._WEAK_DISTRACTOR_TERMS:
+                continue
+            if not self._is_domain_term(token):
+                continue
+            return token
+        return ""
+
+    def _extract_contextual_terms(
+        self,
+        *,
+        excerpt: str,
+        keywords: List[str],
+        category: str,
+        limit: int,
+    ) -> List[str]:
+        tokens = re.findall(r"\b[a-z][a-z0-9_]{2,}\b", self._normalize_text(excerpt))
+        scored: List[tuple[float, str]] = []
+        for token in tokens:
+            if token in self._FALLBACK_STOP_WORDS or token in self._WEAK_DISTRACTOR_TERMS:
+                continue
+            token_category = self._classify_term(token)
+            if token_category == "general" and token not in keywords:
+                continue
+            score = 0.0
+            if token_category == category:
+                score += 1.5
+            elif token_category != "general":
+                score += 0.5
+            if token in keywords:
+                score += 0.8
+            if len(token) >= 5:
+                score += 0.2
+            scored.append((score, token))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        results: List[str] = []
+        seen: set[str] = set()
+        for _, token in scored:
+            key = self._normalize_term_key(token)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(token)
+            if len(results) >= limit:
+                break
+        return results
+
+    @staticmethod
+    def _normalize_term_key(value: str) -> str:
+        token = re.sub(r"[^a-z0-9_]+", "", str(value or "").lower())
+        if token.endswith("ies") and len(token) > 4:
+            return token[:-3] + "y"
+        if token.endswith("es") and len(token) > 4:
+            return token[:-2]
+        if token.endswith("s") and len(token) > 3:
+            return token[:-1]
+        return token
 
     @classmethod
     def _first_meaningful_word(cls, text: str) -> str:
@@ -1515,6 +2425,18 @@ class LessonScopedQuestionGenerationService:
         normalized = unicodedata.normalize("NFKD", str(value or ""))
         ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
         return re.sub(r"\s+", " ", ascii_text.lower()).strip()
+
+    @classmethod
+    def _is_domain_term(cls, token: str) -> bool:
+        normalized = cls._normalize_text(token)
+        if not normalized or normalized in cls._FALLBACK_STOP_WORDS:
+            return False
+        if normalized in cls._EXPLICIT_DOMAIN_TERMS:
+            return True
+        category = cls._classify_term(normalized)
+        if category != "general":
+            return True
+        return bool(re.search(r"\b(arr|list|dict|tuple|set|func|oper|type|bool|loop)\w*\b", normalized))
 
     @classmethod
     def _find_focus_term(
@@ -1627,6 +2549,19 @@ class LessonScopedQuestionGenerationService:
     def _classify_term(cls, term: str) -> str:
         normalized = cls._normalize_text(term)
         if normalized in {
+            "numpy",
+            "ndarray",
+            "array",
+            "arrays",
+            "matrix",
+            "vector",
+            "shape",
+            "dtype",
+            "ndim",
+            "size",
+        }:
+            return "data_structure"
+        if normalized in {
             "list",
             "dict",
             "dictionary",
@@ -1646,6 +2581,19 @@ class LessonScopedQuestionGenerationService:
             "open",
             "read",
             "write",
+            "reshape",
+            "astype",
+            "sum",
+            "mean",
+            "index",
+            "slice",
+            "slicing",
+            "iterator",
+            "iterators",
+            "generator",
+            "generators",
+            "comprehension",
+            "comprehensions",
         }:
             return "method"
         if normalized in {"string", "integer", "float", "boolean", "variable", "value"}:
@@ -1684,6 +2632,7 @@ class LessonScopedQuestionGenerationService:
     @staticmethod
     def _summarize_excerpt(*, excerpt: str, focus_term: str) -> str:
         cleaned = re.sub(r"\s+", " ", excerpt or "").strip().strip('"')
+        cleaned = re.sub(r"\s*,\s*", ", ", cleaned)
         sentences = [
             item.strip()
             for item in re.split(r"(?<=[\.\!\?])\s+", cleaned)
@@ -1694,15 +2643,40 @@ class LessonScopedQuestionGenerationService:
                 if focus_term in LessonScopedQuestionGenerationService._normalize_text(
                     sentence
                 ):
-                    return sentence[:220].rstrip(" ,;:") + (
-                        "..." if len(sentence) > 220 else ""
+                    snippet = sentence.split(",", 1)[0].strip()
+                    if len(snippet) < 24:
+                        snippet = sentence[:140].strip()
+                    return snippet[:160].rstrip(" ,;:") + (
+                        "..." if len(snippet) > 160 else ""
                     )
         if sentences:
             sentence = sentences[0]
-            return sentence[:220].rstrip(" ,;:") + (
-                "..." if len(sentence) > 220 else ""
+            snippet = sentence.split(",", 1)[0].strip()
+            if len(snippet) < 24:
+                snippet = sentence[:140].strip()
+            return snippet[:160].rstrip(" ,;:") + (
+                "..." if len(snippet) > 160 else ""
             )
-        return cleaned[:220].rstrip(" ,;:") + ("..." if len(cleaned) > 220 else "")
+        snippet = cleaned.split(",", 1)[0].strip()
+        if len(snippet) < 24:
+            snippet = cleaned[:140].strip()
+        return snippet[:160].rstrip(" ,;:") + ("..." if len(snippet) > 160 else "")
+
+    @staticmethod
+    def _clean_true_false_statement(statement: str) -> str:
+        text = re.sub(r"\s+", " ", str(statement or "")).strip().strip('"')
+        text = text.replace("``", "").replace("''", "")
+        text = text.replace("â", "")
+        # Remove duplicated adjacent words (for example: "NumPy NumPy").
+        text = re.sub(r"\b([A-Za-z]{2,})\s+\1\b", r"\1", text, flags=re.IGNORECASE)
+        text = re.sub(r"\[[^\]]*\]", "", text)
+        text = re.sub(r"\{[^\}]*\}", "", text)
+        text = re.sub(r"\([^\)]*#.*?\)", "", text)
+        text = re.sub(r"\s*:\s*", ": ", text)
+        text = re.sub(r"\s{2,}", " ", text)
+        text = re.sub(r"\s*[:;]\s*$", "", text)
+        text = text.strip(" -")
+        return text
 
 
 lesson_question_generation_service = LessonScopedQuestionGenerationService()

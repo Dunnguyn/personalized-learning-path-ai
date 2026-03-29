@@ -1,9 +1,13 @@
 // Authentication Types
+export type UserRole = 'learner' | 'admin';
+
 export interface User {
   user_id: string;
   email: string;
   name: string;
   level?: string;
+  role?: UserRole;
+  learning_goal?: string;
   created_at?: string;
 }
 
@@ -13,6 +17,7 @@ export interface StoredUser {
   name: string;
   email: string;
   level?: string;
+  role?: UserRole;
   learning_goal?: string;
 }
 
@@ -22,6 +27,7 @@ export interface LoginResponse {
   user_id: string;
   email: string;
   name: string;
+  role: UserRole;
 }
 
 export interface SignupResponse {
@@ -31,6 +37,7 @@ export interface SignupResponse {
     email: string;
     name: string;
     level: string;
+    role: UserRole;
     created_at: string;
   };
 }

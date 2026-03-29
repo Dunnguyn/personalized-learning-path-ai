@@ -23,6 +23,8 @@ const normalizeAuthUser = (user: StoredUser): User | null => {
     name: user.name,
     email: user.email,
     level: user.level || 'beginner',
+    role: user.role || 'learner',
+    learning_goal: user.learning_goal,
   };
 };
 

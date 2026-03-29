@@ -290,9 +290,22 @@ export const normalizeLessonRecommendedChunks = (payload: unknown): LessonRecomm
       !Array.isArray(payloadRecord.metadata)
         ? (payloadRecord.metadata as Record<string, unknown>)
         : {},
+    sequence_metadata:
+      payloadRecord.sequence_metadata &&
+      typeof payloadRecord.sequence_metadata === 'object' &&
+      !Array.isArray(payloadRecord.sequence_metadata)
+        ? (payloadRecord.sequence_metadata as Record<string, unknown>)
+        : {},
     recommended_chunks: Array.isArray(payloadRecord.recommended_chunks)
       ? payloadRecord.recommended_chunks.map((item: unknown) => {
           const chunkRecord = asRecord(item);
+          const scoreBreakdownRaw = asRecord(chunkRecord.score_breakdown);
+          const scoreBreakdown =
+            Object.keys(scoreBreakdownRaw).length > 0
+              ? Object.fromEntries(
+                  Object.entries(scoreBreakdownRaw).map(([key, value]) => [key, Number(value ?? 0)]),
+                )
+              : undefined;
           return {
             chunk_id: String(chunkRecord.chunk_id ?? ''),
             resource_id: String(chunkRecord.resource_id ?? ''),
@@ -311,6 +324,49 @@ export const normalizeLessonRecommendedChunks = (payload: unknown): LessonRecomm
                 : undefined,
             resource_url:
               typeof chunkRecord.resource_url === 'string' ? chunkRecord.resource_url : undefined,
+            instruction_role:
+              typeof chunkRecord.instruction_role === 'string'
+                ? chunkRecord.instruction_role
+                : undefined,
+            difficulty:
+              typeof chunkRecord.difficulty === 'string' ? chunkRecord.difficulty : undefined,
+            covered_objectives: Array.isArray(chunkRecord.covered_objectives)
+              ? chunkRecord.covered_objectives.map((value: unknown) => String(value))
+              : [],
+            covered_concepts: Array.isArray(chunkRecord.covered_concepts)
+              ? chunkRecord.covered_concepts.map((value: unknown) => String(value))
+              : [],
+            estimated_read_time:
+              typeof chunkRecord.estimated_read_time === 'number'
+                ? chunkRecord.estimated_read_time
+                : undefined,
+            sequence_position:
+              typeof chunkRecord.sequence_position === 'number'
+                ? chunkRecord.sequence_position
+                : undefined,
+            questionability_score:
+              typeof chunkRecord.questionability_score === 'number'
+                ? chunkRecord.questionability_score
+                : undefined,
+            fact_density_score:
+              typeof chunkRecord.fact_density_score === 'number'
+                ? chunkRecord.fact_density_score
+                : undefined,
+            concept_explicitness_score:
+              typeof chunkRecord.concept_explicitness_score === 'number'
+                ? chunkRecord.concept_explicitness_score
+                : undefined,
+            example_presence_score:
+              typeof chunkRecord.example_presence_score === 'number'
+                ? chunkRecord.example_presence_score
+                : undefined,
+            score_breakdown: scoreBreakdown,
+            cluster_id:
+              typeof chunkRecord.cluster_id === 'string' ? chunkRecord.cluster_id : null,
+            selected_as_representative:
+              typeof chunkRecord.selected_as_representative === 'boolean'
+                ? chunkRecord.selected_as_representative
+                : undefined,
           };
         })
       : [],

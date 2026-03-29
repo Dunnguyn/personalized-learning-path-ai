@@ -23,6 +23,9 @@ from backend.app.services.event_logging_service import event_logging_service
 from backend.app.services.knowledge_tracing_service import knowledge_tracing_service
 from backend.app.services.feedback_service import feedback_service
 from backend.app.services.path_refinement_service import path_refinement_service
+from backend.app.services.adaptive_learning_loop_service import (
+    adaptive_learning_loop_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +165,22 @@ def update_lesson_progress(
             confidence=payload.confidence,
             questions_answered=questions_answered,
         )
+        if payload.status == "in_progress":
+            adaptive_learning_loop_service.ingest_learning_event(
+                user_id=user_id,
+                event_type="lesson_retried",
+                lesson_id=payload.lesson_id,
+                path_id=payload.path_id,
+                metadata={"status": result.get("status")},
+            )
         if payload.status == "completed" or result.get("status") == "completed":
+            adaptive_learning_loop_service.ingest_learning_event(
+                user_id=user_id,
+                event_type="lesson_completed",
+                lesson_id=payload.lesson_id,
+                path_id=payload.path_id,
+                metadata={"confidence": result.get("last_confidence")},
+            )
             event_logging_service.log_event(
                 "lesson_completed",
                 user_id=user_id,
@@ -196,6 +214,25 @@ def update_lesson_progress(
             total_count = len(questions_answered or [])
             accuracy = (correct_count / total_count) if total_count > 0 else 0.0
             repeated_attempt = total_count > 0 and accuracy < 0.5
+            adaptive_learning_loop_service.ingest_learning_event(
+                user_id=user_id,
+                event_type="quiz_submitted",
+                lesson_id=payload.lesson_id,
+                path_id=payload.path_id,
+                concept_ids=list(
+                    {
+                        str(item.get("concept_id"))
+                        for item in (questions_answered or [])
+                        if item.get("concept_id")
+                    }
+                ),
+                metadata={
+                    "score": round(accuracy, 4),
+                    "attempt_no": total_count,
+                    "question_count": total_count,
+                    "confidence": float(payload.confidence or 0.0),
+                },
+            )
 
             knowledge_tracing_service.update_from_interaction(
                 user_id=user_id,

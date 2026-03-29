@@ -28,17 +28,11 @@ class AnalyticsService:
             "recommendation_and_quiz": recommendation,
         }
 
-    def get_admin_overview(self) -> Dict[str, Any]:
-        return self.repository.admin_overview()
+    def get_admin_dashboard(self) -> Dict[str, Any]:
+        return self.repository.admin_dashboard()
 
-    def get_admin_retention(self) -> Dict[str, Any]:
-        return self.repository.retention_overview()
-
-    def get_admin_recommendation(self) -> Dict[str, Any]:
-        return self.repository.recommendation_overview()
-
-    def get_system_performance(self) -> Dict[str, Any]:
-        return self.repository.system_performance_overview()
+    def get_admin_average_study_hours(self) -> Dict[str, Any]:
+        return self.repository.average_study_hours_overview()
 
 
 db = get_db()

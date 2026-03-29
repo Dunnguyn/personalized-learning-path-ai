@@ -177,6 +177,19 @@ export interface RecommendedChunkItem {
   resource_title?: string;
   resource_source?: string;
   resource_url?: string;
+  instruction_role?: string;
+  difficulty?: string;
+  covered_objectives: string[];
+  covered_concepts: string[];
+  estimated_read_time?: number;
+  sequence_position?: number;
+  questionability_score?: number;
+  fact_density_score?: number;
+  concept_explicitness_score?: number;
+  example_presence_score?: number;
+  score_breakdown?: Record<string, number>;
+  cluster_id?: string | null;
+  selected_as_representative?: boolean;
 }
 
 export interface LessonRecommendedChunks {
@@ -188,6 +201,7 @@ export interface LessonRecommendedChunks {
   resource_ids: string[];
   selection_strategy: string;
   metadata: Record<string, unknown>;
+  sequence_metadata: Record<string, unknown>;
   recommended_chunks: RecommendedChunkItem[];
   created_at: string;
 }

@@ -15,10 +15,17 @@ class AnalyticsRepository:
         self.progress = db.progress
         self.learning_paths = db.learning_paths
         self.exercise_attempts = db.exercise_attempts
+        self.users = db.users
+        self.lesson_study_time = db["lesson_study_time"]
 
     @staticmethod
     def _to_date_key(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _max_timestamp(*timestamps: datetime | None) -> datetime | None:
+        valid_timestamps = [item for item in timestamps if isinstance(item, datetime)]
+        return max(valid_timestamps) if valid_timestamps else None
 
     def learner_completion_stats(self, user_id: str) -> Dict[str, Any]:
         paths = list(self.learning_paths.find({"user_id": user_id}))
@@ -239,41 +246,6 @@ class AnalyticsRepository:
             ),
         }
 
-    def retention_overview(self) -> Dict[str, Any]:
-        now = datetime.now(timezone.utc)
-        day7 = now - timedelta(days=7)
-        day30 = now - timedelta(days=30)
-
-        users_30 = set(
-            self.event_logs.distinct(
-                "user_id", {"timestamp": {"$gte": day30}, "user_id": {"$ne": None}}
-            )
-        )
-        users_7 = set(
-            self.event_logs.distinct(
-                "user_id", {"timestamp": {"$gte": day7}, "user_id": {"$ne": None}}
-            )
-        )
-
-        retained = len(users_30.intersection(users_7))
-        retention = (retained / len(users_30)) if users_30 else 0.0
-        return {
-            "active_users_30d": len(users_30),
-            "active_users_7d": len(users_7),
-            "retention_7_over_30": round(retention, 4),
-        }
-
-    def recommendation_overview(self) -> Dict[str, Any]:
-        shown = self.event_logs.count_documents({"event_type": "recommendation_shown"})
-        clicked = self.event_logs.count_documents(
-            {"event_type": "recommendation_clicked"}
-        )
-        return {
-            "recommendation_shown": shown,
-            "recommendation_clicked": clicked,
-            "ctr": round((clicked / shown) if shown else 0.0, 4),
-        }
-
     def system_performance_overview(self) -> Dict[str, Any]:
         api_events = list(
             self.event_logs.find(
@@ -321,4 +293,83 @@ class AnalyticsRepository:
             "total_api_calls": total_calls,
             "failed_api_calls": failed_calls,
             "ai_request_cost_estimate": round(total_cost, 6),
+        }
+
+    def average_study_hours_overview(self) -> Dict[str, Any]:
+        total_users = self.users.count_documents({})
+        total_study_seconds = 0
+        for item in self.lesson_study_time.find({}, {"seconds_spent": 1}):
+            total_study_seconds += int(item.get("seconds_spent", 0) or 0)
+
+        total_study_hours = total_study_seconds / 3600 if total_study_seconds else 0.0
+        average_study_hours = (
+            total_study_hours / total_users if total_users else 0.0
+        )
+
+        return {
+            "average_study_hours_per_user": round(average_study_hours, 2),
+            "total_study_hours": round(total_study_hours, 2),
+            "user_count": total_users,
+        }
+
+    def admin_dashboard(self) -> Dict[str, Any]:
+        overview = self.admin_overview()
+        performance = self.system_performance_overview()
+        study_hours = self.average_study_hours_overview()
+        lp_total = self.event_logs.count_documents(
+            {"event_type": "learning_path_generated"}
+        )
+        user_event_count = self.event_logs.count_documents({"user_id": {"$ne": None}})
+        has_user_data = bool(
+            study_hours["user_count"] > 0
+            or study_hours["total_study_hours"] > 0
+            or lp_total > 0
+            or user_event_count > 0
+        )
+
+        latest_event = self.event_logs.find_one(
+            {"user_id": {"$ne": None}},
+            {"timestamp": 1},
+            sort=[("timestamp", -1)],
+        )
+        latest_study_time = self.lesson_study_time.find_one(
+            {}, {"updated_at": 1}, sort=[("updated_at", -1)]
+        )
+        latest_user = self.users.find_one(
+            {},
+            {"updated_at": 1, "created_at": 1},
+            sort=[("updated_at", -1), ("created_at", -1)],
+        )
+        updated_at = self._max_timestamp(
+            latest_event.get("timestamp") if latest_event else None,
+            latest_study_time.get("updated_at") if latest_study_time else None,
+            (
+                latest_user.get("updated_at") or latest_user.get("created_at")
+                if latest_user
+                else None
+            ),
+        )
+
+        return {
+            "dau": overview["dau"],
+            "wau": overview["wau"],
+            "learning_path_generation_success_rate": overview[
+                "learning_path_generation_success_rate"
+            ],
+            "average_study_hours_per_user": study_hours[
+                "average_study_hours_per_user"
+            ],
+            "total_study_hours": study_hours["total_study_hours"],
+            "user_count": study_hours["user_count"],
+            "p50_latency_ms": performance["p50_latency_ms"],
+            "p95_latency_ms": performance["p95_latency_ms"],
+            "p99_latency_ms": performance["p99_latency_ms"],
+            "api_error_rate": performance["api_error_rate"],
+            "has_user_data": has_user_data,
+            "no_data_message": (
+                None
+                if has_user_data
+                else "Chưa có dữ liệu người dùng hoặc dữ liệu học tập để hiển thị."
+            ),
+            "updated_at": updated_at,
         }

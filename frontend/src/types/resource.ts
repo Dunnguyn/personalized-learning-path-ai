@@ -23,6 +23,7 @@ export interface Resource {
   };
   score?: number;
   snippet?: string;
+  is_completed?: boolean;
 }
 
 export interface SearchResponse {

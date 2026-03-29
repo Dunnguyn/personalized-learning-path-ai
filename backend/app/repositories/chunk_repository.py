@@ -93,5 +93,7 @@ class ResourceChunkRepository:
                     "embedding": 1,
                     "metadata": 1,
                 },
-            ).limit(limit)
+            )
+            .sort([("created_at", -1), ("_id", -1)])
+            .limit(limit)
         )

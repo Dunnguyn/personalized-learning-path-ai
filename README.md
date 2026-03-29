@@ -1,63 +1,60 @@
 # Personalized Learning Path AI
 
-AI-powered personalized learning platform built with FastAPI + MongoDB + React + RAG.
+AI-powered learning platform for generating personalized study paths, tracking learner progress, and supporting question answering with retrieval-augmented generation (RAG).
 
 ## Overview
 
-This repository includes two main applications:
+This repository contains:
 
-- Backend: FastAPI APIs for auth, learning paths, adaptive progress tracking, resource ingestion, AI tutor, analytics, and evaluation.
-- Frontend: React + TypeScript + Vite dashboard for learning workflow and content interaction.
-
-High-level architecture:
+- `backend/`: FastAPI application for auth, curriculum, learning paths, progress tracking, analytics, recommendations, and AI tutor workflows
+- `frontend/`: React + TypeScript + Vite client for the learner-facing experience
+- MongoDB as the primary application database
+- Chroma as the local vector store used by retrieval features
 
 ```text
 frontend (React + Vite)
     |
-    | HTTP/REST
+    | HTTP / REST
     v
 backend (FastAPI)
     |
-    +-- api
-    +-- services
-    +-- repositories
-    +-- ai_module
-    +-- database
+    +-- app/api
+    +-- app/services
+    +-- app/repositories
+    +-- app/ai_module
+    +-- app/database
     |
-    v
-MongoDB
+    +-- MongoDB
+    `-- Chroma
 ```
+
+## Key Features
+
+- Personalized learning path generation by subject, goal, and level
+- Lesson progress tracking with confidence, study-time, and adaptive quiz support
+- Resource ingestion from text, PDF, and YouTube
+- AI tutor endpoints backed by retrieval and Gemini-based generation
+- Recommendation, knowledge tracing, intervention, analytics, and evaluation modules
 
 ## Tech Stack
 
 Backend:
+
 - FastAPI
 - Uvicorn
-- MongoDB (pymongo)
-- JWT auth (python-jose)
-- Passlib (Argon2)
+- MongoDB (`pymongo`)
+- JWT auth (`python-jose`)
+- Passlib with Argon2
 - Google Gemini API
-- Chroma (persistent vector store)
+- Chroma
 
 Frontend:
+
 - React 18
 - TypeScript
 - Vite
 - Tailwind CSS
 - React Router
-- Axios
-
-## Requirements
-
-Minimum:
-- Python 3.11+ (recommended 3.12)
-- Node.js 18+ (recommended 20+)
-- npm 7+
-- MongoDB local or Atlas
-
-Optional:
-- Docker + Docker Compose
-- Redis
 
 ## Project Structure
 
@@ -71,274 +68,231 @@ Optional:
 |   |   +-- repositories/
 |   |   +-- services/
 |   |   `-- utils/
+|   +-- tests/
 |   +-- uploads/
 |   `-- main.py
 |
 +-- frontend/
+|   +-- public/
 |   +-- src/
 |   |   +-- components/
 |   |   +-- contexts/
 |   |   +-- pages/
 |   |   +-- services/
+|   |   +-- types/
 |   |   `-- utils/
+|   +-- .env.example
 |   `-- package.json
 |
 +-- docker-compose.yml
-+-- Dockerfile
 +-- DOCKER.md
 +-- requirements.txt
 `-- README.md
 ```
 
-## Quick Start (Local)
+## Requirements
 
-If this repository already contains an initialized virtual environment (`.venv`), you can skip recreating it and run `pip install -r requirements.txt` directly.
+- Python 3.11+
+- Node.js 20+ recommended
+- npm 9+
+- MongoDB local or MongoDB Atlas
 
-### 1) Backend
+Optional:
+
+- Docker + Docker Compose
+- Redis
+
+## Quick Start
+
+### 1. Backend setup
+
+Create a virtual environment if you do not already have one:
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
+```
+
+Activate it on Windows:
+
+```bash
+.\.venv\Scripts\activate
+```
+
+Install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
-Create env file:
+Create the backend env file from the project root:
 
 ```bash
 copy .env.example .env
 ```
 
-Run backend:
+Run the API from the repository root:
 
 ```bash
-.\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn backend.main:app --reload 
 ```
 
-Alternative in VS Code:
-- Run task `Start Backend API` from the command palette (`Tasks: Run Task`) or the Run Task UI.
+Useful URLs:
 
-Swagger docs:
+- Swagger UI: `http://localhost:8000/api/docs`
+- OpenAPI JSON: `http://localhost:8000/api/openapi.json`
+- Health check: `http://localhost:8000/api/health`
+- Readiness check: `http://localhost:8000/api/ready`
 
-```text
-http://localhost:8000/api/docs
-```
+Note:
 
-Health endpoints:
+- `GET /docs` and `GET /openapi.json` redirect to the `/api/*` versions.
 
-```text
-http://localhost:8000/api/health
-http://localhost:8000/api/ready
-```
+### 2. Frontend setup
 
-### 2) Frontend
+Move into the frontend app:
 
 ```bash
 cd frontend
+```
+
+Create the frontend env file:
+
+```bash
+copy .env.example .env
+```
+
+Install dependencies and start Vite:
+
+```bash
 npm install
 npm run dev
 ```
 
-Optional frontend env file (`frontend/.env`):
+Frontend URL:
 
-```env
-VITE_API_URL=http://localhost:8000
-VITE_API_BASE_PATH=/api
-```
-
-Frontend default URL:
-
-```text
-http://localhost:5173
-```
+- `http://localhost:5173`
 
 ## Environment Variables
 
-Required minimum:
+### Backend `.env` at repository root
+
+Minimum backend configuration:
 
 ```env
 MONGODB_URI=mongodb://localhost:27017/learning_path_ai
 DB_NAME=learning_path_ai
 SECRET_KEY=your-super-secret-key-minimum-32-characters-long
-GEMINI_API_KEY=your-gemini-api-key
 ```
 
-Setup tip:
-- Start from `.env.example` and keep `.env` at repository root so backend and Docker use the same baseline config.
+Recommended for AI features:
 
-Common optional variables:
+```env
+GEMINI_API_KEY=your-gemini-api-key
+RAG_MODEL=models/gemini-2.5-flash
+```
+
+Common optional backend variables:
 
 ```env
 ACCESS_TOKEN_EXPIRE_MINUTES=60
+ADMIN_EMAILS=admin@example.com
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000
-VITE_API_URL=http://localhost:8000
-VITE_API_BASE_PATH=/api
 UPLOAD_DIR=./backend/uploads
-RAG_MODEL=models/gemini-2.5-flash
 CHROMA_PATH=backend/.runtime/chroma
 CHROMA_COLLECTION=learning_resource_chunks
-REC_W_SEMANTIC=0.30
-REC_W_MASTERY=0.18
-REC_W_CONFIDENCE=0.08
-REC_W_GOAL=0.10
-REC_W_DIFFICULTY=0.10
-REC_W_COLLAB=0.12
-REC_W_PEDAGOGY=0.05
-REC_W_FORMAT_PREF=0.04
-REC_W_NOVELTY=0.03
-REC_RERANK_ENABLED=true
-REC_RERANK_LAMBDA=0.75
-REC_EXPLORATION_WEIGHT=0.03
 ```
 
 Notes:
-- Backend supports both `MONGODB_URI` and `MONGO_URI` (`MONGODB_URI` preferred).
-- Do not keep `SECRET_KEY` at default values.
-- `CHROMA_PATH` should point to runtime storage (not committed to git).
-- Recommendation weights are normalized internally, so you can tune each signal independently.
 
-## Run with Docker
+- The backend accepts both `MONGODB_URI` and `MONGO_URI`, with `MONGODB_URI` preferred.
+- `SECRET_KEY` must not use the default placeholder value.
+- `GEMINI_API_KEY` is optional for startup, but required for Gemini-backed generation flows.
+- The backend loads env in this order: project `.env`, then `backend/.env` if present.
 
-Start full stack (MongoDB, Redis, Backend, Frontend):
+### Frontend `frontend/.env`
+
+```env
+VITE_API_URL=http://localhost:8000
+VITE_API_BASE_PATH=/api
+VITE_APP_NAME=Personalized Learning Path
+```
+
+Notes:
+
+- Vite reads frontend env files from the `frontend/` directory, not from the repository root.
+- The frontend API client defaults to `http://localhost:8000/api` if these vars are omitted.
+
+## Running with Docker
+
+Start the full stack:
 
 ```bash
 docker compose up --build
 ```
 
-Start with Mongo Express (dev profile):
+Start the stack with Mongo Express:
 
 ```bash
 docker compose --profile dev up --build
 ```
 
 Default ports:
-- Backend: 8000
-- Frontend: 5173
-- MongoDB: 27017
-- Redis: 6379
-- Mongo Express: 8081 (dev profile only)
 
-## API Summary
+- Backend: `8000`
+- Frontend: `5173`
+- MongoDB: `27017`
+- Redis: `6379`
+- Mongo Express: `8081` with `--profile dev`
 
-All business APIs are mounted under `/api`.
+For more container details, see `DOCKER.md`.
 
-### Health and Docs
-- GET `/`
-- GET `/api/health`
-- GET `/api/ready`
-- GET `/api/docs`
-- GET `/api/openapi.json`
+## Development Commands
 
-### Auth
-- POST `/api/auth/signup`
-- POST `/api/auth/login`
-- POST `/api/auth/logout`
+Backend:
 
-### Users
-- POST `/api/users/`
-- GET `/api/users/me`
-- PUT `/api/users/{user_id}`
+```bash
+python -m compileall backend
+python -c "from backend.main import validate_env; validate_env(); print('env ok')"
+pytest backend/tests -q
+```
 
-### Subjects
-- GET `/api/subjects/`
-- GET `/api/subjects/{subject_id}`
-- POST `/api/subjects/`
+Frontend:
 
-### Chapters
-- GET `/api/chapters/`
-- GET `/api/chapters/{chapter_id}`
-- POST `/api/chapters/`
+```bash
+cd frontend
+npm run dev
+npm run build
+npm run preview
+npm run type-check
+npm run lint
+npm run format
+```
 
-### Lessons
-- GET `/api/lessons/`
-- POST `/api/lessons/`
-- GET `/api/lessons/{lesson_id}`
-- POST `/api/lessons/{lesson_id}/recommended-chunks`
-- GET `/api/lessons/{lesson_id}/recommended-chunks`
-- POST `/api/lessons/{lesson_id}/generate-questions`
-- GET `/api/lessons/{lesson_id}/questions`
+## API Overview
 
-### Learning Paths
-- POST `/api/learning-paths/generate`
-- GET `/api/learning-paths/history`
-- POST `/api/learning-paths/lesson-progress`
-- GET `/api/learning-paths/{path_id}/lesson-locks`
-- POST `/api/learning-paths/study-time`
-- GET `/api/learning-paths/study-summary`
-- GET `/api/learning-paths/{path_id}`
-- DELETE `/api/learning-paths/{path_id}`
+All business endpoints are mounted under `/api`.
 
-### AI Tutor
-- POST `/api/ask/`
-- GET `/api/ask/adaptive-status`
-- POST `/api/ask/detect-concepts`
-- GET `/api/ask/recommend-concepts`
-- GET `/api/ask/history`
-- DELETE `/api/ask/history/{history_id}`
-- POST `/api/ask/generate-assessment`
+Main route groups:
 
-### Progress
-- POST `/api/progress/update`
-- GET `/api/progress/summary`
-- GET `/api/progress/overview`
-- GET `/api/progress/confidence`
-- GET `/api/progress/concept/{concept_id}`
+- `/api/auth/*`: signup, login, logout
+- `/api/users/*`: current user and profile updates
+- `/api/subjects/*`, `/api/chapters/*`, `/api/lessons/*`: curriculum data
+- `/api/learning-paths/*`: path generation, history, lesson progress, study time
+- `/api/resources/*`: resource CRUD, import, search, ingestion jobs
+- `/api/ask/*`: AI tutor and assessment flows
+- `/api/progress/*`: progress summaries and concept confidence
+- `/api/recommendations/*`: recommendation retrieval, debug, feedback, interaction events
+- `/api/kt/*`, `/api/path/*`, `/api/interventions/*`, `/api/feedback`: adaptive learning loop
+- `/api/analytics/*`, `/api/evaluation/*`: telemetry and experiment workflows
+- `/api/concepts/*`: concept lookup
 
-### Resources
-- GET `/api/resources/`
-- POST `/api/resources/`
-- POST `/api/resources/import`
-- GET `/api/resources/search`
-- POST `/api/resources/import-pdf`
-- POST `/api/resources/import-youtube`
-- GET `/api/resources/jobs/{job_id}`
-- GET `/api/resources/pdf/{resource_id}`
-- GET `/api/resources/{resource_id}`
-- DELETE `/api/resources/{resource_id}`
+Use Swagger for the latest request and response schemas:
 
-### Recommendations
-- GET `/api/recommendations/resources`
-- GET `/api/recommendations/resources/debug`
-- GET `/api/recommendations/progress`
-- POST `/api/recommendations/events/click`
-- POST `/api/recommendations/events/resource-completed`
-- POST `/api/recommendations/feedback`
-
-Recommendation query options (`GET /api/recommendations/resources`):
-- `include_breakdown` (bool, default `true`): include component score breakdown.
-- `enable_reranking` (bool, default `true`): enable diversity-aware reranking.
-
-### Adaptive Learning Loop
-- GET `/api/kt/user/{user_id}/concepts`
-- GET `/api/kt/user/{user_id}/lessons/{lesson_id}`
-- POST `/api/feedback`
-- POST `/api/path/refine/{path_id}`
-- GET `/api/path/refinement/{user_id}`
-- GET `/api/interventions/{user_id}`
-
-### Exercise Attempts
-- GET `/api/lessons/{lesson_id}/attempts`
-- GET `/api/learning-paths/{path_id}/attempts`
-- GET `/api/lessons/{lesson_id}/statistics`
-
-### Analytics
-- GET `/api/analytics/learner/{user_id}`
-- GET `/api/analytics/admin/overview`
-- GET `/api/analytics/admin/retention`
-- GET `/api/analytics/admin/recommendation`
-- GET `/api/analytics/system/performance`
-
-### Evaluation
-- GET `/api/evaluation/experiments`
-- GET `/api/evaluation/experiments/{experiment_id}`
-- POST `/api/evaluation/experiments/{experiment_id}/assign/{user_id}`
-
-### Concepts
-- GET `/api/concepts`
-- GET `/api/concepts/{concept_id}`
-
-Most business endpoints require a Bearer token.
+- `http://localhost:8000/api/docs`
 
 ## Frontend Routes
+
+The current frontend includes these primary routes:
 
 - `/login`
 - `/signup`
@@ -351,57 +305,9 @@ Most business endpoints require a Bearer token.
 - `/settings`
 - `/debug-token`
 
-## Useful Commands
+## Notes
 
-Backend (run from repository root):
-
-```bash
-python -m compileall backend
-python -c "from backend.main import validate_env; validate_env(); print('env ok')"
-python -c "from backend.app.database.mongo import get_db; print(get_db().command('ping'))"
-```
-
-Backend task-based run (from VS Code):
-- Task name: `Start Backend API`
-
-Frontend (run from `frontend`):
-
-```bash
-npm run dev
-npm run build
-npm run preview
-npm run type-check
-npm run lint
-npm run format
-```
-
-## Quick Verification Flow
-
-1. Start backend and frontend.
-2. Open Swagger at `/api/docs`.
-3. Verify `GET /api/health` and `GET /api/ready`.
-4. Sign up/login to obtain Bearer token.
-5. Test core flows: create subject/chapter/lesson, generate path, submit lesson progress, ask AI, import resources.
-6. Validate analytics/evaluation endpoints for new telemetry.
-7. Validate recommendation upgrade:
-    - Call `GET /api/recommendations/resources?goal=<goal>&level=beginner&include_breakdown=true&enable_reranking=true` (you can pass `user_id` explicitly, but it is optional when authenticated)
-    - Inspect detailed signal snapshot at `GET /api/recommendations/resources/debug?goal=<goal>&level=beginner&enable_reranking=true` (you can pass `user_id` explicitly, but it is optional when authenticated)
-    - Submit explicit feedback with `POST /api/recommendations/feedback`
-8. Validate lesson confidence behavior:
-    - For an unattempted lesson, confirm confidence is `0.0` in lesson lock/state payloads.
-    - Submit that lesson's own questions and verify only that lesson's confidence updates.
-    - If a submission is all incorrect (`0%`), the attempt is still recorded for that lesson and confidence remains `0.0`.
-
-## Operational Notes
-
-- The current workspace has no `tests/` folder yet, so add tests before running full pytest workflows.
-- `.env.example` already contains backend/frontend baseline variables.
-- Docker stack in `docker-compose.yml` includes MongoDB, Redis, backend, frontend, and optional Mongo Express profile.
-- Runtime vector index files are ignored from git (`backend/.chroma/`, `backend/.runtime/`).
-- The backend loads env in this order: project `.env`, then `backend/.env` (backend overrides project values when both are present).
-
-## Related Docs
-
-- Docker guide: `DOCKER.md`
-- Backend entrypoint: `backend/main.py`
-- Frontend app router: `frontend/src/App.tsx`
+- MongoDB is required for backend readiness checks to pass.
+- Chroma data should stay in a runtime directory and not be committed.
+- Redis is optional in local development unless you explicitly depend on it.
+- The repository currently includes backend tests under `backend/tests/`.

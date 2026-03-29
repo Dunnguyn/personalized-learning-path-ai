@@ -13,6 +13,9 @@ from backend.app.services.hybrid_recommendation_service import (
 )
 from backend.app.services.feedback_service import feedback_service
 from backend.app.services.knowledge_tracing_service import knowledge_tracing_service
+from backend.app.services.adaptive_learning_loop_service import (
+    adaptive_learning_loop_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +26,20 @@ router = APIRouter(prefix="/recommendations", tags=["Recommendations"])
 # SCHEMAS
 # =========================
 class ResourceItem(BaseModel):
-    resource_id: int
+    resource_id: str | int
     title: str
     source: str
     level: str
     topic: str
     url: Optional[str] = None
     reason: str
+    reason_tags: List[str] = Field(default_factory=list)
     relevance_score: float = Field(ge=0, le=1)
+    recommendation_mode: Optional[str] = None
+    estimated_time: Optional[int] = None
+    primary_concepts: List[str] = Field(default_factory=list)
+    quality_score: Optional[float] = Field(default=None, ge=0, le=1)
+    expected_learning_gain: Optional[float] = Field(default=None, ge=0, le=1)
     score_breakdown: Optional[dict] = None
     rank_position: Optional[int] = None
 
@@ -39,6 +48,7 @@ class PersonalizedRecommendationResponse(BaseModel):
     user_id: str
     goal: str
     level: str
+    mode: str = "continue_learning"
     recommended_resources: List[ResourceItem]
     completed_concepts: int
     total_concepts: int
@@ -65,7 +75,7 @@ class LearningProgressResponse(BaseModel):
 
 class RecommendationInteractionRequest(BaseModel):
     recommendation_id: Optional[str] = None
-    resource_id: Optional[int] = None
+    resource_id: Optional[str | int] = None
     concept_id: Optional[int] = None
     lesson_id: Optional[str] = None
     goal: Optional[str] = None
@@ -75,7 +85,7 @@ class RecommendationInteractionRequest(BaseModel):
 
 class RecommendationFeedbackRequest(BaseModel):
     recommendation_id: Optional[str] = None
-    resource_id: Optional[int] = None
+    resource_id: Optional[str | int] = None
     lesson_id: Optional[str] = None
     concept_id: Optional[int] = None
     feedback_type: Literal["helpful", "not_helpful", "save_for_later", "hide"]
@@ -127,6 +137,12 @@ def get_personalized_resources(
     goal: str = Query(..., min_length=1, max_length=200, description="Learning goal"),
     level: LevelEnum = Query(LevelEnum.beginner, description="Current level"),
     limit: int = Query(10, ge=1, le=50, description="Max recommendations"),
+    mode: Literal[
+        "continue_learning",
+        "reinforce_weaknesses",
+        "learn_new",
+        "quick_review",
+    ] = Query("continue_learning", description="Adaptive recommendation mode"),
     include_breakdown: bool = Query(True, description="Include hybrid score breakdown"),
     enable_reranking: bool = Query(
         True, description="Enable diversity-aware reranking"
@@ -152,6 +168,7 @@ def get_personalized_resources(
             level=level_str,
             limit=limit,
             enable_reranking=enable_reranking,
+            mode=mode,
         )
 
         recommended = result.get("recommended", [])
@@ -173,6 +190,7 @@ def get_personalized_resources(
                 "goal": goal,
                 "level": level_str,
                 "count": len(recommended),
+                "mode": mode,
                 "reranking": result.get("reranking", {}).get("strategy"),
                 "diversity_ratio": result.get("reranking", {}).get("diversity_ratio"),
             },
@@ -186,18 +204,19 @@ def get_personalized_resources(
                 rank_position=idx,
                 recommendation_score=item.get("relevance_score"),
                 success=True,
-                metadata={"goal": goal, "level": level_str},
+                metadata={"goal": goal, "level": level_str, "mode": mode},
             )
 
         return {
             "user_id": effective_user_id,
             "goal": goal,
             "level": level_str,
+            "mode": mode,
             "recommended_resources": recommended,
             "completed_concepts": int(result.get("completed_concepts", 0)),
             "total_concepts": int(result.get("total_concepts", 0)),
             "progress_percentage": round(progress_pct, 1),
-            "message": f"Found {len(recommended)} hybrid recommendations. Progress: {progress_pct:.1f}%",
+            "message": f"Found {len(recommended)} adaptive recommendations for mode={mode}. Progress: {progress_pct:.1f}%",
             "reranking_metadata": result.get("reranking", {}),
         }
 
@@ -207,7 +226,7 @@ def get_personalized_resources(
             user_id=effective_user_id,
             success=False,
             error_code=e.__class__.__name__,
-            metadata={"goal": goal, "level": enum_to_string(level)},
+            metadata={"goal": goal, "level": enum_to_string(level), "mode": mode},
         )
         logger.exception(
             f"Error generating recommendations for user {effective_user_id}: {e}"
@@ -384,6 +403,30 @@ def track_recommendation_click(
         },
     )
     if payload.resource_id is not None:
+        adaptive_learning_loop_service.ingest_learning_event(
+            user_id=user_id,
+            event_type="recommendation_clicked",
+            resource_id=str(payload.resource_id),
+            lesson_id=payload.lesson_id,
+            concept_ids=[str(payload.concept_id)] if payload.concept_id is not None else [],
+            metadata={
+                "goal": payload.goal,
+                "level": payload.level,
+                **(payload.metadata or {}),
+            },
+        )
+        adaptive_learning_loop_service.ingest_learning_event(
+            user_id=user_id,
+            event_type="resource_opened",
+            resource_id=str(payload.resource_id),
+            lesson_id=payload.lesson_id,
+            concept_ids=[str(payload.concept_id)] if payload.concept_id is not None else [],
+            metadata={
+                "goal": payload.goal,
+                "level": payload.level,
+                **(payload.metadata or {}),
+            },
+        )
         event_logging_service.log_event(
             "resource_clicked",
             user_id=user_id,
@@ -427,6 +470,18 @@ def track_resource_completed(
     current_user=Depends(get_current_user),
 ):
     user_id = str(current_user.get("_id", ""))
+    adaptive_learning_loop_service.ingest_learning_event(
+        user_id=user_id,
+        event_type="resource_completed",
+        resource_id=str(payload.resource_id) if payload.resource_id is not None else None,
+        lesson_id=payload.lesson_id,
+        concept_ids=[str(payload.concept_id)] if payload.concept_id is not None else [],
+        metadata={
+            "goal": payload.goal,
+            "level": payload.level,
+            **(payload.metadata or {}),
+        },
+    )
     event_logging_service.log_event(
         "resource_completed",
         user_id=user_id,

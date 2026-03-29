@@ -25,17 +25,25 @@ export default function Login() {
 
       localStorage.setItem('token', data.access_token);
 
-      const user: StoredUser = {
+      let user: StoredUser = {
         user_id: data.user_id,
         email: data.email,
         name: data.name,
+        role: data.role,
       };
+      try {
+        user = await authService.getCurrentUser();
+      } catch (profileError) {
+        console.warn('Could not load full profile after login:', profileError);
+      }
+
       authService.setStoredUser(user);
       setUser({
-        user_id: data.user_id,
-        email: data.email,
-        name: data.name,
-        level: 'beginner',
+        user_id: user.user_id || data.user_id,
+        email: user.email,
+        name: user.name,
+        level: user.level || 'beginner',
+        role: user.role || data.role,
       });
 
       if (rememberMe) {

@@ -93,6 +93,7 @@ export const normalizeResource = (resource: unknown): Resource => {
     },
     score: typeof resourceRecord.score === 'number' ? resourceRecord.score : undefined,
     snippet: resourceRecord.snippet ? String(resourceRecord.snippet) : undefined,
+    is_completed: Boolean(resourceRecord.is_completed),
   };
 };
 

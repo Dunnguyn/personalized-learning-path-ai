@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from bson import ObjectId
 from fastapi import BackgroundTasks, UploadFile
 
 from backend.app.api.schemas import ResourceCreate, ResourceImportRequest
+from backend.app.database.mongo import get_db
 from backend.app.repositories import (
     LessonRecommendedChunkRepository,
     LessonRepository,
@@ -28,6 +29,90 @@ _chunk_repository = ResourceChunkRepository()
 _lesson_repository = LessonRepository()
 _lesson_recommended_chunk_repository = LessonRecommendedChunkRepository()
 _question_repository = QuestionBankRepository()
+
+
+def _get_completed_lesson_ids(user_id: Optional[str]) -> Set[str]:
+    """Collect lesson ids that are marked complete/completed for a given user."""
+    if not user_id:
+        return set()
+
+    collection = get_db().learning_paths
+    cursor = collection.find(
+        {"user_id": str(user_id)},
+        {"lesson_progress": 1},
+    )
+
+    completed_lesson_ids: Set[str] = set()
+    for path in cursor:
+        lesson_progress = path.get("lesson_progress") or {}
+        if not isinstance(lesson_progress, dict):
+            continue
+
+        for lesson_id, status in lesson_progress.items():
+            normalized_status = str(status or "").strip().lower()
+            if normalized_status in {"complete", "completed"}:
+                completed_lesson_ids.add(str(lesson_id))
+
+    return completed_lesson_ids
+
+
+def _get_completed_resource_identifiers(user_id: Optional[str]) -> Set[str]:
+    """Collect completed resource identifiers for a user from learner signals."""
+    if not user_id:
+        return set()
+
+    collection = get_db().learner_signals
+    completed_lesson_ids = _get_completed_lesson_ids(user_id)
+    cursor = collection.find(
+        {
+            "user_id": str(user_id),
+            "signal_type": "resource_completed",
+        },
+        {
+            "resource_id": 1,
+            "metadata.resource_identifier": 1,
+        },
+    )
+
+    identifiers: Set[str] = set()
+    for signal in cursor:
+        lesson_id = signal.get("lesson_id")
+        metadata = signal.get("metadata") or {}
+        lesson_identifier = lesson_id or metadata.get("lesson_id")
+
+        # Lesson-scoped chunk resources are only completed when their lesson is complete.
+        if lesson_identifier and str(lesson_identifier) not in completed_lesson_ids:
+            continue
+
+        numeric_resource_id = signal.get("resource_id")
+        if numeric_resource_id is not None:
+            identifiers.add(str(numeric_resource_id))
+
+        resource_identifier = metadata.get("resource_identifier")
+        if resource_identifier:
+            identifiers.add(str(resource_identifier))
+
+    return identifiers
+
+
+def _is_resource_completed(
+    resource_document: Dict[str, Any], completed_identifiers: Set[str]
+) -> bool:
+    if not completed_identifiers:
+        return False
+
+    metadata = resource_document.get("metadata") or {}
+    candidate_identifiers = [
+        resource_document.get("_id"),
+        resource_document.get("resource_id"),
+        metadata.get("resource_identifier"),
+    ]
+
+    for identifier in candidate_identifiers:
+        if identifier is not None and str(identifier) in completed_identifiers:
+            return True
+
+    return False
 
 
 def serialize_mongo(document: Dict[str, Any]) -> Dict[str, Any]:
@@ -49,6 +134,7 @@ def get_resources_service(
     source: Optional[str] = None,
     resource_type: Optional[str] = None,
     concept_id: Optional[int] = None,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """List top-level resources from the unified collection."""
     result = _resource_repository.list(
@@ -60,8 +146,17 @@ def get_resources_service(
         resource_type=resource_type,
         concept_id=concept_id,
     )
+    completed_identifiers = _get_completed_resource_identifiers(user_id)
+    serialized_items = []
+    for item in result["items"]:
+        serialized = serialize_mongo(item)
+        serialized["is_completed"] = _is_resource_completed(
+            item, completed_identifiers
+        )
+        serialized_items.append(serialized)
+
     return {
-        "resources": [serialize_mongo(item) for item in result["items"]],
+        "resources": serialized_items,
         "total": result["total"],
         "page": result["page"],
         "size": result["size"],
@@ -140,6 +235,7 @@ def search_resources_service(
     page: int = 1,
     size: int = 10,
     filters: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Search resources semantically over chunk collection."""
     if not q or not q.strip():
@@ -154,8 +250,21 @@ def search_resources_service(
     )
     start = max(page - 1, 0) * size
     paged = results[start : start + size]
+    completed_identifiers = _get_completed_resource_identifiers(user_id)
+    enriched_results = []
+    for item in paged:
+        resource_identifier = item.get("resource_id")
+        item_with_status = {
+            **item,
+            "is_completed": (
+                resource_identifier is not None
+                and str(resource_identifier) in completed_identifiers
+            ),
+        }
+        enriched_results.append(item_with_status)
+
     return {
-        "results": paged,
+        "results": enriched_results,
         "total": len(results),
         "page": page,
         "size": size,

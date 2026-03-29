@@ -46,6 +46,9 @@ class KnowledgeTracingRepository:
     def upsert_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
         now = datetime.utcnow()
         document = dict(state)
+        # Avoid `$set` + `$setOnInsert` conflicts when callers pass through
+        # an existing persisted document that already contains `created_at`.
+        document.pop("created_at", None)
         document.setdefault("last_updated_at", now)
         document.setdefault("last_interaction_at", now)
 

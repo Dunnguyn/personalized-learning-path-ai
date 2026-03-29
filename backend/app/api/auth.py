@@ -30,7 +30,7 @@ import time
 from bson import ObjectId
 
 from backend.app.database.mongo import get_db
-from backend.app.api.schemas import UserResponse
+from backend.app.api.schemas import UserResponse, UserRoleEnum
 from backend.app.services.event_logging_service import event_logging_service
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,18 @@ pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+
+
+def _load_admin_emails() -> set[str]:
+    raw_value = os.getenv("ADMIN_EMAILS", "")
+    return {
+        item.strip().lower()
+        for item in raw_value.split(",")
+        if item and item.strip()
+    }
+
+
+ADMIN_EMAILS = _load_admin_emails()
 
 
 def _token_fingerprint(token: str) -> str:
@@ -155,6 +167,35 @@ def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     return token
 
 
+def resolve_user_role(user: dict | None) -> str:
+    """Resolve the effective role for a user document."""
+    if not user:
+        return UserRoleEnum.learner.value
+
+    explicit_role = str(user.get("role") or "").strip().lower()
+    if explicit_role == UserRoleEnum.admin.value:
+        return UserRoleEnum.admin.value
+
+    email = str(user.get("email") or "").strip().lower()
+    if email and email in ADMIN_EMAILS:
+        return UserRoleEnum.admin.value
+
+    if explicit_role == UserRoleEnum.learner.value:
+        return UserRoleEnum.learner.value
+
+    return UserRoleEnum.learner.value
+
+
+def attach_effective_role(user: dict | None) -> dict | None:
+    """Return a shallow copy of the user document with resolved role attached."""
+    if not user:
+        return user
+
+    enriched_user = dict(user)
+    enriched_user["role"] = resolve_user_role(user)
+    return enriched_user
+
+
 def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     """
     Dependency: Extract and validate current user from JWT token.
@@ -227,8 +268,10 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
             )
 
         logger.debug(f"User authenticated: {user.get('email')}")
-        return user
+        return attach_effective_role(user)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Error looking up user: {e}")
         raise HTTPException(
@@ -255,6 +298,7 @@ class LoginResponse(BaseModel):
     user_id: str = Field(..., description="MongoDB ObjectId as string")
     email: EmailStr
     name: str = Field(..., description="User full name")
+    role: UserRoleEnum = Field(default=UserRoleEnum.learner, description="User role")
 
 
 class SignupRequest(BaseModel):
@@ -330,12 +374,19 @@ def signup(payload: SignupRequest):
         # Hash password
         hashed_password = hash_password(payload.password)
 
+        role = (
+            UserRoleEnum.admin.value
+            if payload.email.strip().lower() in ADMIN_EMAILS
+            else UserRoleEnum.learner.value
+        )
+
         # Create new user document
         new_user = {
             "email": payload.email,
             "password": hashed_password,
             "name": payload.fullName,
             "level": "beginner",
+            "role": role,
             "created_at": datetime.now(timezone.utc),
             "updated_at": datetime.now(timezone.utc),
         }
@@ -354,6 +405,7 @@ def signup(payload: SignupRequest):
             "email": payload.email,
             "name": payload.fullName,
             "level": "beginner",
+            "role": role,
             "created_at": new_user["created_at"].isoformat(),
         }
 
@@ -461,6 +513,7 @@ def login(payload: LoginRequest):
             user_id=str(user["_id"]),
             email=user["email"],
             name=user["name"],
+            role=resolve_user_role(user),
         )
 
     except HTTPException:
@@ -470,6 +523,16 @@ def login(payload: LoginRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Login failed"
         )
+
+
+def require_admin_user(current_user: dict = Depends(get_current_user)) -> dict:
+    """Dependency that only allows admin users to proceed."""
+    if resolve_user_role(current_user) != UserRoleEnum.admin.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges are required",
+        )
+    return attach_effective_role(current_user)
 
 
 @router.post("/logout", response_model=LogoutResponse, status_code=status.HTTP_200_OK)

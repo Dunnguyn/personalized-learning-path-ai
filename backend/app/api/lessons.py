@@ -7,8 +7,10 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from backend.app.api.auth import get_current_user
+from backend.app.api.auth import get_current_user, require_admin_user
 from backend.app.api.schemas import (
+    AdaptiveQuizNextRequest,
+    AdaptiveQuizNextResponse,
     LessonCreate,
     LessonListResponse,
     LessonNodeResponse,
@@ -18,6 +20,7 @@ from backend.app.api.schemas import (
     LessonRecommendedChunksRequest,
     LessonRecommendedChunksResponse,
 )
+from backend.app.services.adaptive_learning_service import adaptive_learning_service
 from backend.app.services.lesson_chunk_service import lesson_chunk_service
 from backend.app.services.lesson_service import lesson_structure_service
 from backend.app.services.question_generation_service import (
@@ -26,6 +29,9 @@ from backend.app.services.question_generation_service import (
 from backend.app.services.event_logging_service import event_logging_service
 from backend.app.services.feedback_service import feedback_service
 from backend.app.services.knowledge_tracing_service import knowledge_tracing_service
+from backend.app.services.adaptive_learning_loop_service import (
+    adaptive_learning_loop_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +76,7 @@ def list_lessons(
 @router.post(
     "/", response_model=LessonNodeResponse, status_code=status.HTTP_201_CREATED
 )
-def create_lesson(payload: LessonCreate, current_user=Depends(get_current_user)):
+def create_lesson(payload: LessonCreate, current_user=Depends(require_admin_user)):
     """Create a lesson under a chapter."""
     del current_user
     try:
@@ -100,6 +106,12 @@ def get_lesson(lesson_id: str, current_user=Depends(get_current_user)):
             chapter_id=lesson.get("chapter_id"),
             subject_id=lesson.get("subject_id"),
             success=True,
+        )
+        adaptive_learning_loop_service.ingest_learning_event(
+            user_id=user_id,
+            event_type="lesson_started",
+            lesson_id=lesson_id,
+            metadata={"source": "lessons_api"},
         )
         feedback_service.process_implicit_feedback(
             user_id=user_id,
@@ -147,6 +159,10 @@ def recommend_chunks_for_lesson(
             resource_ids=payload.resource_ids,
             metadata=payload.metadata,
         )
+        recommendation_metadata = result.get("metadata", {}) or {}
+        rerank_metadata = recommendation_metadata.get("diversity_reranking", {}) or {}
+        rerank_strategy = str(rerank_metadata.get("strategy") or "")
+
         event_logging_service.log_event(
             "resource_recommended",
             user_id=user_id,
@@ -154,6 +170,20 @@ def recommend_chunks_for_lesson(
             success=True,
             metadata={"chunks": len(result.get("chunk_ids", []))},
         )
+        if rerank_strategy == "rerank_failed_fallback":
+            event_logging_service.log_event(
+                "lesson_chunk_rerank_fallback",
+                user_id=user_id,
+                lesson_id=lesson_id,
+                success=True,
+                metadata={
+                    "selection_strategy": payload.selection_strategy,
+                    "max_chunks": payload.max_chunks,
+                    "candidate_count": recommendation_metadata.get("candidate_count"),
+                    "selected_count": recommendation_metadata.get("selected_count"),
+                    "rerank_strategy": rerank_strategy,
+                },
+            )
         event_logging_service.log_event(
             "recommendation_shown",
             user_id=user_id,
@@ -233,6 +263,9 @@ def generate_questions_for_lesson(
             question_types=[item.value for item in payload.question_types],
             difficulty=payload.difficulty.value,
             bloom_levels=[item.value for item in payload.bloom_levels],
+            allow_llm=payload.allow_llm,
+            mastery=payload.mastery,
+            success_rate=payload.success_rate,
             overwrite=payload.overwrite,
             metadata=payload.metadata,
         )
@@ -264,4 +297,74 @@ def get_question_bank_for_lesson(lesson_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not load lesson question bank.",
+        )
+
+
+@router.post(
+    "/{lesson_id}/adaptive-quiz/next",
+    response_model=AdaptiveQuizNextResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_next_adaptive_quiz(
+    lesson_id: str,
+    payload: AdaptiveQuizNextRequest,
+    current_user=Depends(get_current_user),
+):
+    """Generate next adaptive quiz request and question set for a lesson."""
+    user_id = str(current_user.get("_id", ""))
+    try:
+        config = adaptive_learning_service.build_next_quiz_request(
+            user_id=user_id,
+            lesson_id=lesson_id,
+            target_count=payload.target_count,
+        )
+        generated = lesson_question_generation_service.generate_questions_for_lesson(
+            lesson_id=lesson_id,
+            target_count=int(config.get("target_count", payload.target_count)),
+            question_types=["multiple_choice", "short_answer", "true_false"],
+            difficulty=str(config.get("recommended_difficulty") or "beginner"),
+            bloom_levels=list(
+                config.get("recommended_bloom_levels")
+                or ["remember", "understand"]
+            ),
+            allow_llm=bool(
+                config.get("generation_strategy", {}).get("allow_llm", False)
+            ),
+            mastery=None,
+            success_rate=None,
+            overwrite=True,
+            metadata={
+                "adaptive_quiz": True,
+                "path_id": payload.path_id,
+                "target_chunk_ids": config.get("target_chunk_ids", []),
+                "target_concepts": config.get("target_concepts", []),
+                "retry_strategy": config.get("retry_strategy", "same_question"),
+                "adaptive_explanation": config.get("explanation"),
+                "prefer_template": bool(
+                    config.get("generation_strategy", {}).get("prefer_template", True)
+                ),
+                "generation_strategy": config.get("generation_strategy", {}),
+            },
+        )
+        return AdaptiveQuizNextResponse(
+            lesson_id=lesson_id,
+            next_action={
+                "type": "adaptive_quiz_next",
+                "recommended_difficulty": config.get("recommended_difficulty"),
+                "recommended_bloom_levels": config.get(
+                    "recommended_bloom_levels", []
+                ),
+                "target_chunk_ids": config.get("target_chunk_ids", []),
+                "target_concepts": config.get("target_concepts", []),
+            },
+            generation_request=config,
+            generated=generated,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to generate adaptive next quiz: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not generate adaptive next quiz.",
         )

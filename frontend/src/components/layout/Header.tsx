@@ -50,12 +50,8 @@ export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
 
+  const isAdmin = user?.role === 'admin';
   const currentRouteLabel = useMemo(() => getRouteLabel(location.pathname), [location.pathname]);
-  const currentAddress = useMemo(() => {
-    const querySuffix = location.search ? location.search.replace(/^\?/, '?') : '';
-    return `https://your.education/${currentRouteLabel}${querySuffix}`;
-  }, [currentRouteLabel, location.search]);
-
   const currentAddressParts = useMemo(() => {
     const querySuffix = location.search ? location.search.replace(/^\?/, '?') : '';
     return {
@@ -76,14 +72,6 @@ export default function Header() {
       return;
     }
     navigate(`/resources?q=${encodeURIComponent(query)}`);
-  };
-
-  const handleBack = () => {
-    window.history.back();
-  };
-
-  const handleForward = () => {
-    window.history.forward();
   };
 
   const handleRequestLogout = () => {
@@ -110,68 +98,25 @@ export default function Header() {
 
   return (
     <>
-      <header className="app-toolbar gap-4">
-        <div className="flex min-w-[132px] items-center gap-4">
+      <header className="app-toolbar gap-4 px-5 py-4 lg:px-6">
+        <div className={`flex items-center ${isAdmin ? 'min-w-[72px]' : 'min-w-[132px]'} gap-4`}>
           <div className="flex items-center gap-2">
             <span className="window-dot bg-[#ff6d5f]" />
             <span className="window-dot bg-[#ffbe2f]" />
             <span className="window-dot bg-[#28c840]" />
           </div>
-          <div className="hidden items-center gap-2 md:flex">
-            <button
-              type="button"
-              onClick={handleBack}
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-[#ebdbe2] bg-white/78 text-[#6f5b63] shadow-[0_8px_18px_rgba(137,78,99,0.06)] transition hover:-translate-y-0.5 hover:bg-white"
-              aria-label="Go back"
-            >
-              <BrowserIcon>
-                <svg
-                  viewBox="0 0 16 16"
-                  className="h-4 w-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M9.75 3.5L5.25 8l4.5 4.5" />
-                </svg>
-              </BrowserIcon>
-            </button>
-            <button
-              type="button"
-              onClick={handleForward}
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-[#ebdbe2] bg-white/78 text-[#6f5b63] shadow-[0_8px_18px_rgba(137,78,99,0.06)] transition hover:-translate-y-0.5 hover:bg-white"
-              aria-label="Go forward"
-            >
-              <BrowserIcon>
-                <svg
-                  viewBox="0 0 16 16"
-                  className="h-4 w-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M6.25 3.5L10.75 8l-4.5 4.5" />
-                </svg>
-              </BrowserIcon>
-            </button>
-          </div>
-        </div>
 
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex w-full max-w-[980px] items-center gap-3">
-            <form
-              onSubmit={handleSearch}
-              className="flex flex-1 justify-center"
-              title={currentAddress}
-            >
-              <div className="browser-pill flex h-[56px] w-full items-center gap-3 rounded-[28px] border border-[#ead9e1] bg-white/84 px-4 shadow-[0_14px_28px_rgba(137,78,99,0.08)]">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f8e5ed] text-[#8c3451]">
+          {!isAdmin ? (
+            <div className="hidden items-center gap-2 md:flex">
+              <button
+                type="button"
+                onClick={() => window.history.back()}
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-[#ebdbe2] bg-white/78 text-[#6f5b63] shadow-[0_8px_18px_rgba(137,78,99,0.06)] transition hover:-translate-y-0.5 hover:bg-white"
+                aria-label="Quay lại"
+              >
+                <BrowserIcon>
                   <svg
-                    viewBox="0 0 20 20"
+                    viewBox="0 0 16 16"
                     className="h-4 w-4"
                     fill="none"
                     stroke="currentColor"
@@ -179,68 +124,108 @@ export default function Header() {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   >
-                    <rect x="5.5" y="8" width="9" height="6.5" rx="1.75" />
-                    <path d="M7.5 8V6.9a2.5 2.5 0 0 1 5 0V8" />
+                    <path d="M9.75 3.5L5.25 8l4.5 4.5" />
                   </svg>
-                </span>
-
-                <div className="min-w-0 flex-1">
-                  <div className="relative">
-                    {!searchQuery && !isSearchFocused ? (
-                      <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden text-[14px]">
-                        <span className="truncate font-semibold text-[#241f24]">
-                          {currentAddressParts.domain}
-                        </span>
-                        <span className="truncate text-[#8a7880]">{currentAddressParts.path}</span>
-                      </div>
-                    ) : null}
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(event) => setSearchQuery(event.target.value)}
-                      onFocus={() => setIsSearchFocused(true)}
-                      onBlur={() => setIsSearchFocused(false)}
-                      placeholder={isSearchFocused ? 'Search lessons, resources, topics' : ''}
-                      className={`w-full bg-transparent text-[14px] outline-none placeholder:text-[#8a7880] ${
-                        !searchQuery && !isSearchFocused
-                          ? 'text-transparent caret-[#8c3451]'
-                          : 'text-[#17151a]'
-                      }`}
-                      aria-label="Search resources"
-                    />
-                  </div>
-                </div>
-
-                <div className="hidden items-center gap-2 md:flex">
-                  <span className="rounded-full bg-[#faf1f5] px-2.5 py-1 text-[11px] font-medium text-[#8a7880]">
-                    Secure
-                  </span>
-                  <button
-                    type="submit"
-                    className="flex h-9 w-9 items-center justify-center rounded-full bg-[#8c3451]/10 text-[#8c3451] transition-colors hover:bg-[#8c3451]/15"
-                    aria-label="Search"
+                </BrowserIcon>
+              </button>
+              <button
+                type="button"
+                onClick={() => window.history.forward()}
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-[#ebdbe2] bg-white/78 text-[#6f5b63] shadow-[0_8px_18px_rgba(137,78,99,0.06)] transition hover:-translate-y-0.5 hover:bg-white"
+                aria-label="Tiến tới"
+              >
+                <BrowserIcon>
+                  <svg
+                    viewBox="0 0 16 16"
+                    className="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
                   >
-                    <BrowserIcon>
-                      <svg
-                        viewBox="0 0 16 16"
-                        className="h-4 w-4"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                      >
-                        <circle cx="7" cy="7" r="3.75" />
-                        <path d="M10.25 10.25L13 13" />
-                      </svg>
-                    </BrowserIcon>
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
+                    <path d="M6.25 3.5L10.75 8l-4.5 4.5" />
+                  </svg>
+                </BrowserIcon>
+              </button>
+            </div>
+          ) : null}
         </div>
 
-        <div className="flex min-w-[188px] items-center justify-end gap-3 text-[#17151a]">
+        <div className="flex flex-1 items-center justify-center">
+          <form
+            onSubmit={handleSearch}
+            className={`flex w-full justify-center ${isAdmin ? 'max-w-[760px]' : 'max-w-[980px]'}`}
+          >
+            <div className="browser-pill flex h-[56px] w-full items-center gap-3 rounded-[28px] border border-[#ead9e1] bg-white/84 px-4 shadow-[0_14px_28px_rgba(137,78,99,0.08)]">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f8e5ed] text-[#8c3451]">
+                <svg
+                  viewBox="0 0 20 20"
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="5.5" y="8" width="9" height="6.5" rx="1.75" />
+                  <path d="M7.5 8V6.9a2.5 2.5 0 0 1 5 0V8" />
+                </svg>
+              </span>
+
+              <div className="min-w-0 flex-1">
+                <div className="relative">
+                  {!searchQuery && !isSearchFocused ? (
+                    <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden text-[14px]">
+                      <span className="truncate font-semibold text-[#241f24]">
+                        {currentAddressParts.domain}
+                      </span>
+                      <span className="truncate text-[#8a7880]">{currentAddressParts.path}</span>
+                    </div>
+                  ) : null}
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    onFocus={() => setIsSearchFocused(true)}
+                    onBlur={() => setIsSearchFocused(false)}
+                    placeholder={isSearchFocused ? 'Tìm lesson, resource, topic' : ''}
+                    className={`w-full bg-transparent text-[14px] outline-none placeholder:text-[#8a7880] ${
+                      !searchQuery && !isSearchFocused
+                        ? 'text-transparent caret-[#8c3451]'
+                        : 'text-[#17151a]'
+                    }`}
+                    aria-label="Tìm resource"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-[#8c3451]/10 text-[#8c3451] transition-colors hover:bg-[#8c3451]/15"
+                aria-label="Tìm kiếm"
+              >
+                <BrowserIcon>
+                  <svg
+                    viewBox="0 0 16 16"
+                    className="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                  >
+                    <circle cx="7" cy="7" r="3.75" />
+                    <path d="M10.25 10.25L13 13" />
+                  </svg>
+                </BrowserIcon>
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div
+          className={`flex items-center justify-end gap-3 text-[#17151a] ${isAdmin ? 'min-w-[220px]' : 'min-w-[188px]'}`}
+        >
           <button
             type="button"
             onClick={handleRequestLogout}
@@ -249,15 +234,16 @@ export default function Header() {
           >
             Đăng xuất
           </button>
+
           <div className="hidden items-center gap-3 rounded-full border border-[#ebdbe2] bg-white/82 px-3 py-2 shadow-[0_8px_18px_rgba(137,78,99,0.08)] lg:flex">
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#8c3451] text-[13px] font-semibold text-white">
               {userInitial}
             </span>
             <div className="min-w-0">
               <p className="max-w-[120px] truncate text-[13px] font-semibold text-[#2b2328]">
-                {user?.name || 'Tester'}
+                {isAdmin ? 'Xin chào!' : user?.name || 'Tester'}
               </p>
-              <p className="text-[11px] text-[#8a7880]">Signed in</p>
+              <p className="text-[11px] text-[#8a7880]">{user?.name || 'Đã đăng nhập'}</p>
             </div>
           </div>
         </div>

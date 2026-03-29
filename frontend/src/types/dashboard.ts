@@ -65,18 +65,28 @@ export interface RecommendedResourceItem {
   topic: string;
   url?: string | null;
   reason: string;
+  reason_tags: string[];
   relevance_score: number;
+  recommendation_mode?: string;
+  estimated_time?: number | null;
+  primary_concepts: string[];
+  quality_score?: number | null;
+  expected_learning_gain?: number | null;
+  score_breakdown?: Record<string, number> | null;
+  rank_position?: number | null;
 }
 
 export interface PersonalizedRecommendationResponse {
   user_id: number | string;
   goal: string;
   level: string;
+  mode?: string;
   recommended_resources: RecommendedResourceItem[];
   completed_concepts: number;
   total_concepts: number;
   progress_percentage: number;
   message: string;
+  reranking_metadata?: Record<string, unknown> | null;
 }
 
 export interface GoalProgressConceptItem {

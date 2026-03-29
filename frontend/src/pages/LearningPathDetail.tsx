@@ -16,8 +16,13 @@ import 'reactflow/dist/style.css';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import PDFViewer from '../components/PDFViewer';
 import { useAuth } from '../contexts/AuthContext';
+import { adaptiveService } from '../services/adaptiveService';
 import { learningPathService } from '../services';
 import { recommendationInteractionService } from '../services/recommendationInteractionService';
+import type {
+  AdaptiveNextAction,
+  AdaptiveRecommendationPayload,
+} from '../types/adaptive';
 import type {
   BloomLevel,
   LearningPath,
@@ -55,6 +60,11 @@ interface LessonResourceCard {
   resourceUrl?: string;
   pageNumber?: number;
   actionLabel?: string;
+  instructionRole?: string;
+  estimatedReadTime?: number;
+  questionabilityScore?: number;
+  coveredConcepts?: string[];
+  sequencePosition?: number;
 }
 
 interface PinnedLessonResource extends LessonResourceCard {
@@ -467,6 +477,42 @@ const formatResourceSource = (source?: string) => {
   }
 };
 
+const getInstructionRoleLabel = (role?: string) => {
+  switch ((role || '').toLowerCase()) {
+    case 'introduction':
+      return 'Intro';
+    case 'explanation':
+      return 'Explain';
+    case 'worked_example':
+      return 'Example';
+    case 'misconception_fix':
+      return 'Common mistake';
+    case 'summary':
+      return 'Summary';
+    case 'practice_hint':
+      return 'Practice hint';
+    default:
+      return 'Lesson chunk';
+  }
+};
+
+const getAdaptiveActionLabel = (action?: string) => {
+  switch (action) {
+    case 'study_worked_example':
+      return 'Học lại worked example';
+    case 'study_misconception_fix':
+      return 'Đọc phần common mistake';
+    case 'quick_review_session':
+      return 'Quick review trước khi làm lại quiz';
+    case 'review_summary':
+      return 'Đọc bản tóm tắt';
+    case 'retry_with_easier_resource':
+      return 'Ôn bằng tài liệu dễ hơn';
+    default:
+      return 'Adaptive suggestion';
+  }
+};
+
 const getLessonResourceTheme = (source: string) => {
   switch (source) {
     case 'PDF':
@@ -639,6 +685,9 @@ export default function LearningPathDetail() {
   const [selectedLesson, setSelectedLesson] = useState<LessonNode | null>(null);
   const [lessonRecommendedChunks, setLessonRecommendedChunks] =
     useState<LessonRecommendedChunks | null>(null);
+  const [adaptiveNextAction, setAdaptiveNextAction] = useState<AdaptiveNextAction | null>(null);
+  const [adaptiveRecommendation, setAdaptiveRecommendation] =
+    useState<AdaptiveRecommendationPayload | null>(null);
   const [lessonResourcesLoading, setLessonResourcesLoading] = useState(false);
   const [questionBank, setQuestionBank] = useState<LessonQuestionBank | null>(null);
   const [questionLoading, setQuestionLoading] = useState(false);
@@ -841,6 +890,15 @@ export default function LearningPathDetail() {
   }, [selectedLesson?.lesson_id]);
 
   useEffect(() => {
+    // Keep quiz state scoped to the currently selected lesson.
+    setSelectedAnswers({});
+    setSubmitted(false);
+    setCurrentQuestionIndex(0);
+    setQuestionError(null);
+    setQuestionNotice(null);
+  }, [selectedLesson?.lesson_id]);
+
+  useEffect(() => {
     if (!pinnedLessonResourceStorageKey) {
       setPinnedLessonResource(null);
       return;
@@ -913,6 +971,48 @@ export default function LearningPathDetail() {
   }, [selectedLesson?.lesson_id]);
 
   useEffect(() => {
+    if (!selectedLesson?.lesson_id || !user?.user_id) {
+      setAdaptiveNextAction(null);
+      setAdaptiveRecommendation(null);
+      return;
+    }
+
+    let active = true;
+    const loadAdaptiveSuggestion = async () => {
+      try {
+        const [nextAction, recommendation] = await Promise.all([
+          adaptiveService.getNextBestAction({
+            user_id: user.user_id,
+            lesson_id: selectedLesson.lesson_id,
+          }),
+          adaptiveService.getAdaptiveRecommendation({
+            user_id: user.user_id,
+            lesson_id: selectedLesson.lesson_id,
+            goal: path?.goal || undefined,
+            level: path?.level || undefined,
+          }),
+        ]);
+        if (!active) {
+          return;
+        }
+        setAdaptiveNextAction(nextAction);
+        setAdaptiveRecommendation(recommendation);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setAdaptiveNextAction(null);
+        setAdaptiveRecommendation(null);
+      }
+    };
+
+    void loadAdaptiveSuggestion();
+    return () => {
+      active = false;
+    };
+  }, [path?.goal, path?.level, selectedLesson?.lesson_id, user?.user_id]);
+
+  useEffect(() => {
     if (screenMode !== 'map' || mapPresentationMode) {
       setIsMapDetailDrawerOpen(false);
       setIsMapControlsDrawerOpen(false);
@@ -971,6 +1071,11 @@ export default function LearningPathDetail() {
         resourceId: chunk.resource_id || undefined,
         resourceUrl: chunk.resource_url || undefined,
         pageNumber: chunk.page_number,
+        instructionRole: chunk.instruction_role,
+        estimatedReadTime: chunk.estimated_read_time,
+        questionabilityScore: chunk.questionability_score,
+        coveredConcepts: chunk.covered_concepts,
+        sequencePosition: chunk.sequence_position,
         actionLabel:
           (chunk.resource_source || '').toLowerCase() === 'pdf' ? 'Đọc tài liệu' : 'Mở tài liệu',
       }));
@@ -1006,6 +1111,11 @@ export default function LearningPathDetail() {
       },
     ];
   }, [lessonRecommendedChunks, selectedLesson?.resources]);
+
+  const lessonSequenceMeta = useMemo(
+    () => (lessonRecommendedChunks?.sequence_metadata as Record<string, unknown> | undefined) || {},
+    [lessonRecommendedChunks],
+  );
 
   const resolvedPinnedLessonResource = useMemo<PinnedLessonResource | null>(() => {
     if (!pinnedLessonResource) {
@@ -1130,6 +1240,12 @@ export default function LearningPathDetail() {
 
   const handleMarkLessonResourceCompleted = useCallback(
     async (resource: LessonResourceCard, context: string = 'resource_card') => {
+      const lessonStatus = String(selectedLesson?.status || '').toLowerCase();
+      const canMarkCompleted = lessonStatus === 'complete' || lessonStatus === 'completed';
+      if (!canMarkCompleted) {
+        return;
+      }
+
       try {
         await recommendationInteractionService.trackResourceCompleted({
           resource_id: toNumericResourceId(resource.resourceId),
@@ -1151,7 +1267,7 @@ export default function LearningPathDetail() {
         console.error('Failed to track lesson resource completion:', completionError);
       }
     },
-    [path?.goal, path?.level, path?.path_id, selectedLesson?.lesson_id],
+    [path?.goal, path?.level, path?.path_id, selectedLesson?.lesson_id, selectedLesson?.status],
   );
 
   const handleOpenAllLessonResources = useCallback(() => {
@@ -1163,6 +1279,58 @@ export default function LearningPathDetail() {
       window.open(targetUrl, '_blank', 'noopener,noreferrer');
     });
   }, [buildLessonResourceOpenUrl, currentLessonResources]);
+
+  const handleOpenAdaptiveLessonSuggestion = useCallback(() => {
+    const firstItem =
+      adaptiveRecommendation?.items?.[0] &&
+      typeof adaptiveRecommendation.items[0] === 'object' &&
+      !Array.isArray(adaptiveRecommendation.items[0])
+        ? (adaptiveRecommendation.items[0] as Record<string, unknown>)
+        : null;
+
+    if (!firstItem) {
+      return;
+    }
+
+    if (adaptiveRecommendation?.recommendation_type === 'chunk') {
+      const resourceId =
+        typeof firstItem.resource_id === 'string' ? firstItem.resource_id : undefined;
+      const matchedResource = currentLessonResources.find((resource) => resource.resourceId === resourceId);
+      if (matchedResource) {
+        handleOpenLessonResource(matchedResource);
+        return;
+      }
+      if (currentLessonResources[0]) {
+        handleOpenLessonResource(currentLessonResources[0]);
+      }
+      return;
+    }
+
+    if (adaptiveRecommendation?.recommendation_type === 'lesson') {
+      if (selectedLesson) {
+        setScreenMode('lesson');
+        setLessonTab('lesson');
+      }
+      return;
+    }
+
+    const resourceUrl = typeof firstItem.url === 'string' ? firstItem.url : undefined;
+    if (resourceUrl) {
+      window.open(resourceUrl, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    const resourceId = typeof firstItem.resource_id === 'string' ? firstItem.resource_id : undefined;
+    const matchedResource = currentLessonResources.find((resource) => resource.resourceId === resourceId);
+    if (matchedResource) {
+      handleOpenLessonResource(matchedResource);
+    }
+  }, [
+    adaptiveRecommendation,
+    currentLessonResources,
+    handleOpenLessonResource,
+    selectedLesson,
+  ]);
 
   const handlePDFViewerPageChange = useCallback(
     (page: number) => {
@@ -1318,35 +1486,44 @@ export default function LearningPathDetail() {
     }
   }, [submitted]);
 
-  // Send confidence score to backend when quiz is submitted
-  useEffect(() => {
-    if (!submitted || !selectedLesson?.lesson_id || !path?.path_id) {
+  const handleSubmitQuizAnswers = useCallback(() => {
+    if (submitted || quizQuestions.length === 0 || answeredQuestionCount === 0) {
+      return;
+    }
+
+    // Show grading state immediately in the UI.
+    setSubmitted(true);
+
+    if (!selectedLesson?.lesson_id || !path?.path_id) {
       return;
     }
 
     const lessonId = selectedLesson.lesson_id;
-    const confidenceDecimal = quizStats.confidence / 100;
-    const attemptKey = `${path.path_id}:${lessonId}:${quizStats.confidence}`;
+    const questionsAnswered = quizQuestions.map((question) => ({
+      question_id: question.question_id,
+      question: question.question,
+      question_type: question.question_type,
+      user_answer: selectedAnswers[question.question_id] || '',
+      correct_answer: question.correct_answer,
+      is_correct: isQuestionAnsweredCorrectly(question, selectedAnswers[question.question_id]),
+      difficulty: question.difficulty,
+      bloom_level: question.bloom_level,
+    }));
+    const correctCount = questionsAnswered.reduce(
+      (count, answer) => (answer.is_correct ? count + 1 : count),
+      0,
+    );
+    const confidencePercent =
+      questionsAnswered.length > 0 ? Math.round((correctCount / questionsAnswered.length) * 100) : 0;
+    const confidenceDecimal = confidencePercent / 100;
+    const attemptKey = `${path.path_id}:${lessonId}:${confidencePercent}:${correctCount}/${questionsAnswered.length}`;
+
     if (lastSubmittedAttemptKeyRef.current === attemptKey) {
       return;
     }
     lastSubmittedAttemptKeyRef.current = attemptKey;
 
-    const handleSubmitQuiz = async () => {
-      // Build questions_answered array with details
-      const questionsAnswered = quizQuestions.map((question) => ({
-        question_id: question.question_id,
-        question: question.question,
-        question_type: question.question_type,
-        user_answer: selectedAnswers[question.question_id] || '',
-        correct_answer: question.correct_answer,
-        is_correct:
-          selectedAnswers[question.question_id]?.toLowerCase() ===
-          question.correct_answer?.toLowerCase(),
-        difficulty: question.difficulty,
-        bloom_level: question.bloom_level,
-      }));
-
+    const submit = async () => {
       try {
         const response = await learningPathService.updateLessonProgress({
           path_id: path.path_id,
@@ -1356,7 +1533,6 @@ export default function LearningPathDetail() {
           questions_answered: questionsAnswered,
         });
 
-        // Update lesson status in path if auto-completed
         if (response.auto_completed && response.status === 'complete') {
           setPath((previousPath) => {
             if (!previousPath) {
@@ -1375,15 +1551,15 @@ export default function LearningPathDetail() {
       }
     };
 
-    handleSubmitQuiz();
+    void submit();
   }, [
-    submitted,
-    selectedLesson?.lesson_id,
-    quizStats.confidence,
+    answeredQuestionCount,
+    loadLessonAttemptStatistics,
     path?.path_id,
     quizQuestions,
     selectedAnswers,
-    loadLessonAttemptStatistics,
+    selectedLesson?.lesson_id,
+    submitted,
   ]);
 
   const openLessonScreen = useCallback((lesson: LessonNode) => {
@@ -1943,10 +2119,34 @@ export default function LearningPathDetail() {
       setUpdatingLessonId(lessonId);
       setError(null);
 
+      const includeQuizPayload =
+        status === 'complete' &&
+        selectedLesson?.lesson_id === lessonId &&
+        submitted &&
+        quizQuestions.length > 0;
+
+      const questionsAnswered = includeQuizPayload
+        ? quizQuestions.map((question) => ({
+            question_id: question.question_id,
+            question: question.question,
+            question_type: question.question_type,
+            user_answer: selectedAnswers[question.question_id] || '',
+            correct_answer: question.correct_answer,
+            is_correct: isQuestionAnsweredCorrectly(
+              question,
+              selectedAnswers[question.question_id],
+            ),
+            difficulty: question.difficulty,
+            bloom_level: question.bloom_level,
+          }))
+        : undefined;
+
       const response = await learningPathService.updateLessonProgress({
         path_id: path.path_id,
         lesson_id: lessonId,
         status,
+        confidence: includeQuizPayload ? quizStats.confidence / 100 : undefined,
+        questions_answered: questionsAnswered,
       });
 
       setPath((previousPath) => {
@@ -3066,6 +3266,11 @@ export default function LearningPathDetail() {
               <span className="rounded-full bg-white px-4 py-2 text-[12px] font-medium text-[#8c3451] shadow-[0_10px_20px_rgba(114,62,83,0.08)]">
                 {String(lessonRecommendedChunks.metadata.selected_count)} chunk đã chọn
               </span>
+              {lessonSequenceMeta.roles_present ? (
+                <span className="rounded-full bg-white px-4 py-2 text-[12px] font-medium text-[#6f5260] shadow-[0_10px_20px_rgba(114,62,83,0.08)]">
+                  Sequence: {String((lessonSequenceMeta.roles_present as string[]).join(' → '))}
+                </span>
+              ) : null}
               {currentLessonResources.some((resource) => buildLessonResourceOpenUrl(resource)) ? (
                 <button
                   type="button"
@@ -3078,6 +3283,55 @@ export default function LearningPathDetail() {
             </div>
           ) : null}
         </div>
+
+        {adaptiveNextAction ? (
+          <div className="mt-6 rounded-[24px] border border-[#efd7e0] bg-[linear-gradient(135deg,#fffafd_0%,#fdf2f6_100%)] p-5 shadow-[0_16px_36px_rgba(114,62,83,0.08)]">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]">
+                    Adaptive suggestion
+                  </span>
+                  {adaptiveNextAction.target_concepts.slice(0, 2).map((concept) => (
+                    <span
+                      key={`lesson-adaptive-${concept}`}
+                      className="rounded-full bg-[#f7dfe8] px-3 py-1 text-[11px] font-semibold text-[#8c3451]"
+                    >
+                      {concept}
+                    </span>
+                  ))}
+                  {adaptiveNextAction.estimated_total_time ? (
+                    <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#6f5260]">
+                      {adaptiveNextAction.estimated_total_time} phút
+                    </span>
+                  ) : null}
+                </div>
+                <h3 className="mt-3 text-[20px] font-semibold tracking-[-0.03em] text-[#141217]">
+                  {getAdaptiveActionLabel(adaptiveNextAction.next_best_action)}
+                </h3>
+                <p className="mt-2 max-w-3xl text-[14px] leading-6 text-[#6a625d]">
+                  {adaptiveNextAction.reason}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={handleOpenAdaptiveLessonSuggestion}
+                  className="theme-button px-5 py-3 text-[13px]"
+                >
+                  Mở gợi ý này
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLessonTab('questions')}
+                  className="theme-button-secondary px-5 py-3 text-[13px]"
+                >
+                  Sang phần quiz
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {resolvedPinnedLessonResource ? (
           <div className="mt-6 rounded-[24px] border border-[#efd7e0] bg-[linear-gradient(135deg,#fffafd_0%,#fdf2f6_100%)] p-5 shadow-[0_16px_36px_rgba(114,62,83,0.08)]">
@@ -3200,6 +3454,11 @@ export default function LearningPathDetail() {
                         >
                           {resource.source}
                         </span>
+                        {resource.instructionRole ? (
+                          <span className="inline-flex rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#6f5260]">
+                            {getInstructionRoleLabel(resource.instructionRole)}
+                          </span>
+                        ) : null}
                         {isPinned ? (
                           <span className="inline-flex rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#8c3451]">
                             Đã ghim
@@ -3228,8 +3487,13 @@ export default function LearningPathDetail() {
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-2">
                       <span className="rounded-full bg-[#f6d6e0] px-4 py-2 text-[11px] font-semibold text-[#7f3650]">
-                        {path?.level || 'Cơ bản'}
+                        #{resource.sequencePosition || 0}
                       </span>
+                      {resource.estimatedReadTime ? (
+                        <span className="rounded-full bg-white px-4 py-2 text-[12px] font-semibold text-[#6f5260] shadow-[0_8px_18px_rgba(114,62,83,0.08)]">
+                          {resource.estimatedReadTime} phút
+                        </span>
+                      ) : null}
                       {resource.pageNumber ? (
                         <span
                           className={`rounded-full bg-white px-4 py-2 text-[12px] font-semibold shadow-[0_8px_18px_rgba(114,62,83,0.08)] ${theme.accent}`}
@@ -3264,6 +3528,18 @@ export default function LearningPathDetail() {
                   <p className="mt-4 text-[13px] leading-6 text-[#6a625d]">
                     {getLessonResourceHint(resource)}
                   </p>
+                  {resource.coveredConcepts?.length ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {resource.coveredConcepts.slice(0, 3).map((concept) => (
+                        <span
+                          key={`${resource.key}-${concept}`}
+                          className="rounded-full bg-white px-3 py-1 text-[11px] font-medium text-[#8c3451]"
+                        >
+                          {concept}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                   <div className="mt-auto pt-5">
                     <button
                       type="button"
@@ -3285,7 +3561,8 @@ export default function LearningPathDetail() {
                       <button
                         type="button"
                         onClick={() => void handleMarkLessonResourceCompleted(resource)}
-                        className="rounded-full border border-emerald-200 bg-white px-4 py-2.5 text-[12px] font-medium text-emerald-700 transition hover:bg-emerald-50"
+                        disabled={selectedLesson?.status !== 'complete'}
+                        className="rounded-full border border-emerald-200 bg-white px-4 py-2.5 text-[12px] font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:bg-emerald-50 disabled:opacity-65"
                       >
                         Đã học xong
                       </button>
@@ -3294,6 +3571,12 @@ export default function LearningPathDetail() {
                           className={`inline-flex items-center rounded-full bg-white px-4 py-2.5 text-[12px] font-medium shadow-[0_8px_18px_rgba(114,62,83,0.08)] ${theme.accent}`}
                         >
                           Đọc từ trang {resource.pageNumber}
+                        </span>
+                      ) : null}
+                      {typeof resource.questionabilityScore === 'number' &&
+                      resource.questionabilityScore >= 0.65 ? (
+                        <span className="inline-flex items-center rounded-full bg-[#fff1f6] px-4 py-2.5 text-[12px] font-medium text-[#8c3451]">
+                          Good for quiz generation
                         </span>
                       ) : null}
                     </div>
@@ -3755,7 +4038,7 @@ export default function LearningPathDetail() {
               Làm lại lượt này
             </button>
             <button
-              onClick={() => setSubmitted(true)}
+              onClick={handleSubmitQuizAnswers}
               disabled={submitted || quizQuestions.length === 0 || answeredQuestionCount === 0}
               className="theme-button px-12 py-3 text-[15px] font-bold disabled:opacity-50"
             >

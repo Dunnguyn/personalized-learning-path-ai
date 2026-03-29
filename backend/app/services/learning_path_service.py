@@ -30,6 +30,7 @@ from backend.app.services.learning_path_prompt_builder import (
     normalize_curriculum,
 )
 from backend.app.services.lesson_completion_engine import lesson_completion_engine
+from backend.app.services.adaptive_learning_service import adaptive_learning_service
 
 from backend.app.services.exercise_logging_service import exercise_logging_service
 
@@ -411,6 +412,31 @@ class HybridLearningPathService:
             except Exception:
                 stored_confidence = 0.0
 
+        # Safety: always resolve confidence from this exact lesson attempt history only.
+        # This prevents any accidental cross-lesson confidence reuse leading to auto-pass.
+        lesson_best_confidence = None
+        try:
+            lesson_stats = exercise_logging_service.repository.get_attempt_statistics(
+                user_id,
+                lesson_id,
+            )
+            raw_best = (
+                lesson_stats.get("best_confidence")
+                if isinstance(lesson_stats, dict)
+                else None
+            )
+            if raw_best is not None:
+                lesson_best_confidence = float(raw_best)
+                stored_confidence = max(stored_confidence, lesson_best_confidence)
+        except Exception as exc:
+            logger.warning(
+                "Could not load lesson-specific best confidence: path=%s lesson=%s user=%s error=%s",
+                path_id,
+                lesson_id,
+                user_id,
+                exc,
+            )
+
         # Confidence is lesson-scoped and can only change after submitting lesson exercises.
         if not has_submitted_exercise:
             confidence = None
@@ -488,44 +514,79 @@ class HybridLearningPathService:
         # Requirement: confidence must be >= 75% to complete
         final_status = status
         auto_completed = False
+        adaptive_outcome = None
 
-        if confidence is not None and confidence >= 0.75:
+        if has_submitted_exercise and questions_answered:
+            try:
+                adaptive_outcome = adaptive_learning_service.process_attempt(
+                    user_id=user_id,
+                    lesson_id=lesson_id,
+                    path_id=path_id,
+                    questions=questions_answered,
+                    submitted_confidence=confidence,
+                    target_count=6,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Adaptive loop processing failed: path=%s lesson=%s user=%s error=%s",
+                    path_id,
+                    lesson_id,
+                    user_id,
+                    exc,
+                )
+                adaptive_outcome = None
+
+        submission_accuracy = 0.0
+        if has_submitted_exercise and questions_answered:
+            try:
+                total_answered = len(questions_answered)
+                correct_answered = sum(
+                    1 for item in questions_answered if bool(item.get("is_correct"))
+                )
+                submission_accuracy = (
+                    float(correct_answered) / float(total_answered)
+                    if total_answered > 0
+                    else 0.0
+                )
+            except Exception:
+                submission_accuracy = 0.0
+
+        completion_ready = bool(
+            has_submitted_exercise
+            and questions_answered
+            and submission_accuracy >= 0.75
+        )
+        completion_mastery = (
+            float(adaptive_outcome.get("updated_mastery") or 0.0)
+            if adaptive_outcome
+            else 0.0
+        )
+        completion_accuracy = submission_accuracy
+
+        if completion_ready:
             final_status = "completed"
             auto_completed = True
             logger.info(
-                f"Auto-completing lesson due to high confidence: "
-                f"path={path_id}, lesson={lesson_id}, confidence={confidence:.2%}"
+                f"Auto-completing lesson due to quiz accuracy threshold: "
+                f"path={path_id}, lesson={lesson_id}, "
+                f"accuracy={completion_accuracy:.2%}, confidence={confidence}"
             )
         elif status == "completed":
-            # Block manual completion if confidence is insufficient
-            if confidence is None:
-                # No confidence data - cannot complete
-                _persist_confidence_if_present()
-                logger.warning(
-                    f"Blocking completion without confidence data: "
-                    f"path={path_id}, lesson={lesson_id}"
+            # Block manual completion until quiz correctness threshold is met.
+            if stored_confidence >= 0.75:
+                final_status = "completed"
+                auto_completed = True
+                logger.info(
+                    "Allowing completion from stored passing confidence: path=%s lesson=%s confidence=%.2f",
+                    path_id,
+                    lesson_id,
+                    stored_confidence,
                 )
-                return {
-                    "path_id": path_id,
-                    "lesson_id": lesson_id,
-                    "status": "in_progress",
-                    "is_locked": False,
-                    "auto_completed": False,
-                    "last_confidence": None,
-                    "confidence_updated_at": None,
-                    "reason_locked": (
-                        "Cannot complete lesson without completing exercises. "
-                        "Complete the lesson activities to assess your confidence level."
-                    ),
-                    "blocking_lesson_id": None,
-                    "updated_at": datetime.utcnow(),
-                }
-            elif confidence < 0.75:
-                # Low confidence - cannot complete
+            elif has_submitted_exercise and questions_answered:
                 _persist_confidence_if_present()
                 logger.info(
-                    f"Blocking completion with low confidence: "
-                    f"path={path_id}, lesson={lesson_id}, confidence={confidence:.2%}"
+                    f"Blocking completion with insufficient quiz accuracy: "
+                    f"path={path_id}, lesson={lesson_id}, accuracy={completion_accuracy:.2%}"
                 )
                 return {
                     "path_id": path_id,
@@ -535,13 +596,54 @@ class HybridLearningPathService:
                     "auto_completed": False,
                     "last_confidence": confidence,
                     "confidence_updated_at": confidence_updated_at,
+                    "attempt_id": (
+                        str(adaptive_outcome.get("attempt_id"))
+                        if adaptive_outcome
+                        else None
+                    ),
+                    "accuracy": completion_accuracy,
+                    "updated_mastery": completion_mastery,
+                    "next_action": (
+                        adaptive_outcome.get("next_action") if adaptive_outcome else None
+                    ),
+                    "adaptive_next_quiz": (
+                        adaptive_outcome.get("next_quiz") if adaptive_outcome else None
+                    ),
                     "reason_locked": (
-                        f"Cannot complete with confidence {confidence:.2%} < 75%. "
-                        f"Continue learning to reach the required 75% confidence level."
+                        f"Cannot complete because quiz accuracy {completion_accuracy:.2%} < 75%. "
+                        "Please retry the quiz."
                     ),
                     "blocking_lesson_id": None,
                     "updated_at": datetime.utcnow(),
                 }
+            else:
+                _persist_confidence_if_present()
+                logger.warning(
+                    f"Blocking completion without quiz answers: "
+                    f"path={path_id}, lesson={lesson_id}"
+                )
+                return {
+                    "path_id": path_id,
+                    "lesson_id": lesson_id,
+                    "status": "in_progress",
+                    "is_locked": False,
+                    "auto_completed": False,
+                    "last_confidence": stored_confidence,
+                    "confidence_updated_at": (
+                        stored_record.get("updated_at")
+                        if isinstance(stored_record, dict)
+                        else None
+                    ),
+                    "reason_locked": (
+                        "Cannot complete lesson without answering quiz questions. "
+                        "Please complete the lesson quiz first."
+                    ),
+                    "blocking_lesson_id": None,
+                    "updated_at": datetime.utcnow(),
+                }
+        elif confidence is not None and confidence >= 0.75:
+            # Keep high confidence for feedback only, but do not complete without quiz accuracy >= 75%.
+            final_status = "in_progress"
 
         # Update database
         updated_at = datetime.utcnow()
@@ -618,6 +720,15 @@ class HybridLearningPathService:
             "auto_completed": auto_completed,
             "last_confidence": result_confidence,
             "confidence_updated_at": result_confidence_updated_at,
+            "attempt_id": (
+                str(adaptive_outcome.get("attempt_id")) if adaptive_outcome else None
+            ),
+            "accuracy": completion_accuracy if adaptive_outcome else None,
+            "updated_mastery": completion_mastery if adaptive_outcome else None,
+            "next_action": adaptive_outcome.get("next_action") if adaptive_outcome else None,
+            "adaptive_next_quiz": (
+                adaptive_outcome.get("next_quiz") if adaptive_outcome else None
+            ),
             "reason_locked": None,
             "blocking_lesson_id": None,
             "updated_at": updated_at,
@@ -920,7 +1031,14 @@ class HybridLearningPathService:
                 selection_strategy="local_semantic_lesson_scope_v1",
                 enable_diversity_reranking=True,
                 diversity_lambda=None,
-                resource_ids=[],
+                resource_ids=[
+                    str(item)
+                    for item in (
+                        lesson.get("resource_ids")
+                        or lesson.get("recommended_resource_ids")
+                        or []
+                    )
+                ],
                 metadata=metadata,
             )
         except Exception as exc:

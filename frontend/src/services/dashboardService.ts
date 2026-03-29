@@ -100,12 +100,14 @@ export const dashboardService = {
     goal: string,
     level: string,
     limit: number = 6,
+    mode: 'continue_learning' | 'reinforce_weaknesses' | 'learn_new' | 'quick_review' = 'continue_learning',
   ): Promise<PersonalizedRecommendationResponse> {
     const query = new URLSearchParams({
       user_id: userId,
       goal,
       level,
       limit: String(limit),
+      mode,
     });
 
     return normalizePersonalizedRecommendationResponse(

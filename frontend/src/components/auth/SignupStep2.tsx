@@ -87,7 +87,7 @@ export default function SignupStep2() {
       }
 
       localStorage.setItem('userGoal', step2Data.goal);
-      navigate('/dashboard');
+      window.location.href = '/dashboard';
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Có lỗi xảy ra. Vui lòng thử lại.');
     } finally {

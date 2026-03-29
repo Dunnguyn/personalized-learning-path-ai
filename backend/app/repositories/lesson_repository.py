@@ -43,6 +43,10 @@ class LessonRepository:
     def get(self, lesson_id: str | ObjectId) -> Optional[Dict[str, Any]]:
         return self.collection.find_one({"_id": self._to_object_id(lesson_id)})
 
+    def get_by_id(self, lesson_id: str | ObjectId) -> Optional[Dict[str, Any]]:
+        """Backward-compatible alias used by adaptive services."""
+        return self.get(lesson_id)
+
     def list(self) -> List[Dict[str, Any]]:
         return list(
             self.collection.find().sort(

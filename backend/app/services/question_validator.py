@@ -259,24 +259,133 @@ class LessonScopedQuestionValidator:
 
     @staticmethod
     def _parse_json(raw_text: str) -> Any:
-        text = (raw_text or "").strip()
+        text = (raw_text or "").replace("\ufeff", "").strip()
         if not text:
             return None
+        # Remove non-printable control characters that occasionally leak from provider output.
+        text = "".join(
+            ch for ch in text if ch == "\n" or ch == "\t" or ord(ch) >= 32
+        )
         candidates = [text]
         fenced = re.search(
-            r"```json\s*(\{.*\})\s*```", text, flags=re.DOTALL | re.IGNORECASE
+            r"```(?:json)?\s*(\{.*?\})\s*```",
+            text,
+            flags=re.DOTALL | re.IGNORECASE,
         )
         if fenced:
             candidates.append(fenced.group(1).strip())
-        object_match = re.search(r"(\{.*\})", text, flags=re.DOTALL)
-        if object_match:
-            candidates.append(object_match.group(1).strip())
+        balanced_object = LessonScopedQuestionValidator._extract_balanced_json_object(
+            text
+        )
+        if balanced_object:
+            candidates.append(balanced_object)
         for candidate in candidates:
-            try:
-                return json.loads(candidate)
-            except Exception:
-                continue
+            parsed = LessonScopedQuestionValidator._safe_json_loads(candidate)
+            if parsed is not None:
+                return parsed
         return None
+
+    @staticmethod
+    def _safe_json_loads(candidate: str) -> Any:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            repaired = LessonScopedQuestionValidator._repair_common_json_issues(
+                candidate
+            )
+            if not repaired:
+                return None
+            try:
+                return json.loads(repaired)
+            except Exception:
+                return None
+
+    @staticmethod
+    def _extract_balanced_json_object(text: str) -> str:
+        start = text.find("{")
+        if start < 0:
+            return ""
+
+        in_string = False
+        escaped = False
+        depth = 0
+        for index in range(start, len(text)):
+            ch = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1].strip()
+
+        # If content is truncated, return the tail so repair logic can attempt closure.
+        return text[start:].strip()
+
+    @staticmethod
+    def _repair_common_json_issues(candidate: str) -> str:
+        text = (candidate or "").strip()
+        if not text:
+            return ""
+
+        text = (
+            text.replace("“", '"')
+            .replace("”", '"')
+            .replace("‘", "'")
+            .replace("’", "'")
+        )
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+
+        return LessonScopedQuestionValidator._close_unterminated_json(text)
+
+    @staticmethod
+    def _close_unterminated_json(text: str) -> str:
+        in_string = False
+        escaped = False
+        stack: List[str] = []
+        out_chars: List[str] = []
+
+        for ch in text:
+            out_chars.append(ch)
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                stack.append("}")
+            elif ch == "[":
+                stack.append("]")
+            elif ch in {"}", "]"}:
+                if stack and stack[-1] == ch:
+                    stack.pop()
+                elif stack:
+                    return text
+
+        if in_string:
+            out_chars.append('"')
+        while stack:
+            out_chars.append(stack.pop())
+
+        return "".join(out_chars).strip()
 
     @staticmethod
     def _normalize_text(text: str) -> str:

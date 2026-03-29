@@ -6,7 +6,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from backend.app.api.auth import get_current_user
+from backend.app.api.auth import get_current_user, require_admin_user
 from backend.app.services.analytics_service import analytics_service
 from backend.app.services.event_logging_service import event_logging_service
 
@@ -41,57 +41,29 @@ def get_learner_dashboard(user_id: str, current_user=Depends(get_current_user)):
         ) from exc
 
 
-@router.get("/admin/overview", status_code=status.HTTP_200_OK)
-def get_admin_overview(current_user=Depends(get_current_user)):
-    """Return admin overview metrics."""
+@router.get("/admin/dashboard", status_code=status.HTTP_200_OK)
+def get_admin_dashboard(current_user=Depends(require_admin_user)):
+    """Return the compact admin dashboard snapshot."""
     del current_user
     try:
-        return analytics_service.get_admin_overview()
+        return analytics_service.get_admin_dashboard()
     except Exception as exc:
-        logger.exception("Failed to load admin overview: %s", exc)
+        logger.exception("Failed to load admin dashboard: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not load admin overview",
+            detail="Could not load admin dashboard",
         ) from exc
 
 
-@router.get("/admin/retention", status_code=status.HTTP_200_OK)
-def get_admin_retention(current_user=Depends(get_current_user)):
-    """Return retention metrics."""
+@router.get("/admin/average-study-hours", status_code=status.HTTP_200_OK)
+def get_admin_average_study_hours(current_user=Depends(require_admin_user)):
+    """Return average study hours per user for admin reporting."""
     del current_user
     try:
-        return analytics_service.get_admin_retention()
+        return analytics_service.get_admin_average_study_hours()
     except Exception as exc:
-        logger.exception("Failed to load retention analytics: %s", exc)
+        logger.exception("Failed to load average study hours: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not load retention analytics",
-        ) from exc
-
-
-@router.get("/admin/recommendation", status_code=status.HTTP_200_OK)
-def get_admin_recommendation(current_user=Depends(get_current_user)):
-    """Return recommendation effectiveness metrics."""
-    del current_user
-    try:
-        return analytics_service.get_admin_recommendation()
-    except Exception as exc:
-        logger.exception("Failed to load recommendation analytics: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not load recommendation analytics",
-        ) from exc
-
-
-@router.get("/system/performance", status_code=status.HTTP_200_OK)
-def get_system_performance(current_user=Depends(get_current_user)):
-    """Return system performance and operational metrics."""
-    del current_user
-    try:
-        return analytics_service.get_system_performance()
-    except Exception as exc:
-        logger.exception("Failed to load system performance: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not load system performance",
+            detail="Could not load average study hours",
         ) from exc

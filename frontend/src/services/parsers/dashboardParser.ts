@@ -40,6 +40,13 @@ const normalizeRecommendedConcept = (value: unknown): RecommendedConceptApiItem 
 
 const normalizeRecommendedResource = (value: unknown): RecommendedResourceItem => {
   const record = asRecord(value);
+  const scoreBreakdownRaw = asRecord(record.score_breakdown);
+  const scoreBreakdown =
+    Object.keys(scoreBreakdownRaw).length > 0
+      ? Object.fromEntries(
+          Object.entries(scoreBreakdownRaw).map(([key, itemValue]) => [key, asNumber(itemValue)]),
+        )
+      : null;
 
   return {
     resource_id:
@@ -52,7 +59,21 @@ const normalizeRecommendedResource = (value: unknown): RecommendedResourceItem =
     topic: asString(record.topic),
     url: typeof record.url === 'string' ? record.url : null,
     reason: asString(record.reason, 'Phù hợp với lộ trình học hiện tại của bạn.'),
+    reason_tags: Array.isArray(record.reason_tags)
+      ? record.reason_tags.map((item) => asString(item)).filter(Boolean)
+      : [],
     relevance_score: asNumber(record.relevance_score),
+    recommendation_mode:
+      typeof record.recommendation_mode === 'string' ? record.recommendation_mode : undefined,
+    estimated_time: typeof record.estimated_time === 'number' ? record.estimated_time : null,
+    primary_concepts: Array.isArray(record.primary_concepts)
+      ? record.primary_concepts.map((item) => asString(item)).filter(Boolean)
+      : [],
+    quality_score: typeof record.quality_score === 'number' ? record.quality_score : null,
+    expected_learning_gain:
+      typeof record.expected_learning_gain === 'number' ? record.expected_learning_gain : null,
+    score_breakdown: scoreBreakdown,
+    rank_position: typeof record.rank_position === 'number' ? record.rank_position : null,
   };
 };
 
@@ -228,6 +249,7 @@ export const normalizePersonalizedRecommendationResponse = (
         : '',
     goal: asString(record.goal),
     level: asString(record.level, 'beginner'),
+    mode: typeof record.mode === 'string' ? record.mode : undefined,
     recommended_resources: Array.isArray(record.recommended_resources)
       ? record.recommended_resources.map(normalizeRecommendedResource)
       : [],
@@ -235,6 +257,10 @@ export const normalizePersonalizedRecommendationResponse = (
     total_concepts: asNumber(record.total_concepts),
     progress_percentage: asNumber(record.progress_percentage),
     message: asString(record.message),
+    reranking_metadata:
+      record.reranking_metadata && typeof record.reranking_metadata === 'object'
+        ? (record.reranking_metadata as Record<string, unknown>)
+        : null,
   };
 };
 

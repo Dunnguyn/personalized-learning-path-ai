@@ -35,30 +35,24 @@ export interface LearnerAnalyticsDashboard {
   recommendation_and_quiz: LearnerRecommendationAndQuizMetrics;
 }
 
-export interface AdminOverviewMetrics {
+export interface AdminDashboardMetrics {
   dau: number;
   wau: number;
   learning_path_generation_success_rate: number;
-}
-
-export interface AdminRetentionMetrics {
-  active_users_30d: number;
-  active_users_7d: number;
-  retention_7_over_30: number;
-}
-
-export interface AdminRecommendationMetrics {
-  recommendation_shown: number;
-  recommendation_clicked: number;
-  ctr: number;
-}
-
-export interface SystemPerformanceMetrics {
+  average_study_hours_per_user: number;
+  total_study_hours: number;
+  user_count: number;
   p50_latency_ms: number;
   p95_latency_ms: number;
   p99_latency_ms: number;
   api_error_rate: number;
-  total_api_calls: number;
-  failed_api_calls: number;
-  ai_request_cost_estimate: number;
+  has_user_data: boolean;
+  no_data_message: string | null;
+  updated_at: string | null;
+}
+
+export interface AdminAverageStudyHoursMetrics {
+  average_study_hours_per_user: number;
+  total_study_hours: number;
+  user_count: number;
 }

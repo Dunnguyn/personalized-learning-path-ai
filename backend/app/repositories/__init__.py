@@ -11,11 +11,16 @@ from .question_repository import QuestionBankRepository
 from .subject_repository import SubjectRepository
 from .event_log_repository import EventLogRepository
 from .analytics_repository import AnalyticsRepository
-from .experiment_repository import ExperimentRepository
 from .recommendation_repository import RecommendationRepository
 from .kt_repository import KnowledgeTracingRepository
 from .learner_signal_repository import LearnerSignalRepository
 from .path_refinement_repository import PathRefinementRepository
+from .adaptive_attempt_repository import AdaptiveAttemptRepository
+from .user_learning_state_repository import UserLearningStateRepository
+from .adaptive_event_repository import AdaptiveEventRepository
+from .learning_event_repository import LearningEventRepository
+from .learner_state_snapshot_repository import LearnerStateSnapshotRepository
+from .expected_learning_gain_repository import ExpectedLearningGainRepository
 
 __all__ = [
     "ChapterRepository",
@@ -29,9 +34,14 @@ __all__ = [
     "SubjectRepository",
     "EventLogRepository",
     "AnalyticsRepository",
-    "ExperimentRepository",
     "RecommendationRepository",
     "KnowledgeTracingRepository",
     "LearnerSignalRepository",
     "PathRefinementRepository",
+    "AdaptiveAttemptRepository",
+    "UserLearningStateRepository",
+    "AdaptiveEventRepository",
+    "LearningEventRepository",
+    "LearnerStateSnapshotRepository",
+    "ExpectedLearningGainRepository",
 ]
