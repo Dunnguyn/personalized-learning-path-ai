@@ -1,174 +1,122 @@
 # =========================
-# ENVIRONMENT & SECRETS
+# Environment & Secrets
 # =========================
-# Environment files (API keys, passwords, sensitive config)
 .env
 .env.local
 .env.*.local
 .env.production.local
-
-# =========================
-# BACKEND - PYTHON
-# =========================
-# Virtual environments
-venv/
-env/
-ENV/
-.venv
-
-# Python cache and compiled files
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-
-# Build artifacts
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# pytest, coverage, and testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# IDE and editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-
-# Logs
-logs/
-*.log
-npm-debug.log*
-lerna-debug.log*
-
-# =========================
-# FRONTEND - NODE
-# =========================
-# Dependencies
-frontend/node_modules/
-frontend/node_modules
-
-# Build output
-frontend/dist/
-frontend/build/
-frontend/.vite/cache
-
-# Package manager lockfiles (optional - decide with team)
-# Uncomment if you want to commit lockfiles
-# frontend/package-lock.json
-# frontend/yarn.lock
-# frontend/pnpm-lock.yaml
-
-# Development
-frontend/.eslintcache
+.env.docker
+backend/.env
+frontend/.env
 frontend/.env.local
 frontend/.env.*.local
 
-# =========================
-# UPLOADS & DATA
-# =========================
-# User uploaded files
-backend/uploads/
-*.pdf
-*.mp4
-*.mp3
-
-# Temporary files
-*.tmp
-*.temp
-*.bak
+# Do keep example env files in git
+!.env.example
+!frontend/.env.example
 
 # =========================
-# OS FILES
+# Python / Backend
 # =========================
-.DS_Store
-.AppleDouble
-.LSOverride
-Thumbs.db
-Desktop.ini
-
-# =========================
-# DATABASE & CACHE
-# =========================
-*.db
-*.sqlite
-*.sqlite3
-.redis/
-
-# =========================
-# PROJECT SPECIFIC
-# =========================
-# Scraped/downloaded content
-downloads/
-cache/
-
-# =========================
-# BỔ SUNG CÁC FILE KHÔNG CẦN THIẾT
-# =========================
-# Python
+.venv/
+.venv*/
+.venv312/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.pytest_cache/
+backend/pytest-cache-files-*/
 .mypy_cache/
 .ruff_cache/
 .pyre/
 .tox/
 .nox/
-__pypackages__/
-pip-wheel-metadata/
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-.ipynb_checkpoints/
-.pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
-*.egg-info/
+.ipynb_checkpoints/
+pip-wheel-metadata/
+__pypackages__/
+.python-version
+.envrc
 *.egg
-wheels/
+*.egg-info/
 build/
 dist/
-develop-eggs/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.sqlite
-*.sqlite3
-*.db
-.redis/
 
-# Node/Frontend
+# =========================
+# Node / Frontend
+# =========================
 node_modules/
 frontend/node_modules/
+frontend/node_modules/.cache/
 frontend/dist/
 frontend/build/
-frontend/.vite/cache
+frontend/.vite/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
+.npm/
+.pnpm-store/
+.yarn/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.parcel-cache/
+.turbo/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+.eslintcache
 frontend/.eslintcache
 
-# IDE/Editor
+# =========================
+# Logs & Temporary Files
+# =========================
+logs/
+*.log
+npm-debug.log*
+lerna-debug.log*
+uvicorn.*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# =========================
+# Runtime Data & Local Storage
+# =========================
+backend/uploads/
+uploads/
+backend/.chroma/
+backend/.runtime/
+cache/
+.cache/
+downloads/
+
+# =========================
+# Project Artifacts / Diagrams
+# =========================
+*.dbml
+
+# =========================
+# Database / Local Services
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+.redis/
+
+# =========================
+# OS / Editor
+# =========================
 .vscode/
 .idea/
 *.swp
@@ -177,75 +125,3 @@ frontend/.eslintcache
 .DS_Store
 Thumbs.db
 Desktop.ini
-.cache/
-
-# Logs/Temp/Backup
-logs/
-*.log
-npm-debug.log*
-lerna-debug.log*
-*.tmp
-*.temp
-*.bak
-*.orig
-
-# Env/Secrets
-.env
-.env.local
-.env.*.local
-.env.production.local
-.env.docker
-credentials.json
-secrets.json
-docker-compose.override.yml
-
-# Uploads/Data
-backend/uploads/
-*.pdf
-*.mp4
-*.mp3
-
-# Runtime vector index/cache data
-backend/.chroma/
-backend/.runtime/
-
-
-# =========================
-# ADDITIONAL COMMON IGNORES
-# =========================
-# Python tool caches and envs
-.mypy_cache/
-.pyre/
-.ruff_cache/
-.tox/
-.nox/
-__pypackages__/
-pip-wheel-metadata/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Secrets, keys and credentials
-*.pem
-*.key
-*.crt
-credentials.json
-secrets.json
-
-# Docker overrides and envs
-docker-compose.override.yml
-.env.docker
-
-# Misc caches and editor backups
-.cache/
-*.bak
-*.orig
-
-# =========================
-# DEVELOPMENT & UTILITY FILES
-# =========================
-# System check and verification scripts
-backend_check.py
-backend_verify.py
-BACKEND_REVIEW.md
-BACKEND_STATUS.md
