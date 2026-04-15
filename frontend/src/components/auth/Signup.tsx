@@ -1,8 +1,18 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import bunnyLogo from '../../assets/Elegant Sub-Logo Designs for Beauty Brands.jpg';
+import AuthShell from './AuthShell';
 import illustrationLearning from '../../assets/tải xuống (1).jpg';
+import { brandLogo } from '../../assets';
 import type { SignUpRequest } from '../../types/auth';
+
+const introVisual = (
+  <div className="flex flex-col items-center">
+    <div className="flex h-18 w-18 items-center justify-center rounded-full bg-[#fff4f8] shadow-[0_14px_32px_rgba(162,94,121,0.12)]">
+      <img src={brandLogo} alt="Learning brand" className="h-11 w-11 rounded-full object-cover" />
+    </div>
+    <div className="mt-4 text-[14px] font-semibold tracking-[0.38em] text-[#8c3451]/56">01</div>
+  </div>
+);
 
 export default function Signup() {
   const navigate = useNavigate();
@@ -13,32 +23,32 @@ export default function Signup() {
   });
   const [error, setError] = useState('');
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = event.target;
+    setFormData((previous) => ({
+      ...previous,
       [name]: value,
     }));
   };
 
-  const handleNext = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleNext = (event: React.FormEvent) => {
+    event.preventDefault();
     setError('');
 
     if (!formData.fullName.trim()) {
-      setError('Vui lòng nhập tên của bạn');
+      setError('Vui lòng nhập tên của bạn.');
       return;
     }
     if (!formData.email.trim()) {
-      setError('Vui lòng nhập email');
+      setError('Vui lòng nhập email.');
       return;
     }
     if (!formData.password.trim()) {
-      setError('Vui lòng nhập mật khẩu');
+      setError('Vui lòng nhập mật khẩu.');
       return;
     }
     if (formData.password.length < 6) {
-      setError('Mật khẩu phải có ít nhất 6 ký tự');
+      setError('Mật khẩu phải có ít nhất 6 ký tự.');
       return;
     }
 
@@ -46,95 +56,88 @@ export default function Signup() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#fbe7ef_0%,#f6d7e4_100%)] p-6">
-      <div className="relative flex min-h-[800px] w-full max-w-[1253px] overflow-hidden rounded-[36px] border border-white/70 bg-[#fff9fd]/95 shadow-[0_28px_80px_rgba(114,62,83,0.16)]">
-        <div className="flex w-[682px] flex-col items-center justify-center bg-[linear-gradient(180deg,#fff7fb_0%,#fce7f0_100%)] p-12">
-          <div className="mb-8 h-[100px] w-[100px] overflow-hidden rounded-full">
-            <img alt="Logo" className="h-full w-full object-cover" src={bunnyLogo} />
-          </div>
-
-          <div className="mb-8 flex gap-2">
-            <div className="h-[4px] w-[10px] rounded-[2px] bg-[#5b1724]" />
-            <div className="h-[4px] w-[10px] rounded-[2px] bg-[#de8fac]" />
-          </div>
-
-          <h1 className="mb-4 text-center text-[35px] font-semibold text-[#832e44]">
-            Bắt đầu ngay
-          </h1>
-
-          <p className="mb-12 text-center text-[15px] text-[#832e44]">
-            Tạo tài khoản để bắt đầu học theo lộ trình cá nhân hóa
-          </p>
-
-          <form onSubmit={handleNext} className="w-[396px] space-y-6">
-            <div className="relative">
-              <input
-                type="text"
-                name="fullName"
-                value={formData.fullName}
-                onChange={handleChange}
-                placeholder="Tên"
-                className="h-[35px] w-full rounded-[12px] border-none bg-white px-4 text-[13px] text-[#832e44] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] placeholder-[#e4b6d0] focus:outline-none focus:ring-2 focus:ring-[#832e44]"
-                required
-              />
-            </div>
-
-            <div className="relative">
-              <input
-                type="email"
-                name="email"
-                value={formData.email}
-                onChange={handleChange}
-                placeholder="Email"
-                className="h-[35px] w-full rounded-[12px] border-none bg-white px-4 text-[13px] text-[#832e44] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] placeholder-[#e4b6d0] focus:outline-none focus:ring-2 focus:ring-[#832e44]"
-                required
-              />
-            </div>
-
-            <div className="relative">
-              <input
-                type="password"
-                name="password"
-                value={formData.password}
-                onChange={handleChange}
-                placeholder="Mật khẩu"
-                className="h-[35px] w-full rounded-[12px] border-none bg-white px-4 text-[13px] text-[#832e44] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] placeholder-[#e4b6d0] focus:outline-none focus:ring-2 focus:ring-[#832e44]"
-                required
-              />
-            </div>
-
-            {error && <div className="text-center text-[12px] text-red-500">{error}</div>}
-
-            <div className="flex justify-center pt-4">
-              <button
-                type="submit"
-                className="h-[38px] w-full rounded-[14px] bg-[#5b1724] px-6 text-[13px] font-semibold text-[#f7d5e0] transition-colors duration-200 hover:bg-[#6d1f2e]"
-              >
-                Tiếp theo
-              </button>
-            </div>
-          </form>
-
-          <p className="mt-8 text-center text-[10px] text-[#832e44]">
-            <span>Đã có tài khoản? </span>
-            <button
-              onClick={() => navigate('/login')}
-              className="cursor-pointer font-bold hover:underline"
-            >
-              Đăng nhập
-            </button>
-          </p>
-        </div>
-
-        <div className="relative h-full w-[571px] overflow-hidden">
-          <img
-            alt="Learning illustration"
-            className="h-full w-full object-cover"
-            src={illustrationLearning}
+    <AuthShell
+      badge="Tạo tài khoản"
+      title="Bắt đầu ngay"
+      description="Tạo tài khoản để bắt đầu hành trình học tập cá nhân hóa."
+      mediaAlt="Minh họa học tập"
+      mediaSrc={illustrationLearning}
+      sideLabel=""
+      sideTitle=""
+      sideCopy=""
+      showSideContent={false}
+      introVisual={introVisual}
+      centerContent
+      titleClassName="mt-2 text-[42px] font-semibold leading-[1.02] tracking-[-0.05em] text-[#8c3451] md:text-[46px]"
+      descriptionClassName="text-[14px] leading-6 text-[#6d655f]"
+      formShellClassName="mt-8 w-full max-w-[390px] border-0 bg-transparent p-0 shadow-none"
+      footerClassName="text-[13px] text-[#6d655f]"
+      footer={
+        <p>
+          Đã có tài khoản?{' '}
+          <button type="button" onClick={() => navigate('/login')} className="font-semibold text-[#8c3451] hover:underline">
+            Đăng nhập
+          </button>
+        </p>
+      }
+    >
+      <form onSubmit={handleNext} className="mx-auto flex w-full max-w-[390px] flex-col gap-4">
+        <div>
+          <label className="auth-label text-left">Tên</label>
+          <input
+            type="text"
+            name="fullName"
+            value={formData.fullName}
+            onChange={handleChange}
+            placeholder="Nguyễn Văn A"
+            className="auth-input text-[15px]"
+            required
           />
-          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(140,52,81,0.08)_0%,rgba(255,255,255,0)_45%,rgba(140,52,81,0.14)_100%)]" />
         </div>
-      </div>
-    </div>
+
+        <div>
+          <label className="auth-label text-left">Email</label>
+          <input
+            type="email"
+            name="email"
+            value={formData.email}
+            onChange={handleChange}
+            placeholder="you@example.com"
+            className="auth-input text-[15px]"
+            required
+          />
+        </div>
+
+        <div>
+          <label className="auth-label text-left">Mật khẩu</label>
+          <input
+            type="password"
+            name="password"
+            value={formData.password}
+            onChange={handleChange}
+            placeholder="Ít nhất 6 ký tự"
+            className="auth-input text-[15px]"
+            required
+          />
+        </div>
+
+        {error ? (
+          <div className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-left text-[13px] text-red-700">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="rounded-[18px] border border-[#efe1d6] bg-white/80 px-4 py-3 text-left text-[13px] text-[#6d655f]">
+          Bước tiếp theo bạn sẽ chọn mục tiêu học tập và mức hiện tại để hệ thống cá nhân hóa trải nghiệm.
+        </div>
+
+        <button
+          type="submit"
+          className="theme-button mt-2 min-h-[54px] w-full justify-center text-[15px]"
+        >
+          Tiếp theo
+        </button>
+      </form>
+    </AuthShell>
   );
 }

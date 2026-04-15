@@ -39,6 +39,7 @@ class ExerciseLoggingService:
         confidence: float,
         auto_completed: bool,
         lesson_status_after: str,
+        attempt_metrics: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Log a quiz/exercise attempt with detailed answer tracking.
@@ -88,6 +89,7 @@ class ExerciseLoggingService:
                 passed=auto_completed,
                 status_after=lesson_status_after,
                 attempt_number=attempt_number,
+                attempt_metrics=attempt_metrics,
             )
 
             logger.info(
@@ -211,6 +213,8 @@ class ExerciseLoggingService:
                         "correctly_answered": correct_count,
                         "total_questions": len(questions),
                         "status_after": attempt.get("status_after"),
+                        "mastery_score": attempt.get("mastery_score"),
+                        "completion_status": attempt.get("completion_status"),
                         "created_at": (
                             attempt.get("created_at").isoformat()
                             if attempt.get("created_at")
@@ -288,6 +292,15 @@ class ExerciseLoggingService:
                             a.get("confidence", 0) for a in attempts_list
                         ),
                         "passed": any(a.get("passed") for a in attempts_list),
+                        "best_mastery_score": max(
+                            float(a.get("mastery_score", 0.0) or 0.0)
+                            for a in attempts_list
+                        )
+                        if attempts_list
+                        else None,
+                        "latest_completion_status": attempts_list[0].get(
+                            "completion_status"
+                        ),
                     }
                     for lesson_id, attempts_list in grouped.items()
                 },

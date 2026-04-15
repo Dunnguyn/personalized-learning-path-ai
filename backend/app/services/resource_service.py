@@ -15,12 +15,13 @@ from backend.app.database.mongo import get_db
 from backend.app.repositories import (
     LessonRecommendedChunkRepository,
     LessonRepository,
-    QuestionBankRepository,
+    LessonQuestionRepository,
     ResourceChunkRepository,
     ResourceRepository,
 )
 from backend.app.services.embedding_service import embedding_service, semantic_search
 from backend.app.services.ingestion_service import ingestion_service
+from backend.app.services.resource_quality_service import resource_quality_service
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ _resource_repository = ResourceRepository()
 _chunk_repository = ResourceChunkRepository()
 _lesson_repository = LessonRepository()
 _lesson_recommended_chunk_repository = LessonRecommendedChunkRepository()
-_question_repository = QuestionBankRepository()
+_question_repository = LessonQuestionRepository()
 
 
 def _get_completed_lesson_ids(user_id: Optional[str]) -> Set[str]:
@@ -117,13 +118,22 @@ def _is_resource_completed(
 
 def serialize_mongo(document: Dict[str, Any]) -> Dict[str, Any]:
     """Convert MongoDB objects into JSON-friendly primitives."""
-    serialized = dict(document)
-    if isinstance(serialized.get("_id"), ObjectId):
-        serialized["_id"] = str(serialized["_id"])
-    for key, value in list(serialized.items()):
+    def _json_safe(value: Any) -> Any:
+        if isinstance(value, ObjectId):
+            return str(value)
         if isinstance(value, datetime):
-            serialized[key] = value.isoformat()
-    return serialized
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {str(key): _json_safe(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [_json_safe(item) for item in value]
+        if isinstance(value, tuple):
+            return [_json_safe(item) for item in value]
+        if isinstance(value, set):
+            return [_json_safe(item) for item in value]
+        return value
+
+    return _json_safe(dict(document))
 
 
 def get_resources_service(
@@ -394,7 +404,7 @@ def delete_resource_service(resource_id: str) -> Dict[str, Any]:
             },
         )
 
-    removed_question_bank_entries = _question_repository.delete_by_resources_or_chunks(
+    removed_lesson_questions = _question_repository.delete_by_resources_or_chunks(
         resource_ids=[resource_id],
         chunk_ids=chunk_ids,
     )
@@ -426,7 +436,7 @@ def delete_resource_service(resource_id: str) -> Dict[str, Any]:
         "deleted": True,
         "removed_chunks": len(chunk_ids),
         "removed_recommendations": len(recommendation_ids),
-        "removed_question_bank_entries": removed_question_bank_entries,
+        "removed_lesson_questions": removed_lesson_questions,
     }
 
 
@@ -466,4 +476,204 @@ def get_resource_stats(user_id: Optional[str] = None) -> Dict[str, Any]:
         },
         "by_type": {item["_id"]: item["count"] for item in facet.get("by_type", [])},
         "recent_resources": [serialize_mongo(item) for item in facet.get("recent", [])],
+    }
+
+
+def _normalize_curated_concept_ids(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: List[str] = []
+    seen: Set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _build_resource_curation_item(
+    resource: Dict[str, Any],
+    *,
+    duplicate_map: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    metadata = resource.get("metadata") or {}
+    quality = resource_quality_service.get_resource_quality(resource)
+    resource_id = str(resource.get("_id") or "")
+    duplicate_info = duplicate_map.get(resource_id) or {}
+    curated_concept_ids = _normalize_curated_concept_ids(
+        metadata.get("curated_concept_ids")
+    )
+    fallback_concept_id = metadata.get("concept_id")
+    if fallback_concept_id is not None and str(fallback_concept_id) not in curated_concept_ids:
+        curated_concept_ids.append(str(fallback_concept_id))
+
+    problem_flags: List[str] = []
+    if quality.get("quality_score", 0.0) < 0.6:
+        problem_flags.append("low_quality")
+    if duplicate_info.get("duplicate_count", 0) > 1:
+        problem_flags.append("duplicate_candidate")
+    if str(resource.get("status") or "").lower() in {"failed", "error"}:
+        problem_flags.append("ingestion_failed")
+    if int(resource.get("chunks_count") or 0) <= 0:
+        problem_flags.append("missing_chunks")
+
+    return {
+        "resource_id": resource_id,
+        "title": str(resource.get("title") or ""),
+        "topic": str(resource.get("topic") or ""),
+        "source": str(resource.get("source") or ""),
+        "type": str(resource.get("type") or ""),
+        "status": str(resource.get("status") or ""),
+        "chunks_count": int(resource.get("chunks_count") or 0),
+        "quality_score": round(float(quality.get("quality_score", 0.0) or 0.0), 4),
+        "quality_label": str(metadata.get("quality_label") or ""),
+        "quality_breakdown": quality,
+        "curated_concept_ids": curated_concept_ids,
+        "admin_notes": str(metadata.get("admin_notes") or ""),
+        "hidden_from_recommendation": bool(
+            metadata.get("hidden_from_recommendation", False)
+        ),
+        "duplicate_key": duplicate_info.get("duplicate_key"),
+        "duplicate_count": int(duplicate_info.get("duplicate_count") or 0),
+        "problem_flags": problem_flags,
+        "updated_at": resource.get("updated_at"),
+    }
+
+
+def get_admin_resource_curation_service(
+    *,
+    limit: int = 20,
+    status: Optional[str] = None,
+    quality_bucket: Optional[str] = None,
+) -> Dict[str, Any]:
+    query: Dict[str, Any] = {}
+    if status:
+        query["status"] = str(status).strip().lower()
+
+    resources = list(
+        _resource_repository.collection.find(query).sort("updated_at", -1).limit(max(1, limit))
+    )
+    duplicate_groups = _resource_repository.find_latest_duplicate_groups()
+    duplicate_map: Dict[str, Dict[str, Any]] = {}
+    formatted_duplicate_groups: List[Dict[str, Any]] = []
+    for group in duplicate_groups:
+        duplicate_key = str(group.get("_id") or "")
+        count = int(group.get("count") or 0)
+        resource_ids = [str(item.get("_id")) for item in group.get("resources", []) if item.get("_id")]
+        formatted_duplicate_groups.append(
+            {
+                "duplicate_key": duplicate_key,
+                "resource_ids": resource_ids,
+                "duplicate_count": count,
+            }
+        )
+        for resource_id in resource_ids:
+            duplicate_map[resource_id] = {
+                "duplicate_key": duplicate_key,
+                "duplicate_count": count,
+            }
+
+    items = [
+        _build_resource_curation_item(resource, duplicate_map=duplicate_map)
+        for resource in resources
+    ]
+
+    normalized_bucket = str(quality_bucket or "").strip().lower()
+    if normalized_bucket == "low":
+        items = [item for item in items if item["quality_score"] < 0.6]
+    elif normalized_bucket == "medium":
+        items = [item for item in items if 0.6 <= item["quality_score"] < 0.8]
+    elif normalized_bucket == "high":
+        items = [item for item in items if item["quality_score"] >= 0.8]
+
+    status_pipeline = [
+        {"$group": {"_id": {"$ifNull": ["$status", "unknown"]}, "count": {"$sum": 1}}},
+    ]
+    status_counts = {
+        str(item.get("_id") or "unknown"): int(item.get("count") or 0)
+        for item in _resource_repository.collection.aggregate(status_pipeline)
+    }
+
+    low_quality_count = sum(1 for item in items if item["quality_score"] < 0.6)
+    return {
+        "items": items,
+        "status_counts": status_counts,
+        "duplicate_groups": formatted_duplicate_groups[:10],
+        "low_quality_count": low_quality_count,
+        "total_items": len(items),
+    }
+
+
+def update_resource_curation_service(
+    resource_id: str,
+    *,
+    curated_concept_ids: Optional[List[str]] = None,
+    quality_label: Optional[str] = None,
+    admin_notes: Optional[str] = None,
+    hidden_from_recommendation: Optional[bool] = None,
+) -> Dict[str, Any]:
+    resource = _resource_repository.get(resource_id)
+    if not resource:
+        raise ValueError("Resource not found.")
+
+    updates: Dict[str, Any] = {}
+    if curated_concept_ids is not None:
+        normalized = _normalize_curated_concept_ids(curated_concept_ids)
+        updates["metadata.curated_concept_ids"] = normalized
+        if normalized:
+            first = normalized[0]
+            updates["metadata.concept_id"] = int(first) if first.isdigit() else first
+    if quality_label is not None:
+        updates["metadata.quality_label"] = str(quality_label).strip()
+    if admin_notes is not None:
+        updates["metadata.admin_notes"] = str(admin_notes).strip()
+    if hidden_from_recommendation is not None:
+        updates["metadata.hidden_from_recommendation"] = bool(hidden_from_recommendation)
+
+    if not updates:
+        duplicate_info = {}
+        return _build_resource_curation_item(resource, duplicate_map=duplicate_info)
+
+    updated = _resource_repository.update(resource_id, updates)
+    if not updated:
+        raise ValueError("Resource not found.")
+    return _build_resource_curation_item(updated, duplicate_map={})
+
+
+def get_ingestion_health_service(*, recent_job_limit: int = 10) -> Dict[str, Any]:
+    status_counts = {
+        str(item.get("_id") or "unknown"): int(item.get("count") or 0)
+        for item in _resource_repository.collection.aggregate(
+            [{"$group": {"_id": {"$ifNull": ["$status", "unknown"]}, "count": {"$sum": 1}}}]
+        )
+    }
+    total_chunks = _chunk_repository.count_total()
+    chunk_backend_counts = _chunk_repository.count_by_embedding_backend()
+    recent_jobs = [
+        serialize_mongo(item)
+        for item in ingestion_service.job_repository.collection.find({}, {
+            "resource_id": 1,
+            "resource_type": 1,
+            "status": 1,
+            "chunks_count": 1,
+            "processing_time": 1,
+            "error": 1,
+            "created_at": 1,
+            "updated_at": 1,
+        }).sort("created_at", -1).limit(max(1, recent_job_limit))
+    ]
+
+    return {
+        "resource_status_counts": status_counts,
+        "chunk_totals": {
+            "total": total_chunks,
+            "with_embeddings": _chunk_repository.count_with_embeddings(),
+            "without_embeddings": _chunk_repository.count_without_embeddings(),
+            "by_backend": chunk_backend_counts,
+        },
+        "embedding": embedding_service.backend_status(),
+        "vector_store": {"available": embedding_service.vector_store.available},
+        "recent_jobs": recent_jobs,
     }

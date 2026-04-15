@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 class ExerciseAttemptRepository:
     """Manages exercise attempt history logging and retrieval."""
 
+    _BLOOM_WEIGHTS = {
+        "remember": 0.25,
+        "understand": 0.25,
+        "apply": 0.30,
+        "analyze": 0.20,
+    }
+
     def __init__(self, db):
         self.db = db
         self.collection = db.exercise_attempts
@@ -50,6 +57,136 @@ class ExerciseAttemptRepository:
         except Exception as e:
             logger.warning(f"Failed to create indexes: {e}")
 
+    @staticmethod
+    def _as_nullable_float(value: Any) -> Optional[float]:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    @classmethod
+    def _derive_bloom_score_from_accuracy_map(
+        cls,
+        bloom_accuracy_by_level: Dict[str, Any] | None,
+    ) -> Optional[float]:
+        if not isinstance(bloom_accuracy_by_level, dict) or not bloom_accuracy_by_level:
+            return None
+
+        weighted_score = 0.0
+        has_any_value = False
+        for level, weight in cls._BLOOM_WEIGHTS.items():
+            try:
+                value = bloom_accuracy_by_level.get(level)
+                if value is None:
+                    continue
+                accuracy = float(value)
+            except Exception:
+                continue
+            has_any_value = True
+            weighted_score += float(weight) * max(0.0, min(1.0, accuracy))
+
+        if not has_any_value:
+            return None
+        return round(max(0.0, min(1.0, weighted_score)), 4)
+
+    @classmethod
+    def _derive_bloom_score_from_questions(
+        cls,
+        questions: List[Dict[str, Any]] | None,
+    ) -> Optional[float]:
+        if not questions:
+            return None
+
+        grouped: Dict[str, List[bool]] = {}
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            level = str(question.get("bloom_level") or "").strip().lower()
+            if level not in cls._BLOOM_WEIGHTS:
+                continue
+            grouped.setdefault(level, []).append(bool(question.get("is_correct")))
+
+        if not grouped:
+            return None
+
+        weighted_score = 0.0
+        for level, weight in cls._BLOOM_WEIGHTS.items():
+            answers = grouped.get(level) or []
+            if not answers:
+                continue
+            accuracy = sum(1 for value in answers if value) / max(1, len(answers))
+            weighted_score += float(weight) * float(accuracy)
+
+        return round(max(0.0, min(1.0, weighted_score)), 4)
+
+    @classmethod
+    def _resolve_attempt_bloom_score(cls, attempt: Dict[str, Any]) -> Optional[float]:
+        derived = cls._derive_bloom_score_from_questions(attempt.get("questions"))
+        if derived is None:
+            derived = cls._derive_bloom_score_from_accuracy_map(
+                attempt.get("bloom_accuracy_by_level")
+            )
+        stored = cls._as_nullable_float(attempt.get("bloom_score"))
+        if derived is not None:
+            return derived
+        return stored
+
+    @staticmethod
+    def _resolve_attempt_mastery_score(attempt: Dict[str, Any]) -> float:
+        try:
+            return float(attempt.get("mastery_score", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _resolve_attempt_confidence(attempt: Dict[str, Any]) -> float:
+        try:
+            return float(attempt.get("confidence", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _completion_rank(attempt: Dict[str, Any]) -> int:
+        status = str(attempt.get("completion_status") or "").strip().lower()
+        if status == "completed":
+            return 3
+        if status == "reinforce_required":
+            return 2
+        if status == "retry_required":
+            return 1
+        return 0
+
+    @classmethod
+    def _select_best_attempt(cls, attempts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not attempts:
+            return None
+
+        completed_attempts = [
+            attempt
+            for attempt in attempts
+            if bool(attempt.get("passed"))
+            or str(attempt.get("completion_status") or "").strip().lower() == "completed"
+        ]
+        candidate_attempts = completed_attempts or attempts
+
+        def sort_key(attempt: Dict[str, Any]) -> tuple[float, float, float, int, int]:
+            bloom_score = cls._resolve_attempt_bloom_score(attempt)
+            try:
+                attempt_number = int(attempt.get("attempt_number") or 0)
+            except Exception:
+                attempt_number = 0
+            return (
+                cls._resolve_attempt_mastery_score(attempt),
+                float(bloom_score or 0.0),
+                cls._resolve_attempt_confidence(attempt),
+                cls._completion_rank(attempt),
+                attempt_number,
+            )
+
+        return max(candidate_attempts, key=sort_key)
+
     def create_attempt(
         self,
         user_id: str,
@@ -60,6 +197,7 @@ class ExerciseAttemptRepository:
         passed: bool,
         status_after: str,
         attempt_number: int,
+        attempt_metrics: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Log a new exercise/quiz attempt.
@@ -102,6 +240,26 @@ class ExerciseAttemptRepository:
                 "created_at": now,
                 "updated_at": now,
             }
+            if isinstance(attempt_metrics, dict):
+                attempt.update(
+                    {
+                        "mastery_score": attempt_metrics.get("mastery_score"),
+                        "completion_status": attempt_metrics.get("completion_status"),
+                        "reinforce_required": bool(
+                            attempt_metrics.get("reinforce_required")
+                        ),
+                        "retry_required": bool(
+                            attempt_metrics.get("retry_required")
+                        ),
+                        "bloom_score": attempt_metrics.get("bloom_score"),
+                        "bloom_accuracy_by_level": dict(
+                            attempt_metrics.get("bloom_accuracy_by_level") or {}
+                        ),
+                        "concept_coverage_rate": attempt_metrics.get(
+                            "concept_coverage_score"
+                        ),
+                    }
+                )
 
             result = self.collection.insert_one(attempt)
             attempt["_id"] = result.inserted_id
@@ -227,24 +385,63 @@ class ExerciseAttemptRepository:
                     "total_attempts": 0,
                     "passed_attempts": 0,
                     "best_confidence": None,
+                    "best_bloom_score": None,
                     "avg_confidence": None,
                     "latest_confidence": None,
                     "improvement": None,
                     "success_rate": 0.0,
+                    "best_mastery_score": None,
+                    "latest_mastery_score": None,
+                    "latest_completion_status": None,
                 }
 
             confidences = [a["confidence"] for a in attempts]
             passed_count = sum(1 for a in attempts if a.get("passed"))
+            bloom_scores = [
+                score
+                for score in (
+                    self._resolve_attempt_bloom_score(attempt) for attempt in attempts
+                )
+                if score is not None
+            ]
 
             stats = {
                 "total_attempts": len(attempts),
                 "passed_attempts": passed_count,
                 "best_confidence": max(confidences),
+                "best_bloom_score": max(bloom_scores) if bloom_scores else None,
                 "avg_confidence": sum(confidences) / len(confidences),
                 "latest_confidence": confidences[0],  # Most recent first
                 "improvement": attempts[0]["confidence"] - attempts[-1]["confidence"],
                 "success_rate": (passed_count / len(attempts)) if attempts else 0.0,
+                "best_mastery_score": max(
+                    float(a.get("mastery_score", 0.0) or 0.0) for a in attempts
+                )
+                if attempts
+                else None,
+                "latest_mastery_score": attempts[0].get("mastery_score"),
+                "latest_completion_status": attempts[0].get("completion_status"),
             }
+
+            best_attempt = self._select_best_attempt(attempts)
+            if best_attempt:
+                stats.update(
+                    {
+                        "best_attempt_confidence": self._resolve_attempt_confidence(
+                            best_attempt
+                        ),
+                        "best_attempt_bloom_score": self._resolve_attempt_bloom_score(
+                            best_attempt
+                        ),
+                        "best_attempt_mastery_score": self._resolve_attempt_mastery_score(
+                            best_attempt
+                        ),
+                        "best_attempt_completion_status": best_attempt.get(
+                            "completion_status"
+                        ),
+                        "best_attempt_number": best_attempt.get("attempt_number"),
+                    }
+                )
 
             logger.debug(
                 f"Calculated statistics for {user_id} on lesson {lesson_id}: {stats}"

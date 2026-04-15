@@ -35,13 +35,19 @@ class LessonScopedPromptBuilder:
                 "resource_title": chunk.get("resource_title"),
                 "resource_source": chunk.get("resource_source"),
                 "score": chunk.get("score"),
+                "instruction_role": chunk.get("instruction_role"),
+                "covered_concepts": chunk.get("covered_concepts"),
+                "questionability_score": chunk.get("questionability_score"),
+                "estimated_read_time": chunk.get("estimated_read_time"),
                 "content": chunk["content"],
             }
             for chunk in chunks
         ]
 
         return f"""
-You are a lesson-scoped assessment generator.
+You are an expert AI tutor specialized in generating high-quality educational questions.
+
+Your task is to generate lesson-scoped questions that are strictly grounded in the provided learning chunks.
 
 Boundary rules:
 - Use ONLY the provided lesson chunks.
@@ -54,6 +60,15 @@ Boundary rules:
 - Prefer covering different chunks before reusing the same chunk repeatedly.
 - Prefer the most relevant chunks first, using `score` when available.
 - Avoid near-duplicate questions, repeated stems, or repeated correct answers unless the lesson scope truly requires it.
+- Treat each generated question as ONE grounded question built from ONE primary chunk.
+- Prefer chunks with higher `questionability_score` when multiple chunks are suitable.
+- Use `covered_concepts` as the target concept when available.
+- Use `instruction_role` to shape the question style conservatively:
+  - introduction/explanation -> meaning, purpose, interpretation
+  - worked_example -> application, behavior, step-by-step reasoning
+  - summary -> recap, compare, or direct understanding check
+- Never mention facts, syntax, outputs, or examples not supported by the cited chunk.
+- If a chunk does not support a complex question, generate a simpler faithful question from the same chunk instead of hallucinating.
 
 Lesson context:
 {json.dumps({
@@ -102,14 +117,23 @@ Output rules:
 }}
 
 Validation requirements:
+- Every question must be grounded in exactly one primary chunk. Set `chunk_ids` to a single-item array unless a second chunk is absolutely necessary.
 - Every question must cite only chunk_ids from the provided chunk list.
 - `source_excerpt` must be copied from the cited chunk text.
-- `question_focus` should name the core concept/skill being tested.
+- `question_focus` should name the core concept/skill being tested and should align with the chunk's `covered_concepts` when available.
 - If page_number/resource_title exists for the cited chunk, copy it into metadata.
-- For `multiple_choice`, provide exactly 3 distractors and none may equal `correct_answer`.
+- Match the requested lesson difficulty: {context.difficulty}.
+- Match the requested Bloom levels as closely as possible: {json.dumps(context.bloom_levels, ensure_ascii=True)}.
+- For `multiple_choice`, ask about meaning, behavior, interpretation, or chunk-grounded application.
+- For `multiple_choice`, provide exactly 3 plausible distractors and none may equal `correct_answer`.
+- For `multiple_choice`, `correct_answer` must be a single exact answer string and must not be duplicated in distractors.
+- For `multiple_choice`, explanation must say why the correct answer is right and briefly why the distractors are wrong.
 - For `true_false`, set `correct_answer` to exactly "True" or "False".
+- For `true_false`, explanation must clearly justify the statement using the cited chunk only.
 - For `short_answer`, `distractors` must be an empty array.
+- For `short_answer`, keep the answer concise and directly supported by the chunk.
 - Use `bloom_level` from the requested list whenever possible.
+- Do not copy long sentences from the chunk as the full question.
 - Do not generate more than {context.target_count} questions.
 - If the chunks are not enough to support faithful questions, return:
   {{"status":"insufficient_context","message":"...","questions":[]}}

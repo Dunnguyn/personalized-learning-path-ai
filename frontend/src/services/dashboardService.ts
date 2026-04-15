@@ -56,7 +56,7 @@ export const dashboardService = {
     try {
       const response: RecommendedConceptsResponse = normalizeRecommendedConceptsResponse(
         await apiClient.get(
-          `/ask/recommend-concepts?user_id=${encodeURIComponent(userId)}&limit=3`,
+          `/ask/recommend-concepts?user_id=${encodeURIComponent(userId)}&limit=3&allow_generate=false`,
         ),
       );
 
@@ -100,7 +100,7 @@ export const dashboardService = {
     goal: string,
     level: string,
     limit: number = 6,
-    mode: 'continue_learning' | 'reinforce_weaknesses' | 'learn_new' | 'quick_review' = 'continue_learning',
+    mode: 'continue_learning' | 'reinforce_weaknesses' | 'learn_new' = 'continue_learning',
   ): Promise<PersonalizedRecommendationResponse> {
     const query = new URLSearchParams({
       user_id: userId,

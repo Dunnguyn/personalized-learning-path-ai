@@ -1,4 +1,4 @@
-"""MongoDB repository for lesson-scoped question bank."""
+"""MongoDB repository for lesson-scoped question storage."""
 
 from __future__ import annotations
 
@@ -10,14 +10,16 @@ from bson import ObjectId
 from backend.app.database.mongo import get_db
 
 
-class QuestionBankRepository:
-    """Repository for `question_bank` collection."""
+class LessonQuestionRepository:
+    """Repository for lesson-specific questions."""
 
-    collection_name = "question_bank"
+    collection_name = "lesson_questions"
+    legacy_collection_name = "question_bank"
 
     def __init__(self) -> None:
         self.db = get_db()
         self.collection = self.db[self.collection_name]
+        self.legacy_collection = self.db[self.legacy_collection_name]
 
     @staticmethod
     def _to_object_id(value: str | ObjectId) -> ObjectId:
@@ -26,9 +28,10 @@ class QuestionBankRepository:
         return ObjectId(value)
 
     def ensure_indexes(self) -> None:
-        self.collection.create_index([("lesson_id", 1), ("created_at", -1)])
-        self.collection.create_index([("subject_id", 1), ("chapter_id", 1)])
-        self.collection.create_index([("question_type", 1), ("difficulty", 1)])
+        for collection in (self.collection, self.legacy_collection):
+            collection.create_index([("lesson_id", 1), ("created_at", -1)])
+            collection.create_index([("subject_id", 1), ("chapter_id", 1)])
+            collection.create_index([("question_type", 1), ("difficulty", 1)])
 
     def insert_many(self, questions: List[Dict[str, Any]]) -> List[str]:
         if not questions:
@@ -43,24 +46,26 @@ class QuestionBankRepository:
         return [str(item) for item in result.inserted_ids]
 
     def list_by_lesson(self, lesson_id: str | ObjectId) -> List[Dict[str, Any]]:
-        return list(
-            self.collection.find({"lesson_id": self._to_object_id(lesson_id)}).sort(
-                "created_at", -1
-            )
-        )
+        query = {"lesson_id": self._to_object_id(lesson_id)}
+        questions = list(self.collection.find(query).sort("created_at", -1))
+        if questions:
+            return questions
+        return list(self.legacy_collection.find(query).sort("created_at", -1))
 
     def delete_by_lesson(self, lesson_id: str | ObjectId) -> int:
-        result = self.collection.delete_many(
-            {"lesson_id": self._to_object_id(lesson_id)}
-        )
-        return result.deleted_count
+        query = {"lesson_id": self._to_object_id(lesson_id)}
+        removed_primary = self.collection.delete_many(query).deleted_count
+        removed_legacy = self.legacy_collection.delete_many(query).deleted_count
+        return removed_primary + removed_legacy
 
     def delete_by_lesson_ids(self, lesson_ids: List[str | ObjectId]) -> int:
         if not lesson_ids:
             return 0
         object_ids = [self._to_object_id(item) for item in lesson_ids]
-        result = self.collection.delete_many({"lesson_id": {"$in": object_ids}})
-        return result.deleted_count
+        query = {"lesson_id": {"$in": object_ids}}
+        removed_primary = self.collection.delete_many(query).deleted_count
+        removed_legacy = self.legacy_collection.delete_many(query).deleted_count
+        return removed_primary + removed_legacy
 
     def delete_by_resources_or_chunks(
         self,
@@ -83,5 +88,10 @@ class QuestionBankRepository:
             )
         if not clauses:
             return 0
-        result = self.collection.delete_many({"$or": clauses})
-        return result.deleted_count
+        query = {"$or": clauses}
+        removed_primary = self.collection.delete_many(query).deleted_count
+        removed_legacy = self.legacy_collection.delete_many(query).deleted_count
+        return removed_primary + removed_legacy
+
+
+QuestionBankRepository = LessonQuestionRepository

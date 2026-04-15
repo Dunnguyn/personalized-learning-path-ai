@@ -16,6 +16,7 @@ from datetime import datetime
 from bson import ObjectId
 
 from backend.app.database.mongo import get_db
+from backend.app.services.prerequisite_resolver import prerequisite_resolver
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,12 @@ class LessonCompletionEngine:
         return result
 
     def can_access_lesson(
-        self, path_id: str, lesson_id: str, chapter_index: int, lesson_index: int
+        self,
+        path_id: str,
+        lesson_id: str,
+        chapter_index: int,
+        lesson_index: int,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Check if lesson can be accessed based on prerequisites.
@@ -111,6 +117,13 @@ class LessonCompletionEngine:
                 "reason": "Learning path not found",
                 "blocking_lesson_id": None,
             }
+
+        if prerequisite_resolver.path_uses_concept_graph(path):
+            return prerequisite_resolver.evaluate_lesson_access(
+                path_document=path,
+                lesson_id=lesson_id,
+                user_id=user_id,
+            )
 
         lesson_progress = path.get("lesson_progress", {})
 
@@ -153,7 +166,10 @@ class LessonCompletionEngine:
         }
 
     def get_lesson_lock_status(
-        self, path_id: str, lesson_ids: List[str]
+        self,
+        path_id: str,
+        lesson_ids: List[str],
+        user_id: Optional[str] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
         Get lock status for multiple lessons in a path.
@@ -180,6 +196,28 @@ class LessonCompletionEngine:
                 for lid in lesson_ids
             }
 
+        if prerequisite_resolver.path_uses_concept_graph(path):
+            resolved = prerequisite_resolver.lesson_lock_statuses(
+                path_document=path,
+                user_id=user_id,
+            )
+            return {
+                lesson_id: resolved.get(
+                    lesson_id,
+                    {
+                        "is_locked": True,
+                        "reason": "Lesson not found in path",
+                        "blocking_lesson_id": None,
+                        "blocking_concepts": [],
+                        "missing_prerequisite_concepts": [],
+                        "prerequisite_mastery": {},
+                        "bridge_recommendations": [],
+                        "mastery_threshold": prerequisite_resolver.mastery_threshold,
+                    },
+                )
+                for lesson_id in lesson_ids
+            }
+
         # Build position map
         lesson_positions = {}  # lesson_id -> (chapter_idx, lesson_idx)
         for chapter_idx, chapter in enumerate(path.get("chapters", [])):
@@ -198,6 +236,7 @@ class LessonCompletionEngine:
                     lesson_id=lesson_id,
                     chapter_index=chapter_idx,
                     lesson_index=lesson_idx,
+                    user_id=user_id,
                 )
                 result[lesson_id] = {
                     "is_locked": access_result["is_locked"],

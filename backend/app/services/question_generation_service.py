@@ -1,26 +1,40 @@
-"""Lesson-scoped question generation and question bank storage."""
+"""Lesson-scoped question generation and lesson question storage."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
+import numpy as np
 import os
 import re
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 import unicodedata
 
 from backend.app.ai_module import LessonQuestionLLMClient
 from backend.app.repositories import (
     LessonRecommendedChunkRepository,
     LessonRepository,
-    QuestionBankRepository,
+    LessonQuestionRepository,
+    QuestionSemanticMemoryRepository,
     ResourceChunkRepository,
     ResourceRepository,
 )
+from backend.app.services.embedding_service import cosine_similarity, embedding_service
 from backend.app.services.lesson_service import lesson_structure_service
+from backend.app.services.lesson_assessment_sizing_service import (
+    LessonAssessmentSizingResult,
+    lesson_assessment_sizing_service,
+)
+from backend.app.services.concept_normalization_service import (
+    concept_normalization_service,
+)
 from backend.app.services.lesson_chunk_service import lesson_chunk_service
 from backend.app.services.prompt_builder import LessonScopedPromptBuilder
 from backend.app.services.question_fallback_service import QuestionFallbackService
+from backend.app.services.question_cross_verification_service import (
+    question_cross_verification_service,
+)
 from backend.app.services.question_llm_service import QuestionLLMService
 from backend.app.services.question_template_service import QuestionTemplateService
 from backend.app.services.question_validation_service import QuestionValidationService
@@ -68,6 +82,34 @@ QUESTION_DIVERSITY_MAX_PER_CHUNK = int(
 QUESTION_CONFIDENCE_BASELINE = float(
     os.getenv("LESSON_QUESTION_CONFIDENCE_BASELINE", "0.2")
 )
+QUESTION_SEMANTIC_DEDUP_ENABLED = (
+    os.getenv("LESSON_QUESTION_SEMANTIC_DEDUP_ENABLED", "true")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
+)
+QUESTION_SEMANTIC_DEDUP_THRESHOLD = float(
+    os.getenv("LESSON_QUESTION_SEMANTIC_DEDUP_THRESHOLD", "0.92")
+)
+QUESTION_SEMANTIC_DEDUP_LOOKBACK = int(
+    os.getenv("LESSON_QUESTION_SEMANTIC_DEDUP_LOOKBACK", "180")
+)
+PREFER_LLM_FILL_BEFORE_TEMPLATE_ENABLED = (
+    os.getenv("LESSON_QUESTION_PREFER_LLM_FILL_BEFORE_TEMPLATE_ENABLED", "true")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
+)
+LLM_FILL_MAX_ATTEMPTS = int(
+    os.getenv("LESSON_QUESTION_LLM_FILL_MAX_ATTEMPTS", "2")
+)
+DEGRADED_LOCAL_STATUSES = {
+    "cooldown",
+    "quota_exhausted",
+    "empty_response",
+    "invalid_response",
+    "client_unavailable",
+}
 
 
 class LessonScopedQuestionGenerationService:
@@ -366,7 +408,8 @@ class LessonScopedQuestionGenerationService:
         self.lesson_repository = LessonRepository()
         self.chunk_repository = ResourceChunkRepository()
         self.resource_repository = ResourceRepository()
-        self.question_repository = QuestionBankRepository()
+        self.question_repository = LessonQuestionRepository()
+        self.question_semantic_memory_repository = QuestionSemanticMemoryRepository()
         self.prompt_builder = LessonScopedPromptBuilder()
         self.validator = LessonScopedQuestionValidator()
         self.llm_client = LessonQuestionLLMClient()
@@ -382,12 +425,13 @@ class LessonScopedQuestionGenerationService:
         self.recommendation_repository.ensure_indexes()
         self.resource_repository.ensure_indexes()
         self.question_repository.ensure_indexes()
+        self.question_semantic_memory_repository.ensure_indexes()
 
     def generate_questions_for_lesson(
         self,
         *,
         lesson_id: str,
-        target_count: int,
+        target_count: int | None,
         question_types: List[str],
         difficulty: str,
         bloom_levels: List[str],
@@ -397,12 +441,13 @@ class LessonScopedQuestionGenerationService:
         overwrite: bool,
         metadata: Dict[str, Any],
     ) -> Dict[str, Any]:
+        cache_stats_before = self._snapshot_claim_cache_stats()
         source_stats = {
             "template": 0,
             "llm": 0,
             "local_fallback": 0,
-            "existing_reuse": 0,
         }
+        question_types = self._normalize_requested_question_types(question_types)
         filtered_count = 0
         effective_difficulty = self._resolve_adaptive_difficulty(
             requested_difficulty=difficulty,
@@ -412,14 +457,138 @@ class LessonScopedQuestionGenerationService:
         )
         context = self.lesson_structure_service.get_lesson_context(lesson_id)
         recommendation = self._resolve_recommendation(lesson_id, context)
+        raw_target_concepts = self._extract_target_concepts(metadata)
+        if raw_target_concepts and not self._recommendation_covers_target_concepts(
+            recommendation=recommendation,
+            target_concepts=raw_target_concepts,
+        ):
+            targeted_refresh = self._refresh_recommendation(
+                lesson_id=lesson_id,
+                metadata={
+                    **metadata,
+                    "trigger": "target_concept_refresh",
+                    "required_concepts": list(raw_target_concepts),
+                },
+            )
+            if targeted_refresh:
+                recommendation = targeted_refresh
         existing_questions = self.question_repository.list_by_lesson(lesson_id)
         existing_count = len(existing_questions)
+        excluded_signatures = self._collect_excluded_question_signatures(
+            existing_questions=existing_questions,
+            generation_metadata=metadata,
+        )
 
         recommendation, chunk_ids, chunks = self._load_generation_scope(
             lesson_id=lesson_id,
             context=context,
             recommendation=recommendation,
         )
+        chunks = self._enrich_chunks_with_recommendation_metadata(
+            chunks=chunks,
+            recommendation=recommendation,
+        )
+        assessment_plan = self._build_lesson_assessment_plan(
+            context=context,
+            chunks=chunks,
+            mastery=mastery,
+            requested_target_count=target_count,
+        )
+        normalized_target_payload = self._normalize_generation_target_concepts(
+            raw_target_concepts=raw_target_concepts,
+            context=context,
+            chunks=chunks,
+        )
+        valid_target_concepts = list(
+            normalized_target_payload.get("valid_target_concepts", [])
+        )
+        rejected_target_concepts = list(
+            normalized_target_payload.get("rejected_target_concepts", [])
+        )
+        llm_debug_status = self.llm_client.get_debug_status()
+        llm_status_code = self._resolve_llm_status_code(
+            allow_llm=allow_llm,
+            llm_debug_status=llm_debug_status,
+        )
+        degraded_mode = llm_status_code in DEGRADED_LOCAL_STATUSES
+        usable_chunk_count = self._estimate_usable_chunk_count(chunks)
+        grounded_content_volume = self._estimate_grounded_content_volume(chunks)
+        declared_lesson_size = assessment_plan.lesson_size
+        runtime_effective_lesson_size = self.compute_runtime_effective_lesson_size(
+            declared_lesson_size=declared_lesson_size,
+            usable_chunk_count=usable_chunk_count,
+            grounded_content_volume=grounded_content_volume,
+        )
+        original_target_count = max(
+            1,
+            int(
+                target_count
+                if target_count is not None
+                else assessment_plan.target_count_auto
+            ),
+        )
+        runtime_target_count = max(
+            1,
+            int(
+                target_count
+                if target_count is not None
+                else lesson_assessment_sizing_service.calculate_target_question_count(
+                    runtime_effective_lesson_size
+                )
+            ),
+        )
+        degraded_target_count = runtime_target_count
+        degraded_reason = None
+        if degraded_mode:
+            degraded_target_count = self.recalculate_target_count_for_degraded_mode(
+                lesson_size=runtime_effective_lesson_size,
+                original_target_count=original_target_count,
+                usable_chunk_count=usable_chunk_count,
+                mappable_concept_count=len(valid_target_concepts),
+                llm_available=False,
+            )
+            degraded_reason = llm_status_code
+        target_count = degraded_target_count if degraded_mode else runtime_target_count
+        assessment_plan = replace(
+            assessment_plan,
+            lesson_size=runtime_effective_lesson_size,
+            target_count_auto=runtime_target_count,
+            difficulty_distribution=lesson_assessment_sizing_service.compute_difficulty_distribution(
+                target_count=target_count,
+                mastery=mastery,
+            ),
+            bloom_distribution=lesson_assessment_sizing_service.compute_bloom_distribution(
+                target_count=target_count,
+                lesson_size=runtime_effective_lesson_size,
+            ),
+        )
+        metadata = self._decorate_generation_metadata(
+            metadata=metadata,
+            assessment_plan=assessment_plan,
+            target_count=target_count,
+        )
+        metadata.update(
+            {
+                "declared_lesson_size": declared_lesson_size,
+                "runtime_effective_lesson_size": runtime_effective_lesson_size,
+                "original_target_count": original_target_count,
+                "effective_target_count": target_count,
+                "degraded_target_count": degraded_target_count if degraded_mode else None,
+                "degraded_mode": degraded_mode,
+                "degraded_reason": degraded_reason,
+                "llm_status": llm_status_code,
+                "usable_chunk_count": usable_chunk_count,
+                "grounded_content_volume": grounded_content_volume,
+                "raw_target_concepts": list(raw_target_concepts),
+                "target_concepts": list(valid_target_concepts),
+                "valid_target_concepts": list(valid_target_concepts),
+                "rejected_target_concepts": list(rejected_target_concepts),
+                "concept_mapping_debug": list(
+                    normalized_target_payload.get("concept_mapping_debug", [])
+                ),
+            }
+        )
+        allow_llm = allow_llm and not degraded_mode
 
         if (
             PREGEN_CHUNK_EXPANSION_ENABLED
@@ -446,7 +615,10 @@ class LessonScopedQuestionGenerationService:
                     previous_chunk_count = len(chunk_ids)
                     recommendation = expanded_recommendation
                     chunk_ids = expanded_chunk_ids
-                    chunks = expanded_chunks
+                    chunks = self._enrich_chunks_with_recommendation_metadata(
+                        chunks=expanded_chunks,
+                        recommendation=expanded_recommendation,
+                    )
                     logger.info(
                         "lesson_question_generation_pregen_expand | lesson_id=%s | chunks_before=%s | chunks_after=%s",
                         lesson_id,
@@ -459,15 +631,19 @@ class LessonScopedQuestionGenerationService:
             "recommendation_scores": recommendation.get("metadata", {}).get(
                 "scores", {}
             ),
+            "target_concepts": list(valid_target_concepts),
+            "raw_target_concepts": list(raw_target_concepts),
         }
         chunk_text_by_id = {
             str(chunk["_id"]): str(chunk.get("content") or "") for chunk in chunks
         }
         seeded_questions: List[ValidatedLessonQuestion] = []
+        additional_llm_questions: List[ValidatedLessonQuestion] = []
         remaining_target = target_count
         if allow_llm:
             validation = self._run_generation(
                 context=context,
+                recommendation=recommendation,
                 chunks=chunks,
                 chunk_ids=chunk_ids,
                 target_count=target_count,
@@ -478,6 +654,7 @@ class LessonScopedQuestionGenerationService:
         else:
             template_validation = self._build_template_validation(
                 lesson_title=str(context["lesson"].get("title") or ""),
+                lesson_summary=str(context["lesson"].get("summary") or ""),
                 chunks=chunks,
                 target_count=target_count,
                 question_types=question_types,
@@ -500,11 +677,14 @@ class LessonScopedQuestionGenerationService:
             else:
                 local_candidates = self.question_fallback_service.build_candidates(
                     lesson_title=str(context["lesson"].get("title") or ""),
+                    lesson_summary=str(context["lesson"].get("summary") or ""),
                     chunks=chunks,
                     target_count=remaining_target,
                     question_types=question_types,
                     difficulty=effective_difficulty,
                     bloom_levels=bloom_levels,
+                    target_concepts=context.get("target_concepts") or [],
+                    lesson_concepts=assessment_plan.concepts if assessment_plan else [],
                 )
                 local_validation = self.question_validation_service.validate_candidates(
                     candidates=local_candidates,
@@ -533,6 +713,10 @@ class LessonScopedQuestionGenerationService:
                     context=context,
                     recommendation=refreshed,
                 )
+                chunks = self._enrich_chunks_with_recommendation_metadata(
+                    chunks=chunks,
+                    recommendation=refreshed,
+                )
                 context = {
                     **context,
                     "recommendation_scores": refreshed.get("metadata", {}).get(
@@ -542,6 +726,7 @@ class LessonScopedQuestionGenerationService:
                 if allow_llm:
                     validation = self._run_generation(
                         context=context,
+                        recommendation=recommendation,
                         chunks=chunks,
                         chunk_ids=chunk_ids,
                         target_count=remaining_target,
@@ -556,12 +741,15 @@ class LessonScopedQuestionGenerationService:
                     }
                     local_candidates = self.question_fallback_service.build_candidates(
                         lesson_title=str(context["lesson"].get("title") or ""),
+                        lesson_summary=str(context["lesson"].get("summary") or ""),
                         chunks=chunks,
                         target_count=remaining_target,
                         question_types=question_types,
                         difficulty=effective_difficulty,
                         bloom_levels=bloom_levels,
                         retry_attempts=3,
+                        target_concepts=context.get("target_concepts") or [],
+                        lesson_concepts=assessment_plan.concepts if assessment_plan else [],
                     )
                     local_validation = self.question_validation_service.validate_candidates(
                         candidates=local_candidates,
@@ -589,6 +777,7 @@ class LessonScopedQuestionGenerationService:
                 covered_chunk_count=0,
                 llm_error=self.llm_client.get_last_error(),
                 message="Question generation returned no valid validation payload.",
+                cache_stats=self._claim_cache_stats_since(cache_stats_before),
             )
             if allow_llm:
                 validation = self._build_validation_from_fallback(
@@ -601,10 +790,10 @@ class LessonScopedQuestionGenerationService:
                 return self._build_existing_or_insufficient_response(
                 lesson_id=lesson_id,
                 chunk_ids=chunk_ids,
-                existing_count=existing_count,
                 default_message="Không thể nhận phản hồi hợp lệ từ dịch vụ tạo câu hỏi.",
                 source_stats=source_stats,
                 filtered_count=filtered_count,
+                cache_stats=self._claim_cache_stats_since(cache_stats_before),
             )
         if validation.status == "insufficient_context":
             self._log_generation_outcome(
@@ -616,6 +805,7 @@ class LessonScopedQuestionGenerationService:
                 covered_chunk_count=0,
                 llm_error=self.llm_client.get_last_error(),
                 message=validation.message,
+                cache_stats=self._claim_cache_stats_since(cache_stats_before),
             )
             if allow_llm:
                 validation = self._build_validation_from_fallback(
@@ -623,6 +813,7 @@ class LessonScopedQuestionGenerationService:
                     message=self._build_llm_fallback_message(validation.message),
                 )
             else:
+                cache_stats = self._claim_cache_stats_since(cache_stats_before)
                 return {
                     "lesson_id": lesson_id,
                     "status": "insufficient_context",
@@ -634,10 +825,44 @@ class LessonScopedQuestionGenerationService:
                     "reused_existing": False,
                     "existing_count": existing_count,
                     "sources": source_stats,
+                    "fallback_used": bool(source_stats.get("local_fallback", 0)),
+                    "cache_stats": cache_stats,
                     "filtered_count": filtered_count,
                     "message": validation.message,
                 }
         if validation.status != "ok":
+            llm_status_code = self._resolve_llm_status_code(
+                allow_llm=True,
+                llm_debug_status=self.llm_client.get_debug_status(),
+                validation=validation,
+            )
+            if llm_status_code in DEGRADED_LOCAL_STATUSES and not degraded_mode:
+                degraded_mode = True
+                degraded_reason = llm_status_code
+                target_count = self.recalculate_target_count_for_degraded_mode(
+                    lesson_size=runtime_effective_lesson_size,
+                    original_target_count=original_target_count,
+                    usable_chunk_count=usable_chunk_count,
+                    mappable_concept_count=len(valid_target_concepts),
+                    llm_available=False,
+                )
+                metadata["effective_target_count"] = target_count
+                metadata["degraded_mode"] = True
+                metadata["degraded_reason"] = degraded_reason
+                metadata["degraded_target_count"] = target_count
+                metadata["llm_status"] = llm_status_code
+                assessment_plan = replace(
+                    assessment_plan,
+                    target_count_auto=target_count,
+                    difficulty_distribution=lesson_assessment_sizing_service.compute_difficulty_distribution(
+                        target_count=target_count,
+                        mastery=mastery,
+                    ),
+                    bloom_distribution=lesson_assessment_sizing_service.compute_bloom_distribution(
+                        target_count=target_count,
+                        lesson_size=runtime_effective_lesson_size,
+                    ),
+                )
             refreshed = self._refresh_recommendation(
                 lesson_id=lesson_id,
                 metadata={
@@ -662,12 +887,15 @@ class LessonScopedQuestionGenerationService:
             }
             fallback_candidates = self.question_fallback_service.build_candidates(
                 lesson_title=str(context["lesson"].get("title") or ""),
+                lesson_summary=str(context["lesson"].get("summary") or ""),
                 chunks=chunks,
                 target_count=target_count,
                 question_types=question_types,
                 difficulty=effective_difficulty,
                 bloom_levels=bloom_levels,
                 retry_attempts=3,
+                target_concepts=context.get("target_concepts") or [],
+                lesson_concepts=assessment_plan.concepts if assessment_plan else [],
             )
             fallback_validation = self.question_validation_service.validate_candidates(
                 candidates=fallback_candidates,
@@ -691,10 +919,10 @@ class LessonScopedQuestionGenerationService:
                 return self._build_existing_or_insufficient_response(
                     lesson_id=lesson_id,
                     chunk_ids=chunk_ids,
-                    existing_count=existing_count,
                     default_message="Hệ thống tạm thời chưa tạo được câu hỏi tự động từ nội dung bài học hiện tại.",
                     source_stats=source_stats,
                     filtered_count=filtered_count,
+                    cache_stats=self._claim_cache_stats_since(cache_stats_before),
                 )
             validation_message = validation.message or "LLM output invalid."
             validation = self._build_validation_from_fallback(
@@ -709,9 +937,36 @@ class LessonScopedQuestionGenerationService:
         }
         if allow_llm:
             remaining_target = max(0, target_count - len(validation.questions))
+            if (
+                remaining_target > 0
+                and PREFER_LLM_FILL_BEFORE_TEMPLATE_ENABLED
+                and llm_status_code == "available"
+            ):
+                additional_llm_questions = self._collect_additional_llm_questions(
+                    context=context,
+                    recommendation=recommendation,
+                    chunks=chunks,
+                    chunk_ids=chunk_ids,
+                    existing_questions=list(validation.questions),
+                    target_count=target_count,
+                    question_types=question_types,
+                    difficulty=effective_difficulty,
+                    bloom_levels=bloom_levels,
+                )
+                if additional_llm_questions:
+                    validation = self._build_validation_from_fallback(
+                        questions=[
+                            *list(validation.questions),
+                            *additional_llm_questions,
+                        ],
+                        message=validation.message,
+                        status="ok",
+                    )
+                    remaining_target = max(0, target_count - len(validation.questions))
             if remaining_target > 0:
                 template_validation = self._build_template_validation(
                     lesson_title=str(context["lesson"].get("title") or ""),
+                    lesson_summary=str(context["lesson"].get("summary") or ""),
                     chunks=chunks,
                     target_count=remaining_target,
                     question_types=question_types,
@@ -754,32 +1009,13 @@ class LessonScopedQuestionGenerationService:
             difficulty=effective_difficulty,
             bloom_levels=bloom_levels,
             base_message=validation.message,
+            generation_metadata=metadata,
+            excluded_signatures=excluded_signatures,
+            assessment_plan=assessment_plan,
         )
+        filtered_count += int(metadata.pop("semantic_filtered_count", 0) or 0)
+        filtered_count += int(metadata.pop("verification_filtered_count", 0) or 0)
 
-        if 0 < len(finalized_questions) < target_count and existing_questions:
-            existing_fill = self._build_existing_fill_questions(
-                existing_questions=existing_questions,
-                target_count=target_count - len(finalized_questions),
-            )
-            if existing_fill:
-                known_signatures = {
-                    self._question_signature(item)
-                    for item in finalized_questions
-                    if self._question_signature(item)
-                }
-                for candidate in existing_fill:
-                    signature = self._question_signature(candidate)
-                    if not signature or signature in known_signatures:
-                        continue
-                    known_signatures.add(signature)
-                    finalized_questions.append(candidate)
-                    source_stats["existing_reuse"] += 1
-                    if len(finalized_questions) >= target_count:
-                        break
-                if len(finalized_questions) > 0:
-                    finalized_message = (
-                        f"{finalized_message} Hệ thống đã tái sử dụng câu hỏi đã kiểm chứng từ ngân hàng trước đó để bù số lượng còn thiếu."
-                    )
 
         if (
             LOW_COUNT_REGEN_RETRY_ENABLED
@@ -796,6 +1032,7 @@ class LessonScopedQuestionGenerationService:
             time.sleep(max(0.0, LOW_COUNT_REGEN_RETRY_DELAY_SECONDS))
             retry_validation = self._run_generation(
                 context=context,
+                recommendation=recommendation,
                 chunks=chunks,
                 chunk_ids=chunk_ids,
                 target_count=target_count,
@@ -813,16 +1050,26 @@ class LessonScopedQuestionGenerationService:
                     difficulty=effective_difficulty,
                     bloom_levels=bloom_levels,
                     base_message=retry_validation.message,
+                    generation_metadata=metadata,
+                    excluded_signatures=excluded_signatures,
+                    assessment_plan=assessment_plan,
+                )
+                retry_semantic_filtered = int(metadata.pop("semantic_filtered_count", 0) or 0)
+                retry_verification_filtered = int(
+                    metadata.pop("verification_filtered_count", 0) or 0
                 )
                 if len(retried_questions) > len(finalized_questions):
                     finalized_questions = retried_questions
                     finalized_message = retried_message
+                    filtered_count += retry_semantic_filtered + retry_verification_filtered
                     logger.info(
                         "lesson_question_generation_low_count_retry_improved | lesson_id=%s | generated=%s | target=%s",
                         lesson_id,
                         len(finalized_questions),
                         target_count,
                     )
+                else:
+                    filtered_count += retry_semantic_filtered + retry_verification_filtered
 
         if not finalized_questions:
             self._log_generation_outcome(
@@ -834,22 +1081,62 @@ class LessonScopedQuestionGenerationService:
                 covered_chunk_count=0,
                 llm_error=self.llm_client.get_last_error(),
                 message="Quality filtering removed all generated questions.",
+                cache_stats=self._claim_cache_stats_since(cache_stats_before),
             )
             return self._build_existing_or_insufficient_response(
                 lesson_id=lesson_id,
                 chunk_ids=chunk_ids,
-                existing_count=existing_count,
                 default_message="Không đủ dữ liệu phù hợp để tạo bộ câu hỏi chất lượng cho bài học này.",
                 source_stats=source_stats,
                 filtered_count=filtered_count,
+                cache_stats=self._claim_cache_stats_since(cache_stats_before),
             )
 
-        # Always replace existing question bank when a new valid set is generated.
-        # This keeps one authoritative lesson-scoped set and avoids duplicate buildup.
+        chunk_map = {str(chunk["_id"]): chunk for chunk in chunks}
+        coverage_report = self.compute_concept_coverage_rate(
+            finalized_questions,
+            valid_target_concepts=valid_target_concepts,
+            chunk_map=chunk_map,
+        )
+        metadata["concept_coverage_rate"] = coverage_report.get("coverage_rate")
+        metadata["concept_coverage_status"] = coverage_report.get("status")
+        metadata["concept_coverage_missing"] = list(
+            coverage_report.get("missing_concepts", [])
+        )
+        metadata["concept_coverage_pass"] = bool(
+            coverage_report.get("is_valid", False)
+        )
+        metadata["final_generation_status"] = self.resolve_generation_status(
+            saved_count=len(finalized_questions),
+            effective_target_count=target_count,
+            concept_coverage_rate=coverage_report.get("coverage_rate"),
+            llm_available=bool(llm_debug_status.get("client_available"))
+            and not bool(llm_debug_status.get("cooldown_active")),
+            degraded_mode=degraded_mode,
+        )
+        next_action = self._build_generation_next_action(
+            llm_status=llm_status_code,
+            llm_debug_status=llm_debug_status,
+            concept_coverage_status=str(coverage_report.get("status") or ""),
+            degraded_mode=degraded_mode,
+        )
+        finalized_message = self.build_generation_message(
+            llm_status=llm_status_code,
+            degraded_mode=degraded_mode,
+            original_target_count=original_target_count,
+            effective_target_count=target_count,
+            usable_chunk_count=usable_chunk_count,
+            saved_count=len(finalized_questions),
+            concept_coverage_rate=coverage_report.get("coverage_rate"),
+            concept_coverage_status=str(coverage_report.get("status") or ""),
+        )
+
+        # Always replace the current lesson question set when a new valid set is generated.
+        # This keeps one authoritative set per lesson and avoids duplicate buildup.
         if overwrite or existing_count > 0:
+            self.question_semantic_memory_repository.delete_by_lesson(lesson_id)
             self.question_repository.delete_by_lesson(lesson_id)
 
-        chunk_map = {str(chunk["_id"]): chunk for chunk in chunks}
         resource_ids = [str(item) for item in recommendation.get("resource_ids", [])]
         documents = []
         for question in finalized_questions:
@@ -889,7 +1176,7 @@ class LessonScopedQuestionGenerationService:
             retry_strategy = str(
                 metadata.get("retry_strategy")
                 or metadata.get("generation_strategy", {}).get("retry_strategy")
-                or "same_question"
+                or "paraphrase_question"
             ).strip()
             documents.append(
                 {
@@ -953,6 +1240,11 @@ class LessonScopedQuestionGenerationService:
             )
 
         inserted_ids = self.question_repository.insert_many(documents)
+        self._persist_question_semantic_memory(
+            question_ids=inserted_ids,
+            questions=finalized_questions,
+            context=context,
+        )
         generation_mode = self._determine_generation_mode(finalized_questions)
         covered_chunk_count = len(
             {
@@ -963,17 +1255,29 @@ class LessonScopedQuestionGenerationService:
         )
         self._log_generation_outcome(
             lesson_id=lesson_id,
-            status="ok",
+            status=str(metadata.get("final_generation_status") or "ok"),
             generation_mode=generation_mode,
             question_count=len(inserted_ids),
             chunk_count=len(chunk_ids),
             covered_chunk_count=covered_chunk_count,
             llm_error=self.llm_client.get_last_error(),
             message=finalized_message,
+            cache_stats=self._claim_cache_stats_since(cache_stats_before),
+            runtime_details={
+                "declared_lesson_size": declared_lesson_size,
+                "runtime_effective_lesson_size": runtime_effective_lesson_size,
+                "original_target_count": original_target_count,
+                "degraded_target_count": degraded_target_count if degraded_mode else None,
+                "usable_chunk_count": usable_chunk_count,
+                "valid_target_concepts": list(valid_target_concepts),
+                "rejected_target_concepts": list(rejected_target_concepts),
+                "concept_coverage_status": metadata.get("concept_coverage_status"),
+                "final_generation_status": metadata.get("final_generation_status"),
+            },
         )
         return {
             "lesson_id": lesson_id,
-            "status": "ok",
+            "status": str(metadata.get("final_generation_status") or "ok"),
             "generated_count": len(inserted_ids),
             "saved_count": len(inserted_ids),
             "question_ids": inserted_ids,
@@ -982,8 +1286,257 @@ class LessonScopedQuestionGenerationService:
             "reused_existing": False,
             "existing_count": existing_count,
             "sources": source_stats,
+            "fallback_used": bool(source_stats.get("local_fallback", 0)),
+            "cache_stats": self._claim_cache_stats_since(cache_stats_before),
             "filtered_count": filtered_count,
+            "lesson_size": assessment_plan.lesson_size,
+            "declared_lesson_size": declared_lesson_size,
+            "runtime_effective_lesson_size": runtime_effective_lesson_size,
+            "target_count": target_count,
+            "target_count_auto": assessment_plan.target_count_auto,
+            "original_target_count": original_target_count,
+            "effective_target_count": target_count,
+            "degraded_target_count": degraded_target_count if degraded_mode else None,
+            "degraded_mode": degraded_mode,
+            "degraded_reason": degraded_reason,
+            "llm_status": llm_status_code,
+            "difficulty_mix": assessment_plan.difficulty_distribution,
+            "bloom_mix": assessment_plan.bloom_distribution,
+            "concept_coverage_rate": metadata.get("concept_coverage_rate"),
+            "valid_target_concepts": list(valid_target_concepts),
+            "rejected_target_concepts": list(rejected_target_concepts),
+            "concept_coverage_status": metadata.get("concept_coverage_status"),
+            "next_action": next_action,
             "message": finalized_message,
+        }
+
+    def inspect_generation_debug(
+        self,
+        *,
+        lesson_id: str,
+        target_count: int | None,
+        question_types: List[str],
+        difficulty: str,
+        bloom_levels: List[str],
+        allow_llm: bool,
+        mastery: float | None,
+        success_rate: float | None,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        question_types = self._normalize_requested_question_types(question_types)
+        effective_difficulty = self._resolve_adaptive_difficulty(
+            requested_difficulty=difficulty,
+            mastery=mastery,
+            success_rate=success_rate,
+            metadata=metadata,
+        )
+        context = self.lesson_structure_service.get_lesson_context(lesson_id)
+        target_concepts = self._extract_target_concepts(metadata)
+        recommendation = self._peek_recommendation(lesson_id, context)
+        existing_count = len(self.question_repository.list_by_lesson(lesson_id))
+        llm_status = self.llm_client.get_debug_status()
+        generation_strategy = (
+            metadata.get("generation_strategy", {})
+            if isinstance(metadata.get("generation_strategy"), dict)
+            else {}
+        )
+
+        blockers: List[str] = []
+        warnings: List[str] = []
+        chunks: List[Dict[str, Any]] = []
+        chunk_ids: List[str] = []
+        loaded_chunk_ids: List[str] = []
+        missing_chunk_ids: List[str] = []
+        scope_error: str | None = None
+        scope_ready = False
+
+        if not allow_llm:
+            blockers.append("llm_disabled_by_request")
+        if generation_strategy.get("prefer_template") is True:
+            warnings.append("prefer_template_enabled")
+        if generation_strategy.get("allow_llm") is False:
+            warnings.append("generation_strategy_disables_llm")
+
+        recommendation_covers_targets = self._recommendation_covers_target_concepts(
+            recommendation=recommendation,
+            target_concepts=target_concepts,
+        )
+        if target_concepts and not recommendation_covers_targets:
+            warnings.append("recommendation_does_not_cover_target_concepts")
+
+        if allow_llm and not bool(llm_status.get("client_available")):
+            blockers.append("llm_client_unavailable")
+        if allow_llm and bool(llm_status.get("cooldown_active")):
+            blockers.append("llm_cooldown_active")
+
+        if recommendation:
+            try:
+                _, chunk_ids, chunks = self._load_generation_scope(
+                    lesson_id=lesson_id,
+                    context=context,
+                    recommendation=recommendation,
+                )
+                loaded_chunk_ids = [str(chunk.get("_id") or "") for chunk in chunks]
+                missing_chunk_ids = [
+                    chunk_id for chunk_id in chunk_ids if chunk_id not in set(loaded_chunk_ids)
+                ]
+                scope_ready = bool(loaded_chunk_ids)
+                if not scope_ready:
+                    scope_error = "Recommended chunks could not be loaded."
+                    blockers.append("generation_scope_unavailable")
+                elif missing_chunk_ids:
+                    warnings.append("recommendation_contains_missing_chunks")
+            except ValueError as exc:
+                scope_error = str(exc)
+                blockers.append("generation_scope_unavailable")
+        else:
+            scope_error = "Lesson has no recommended chunks. Generate recommended chunks first."
+            blockers.append("missing_recommendation")
+
+        recommendation_metadata = recommendation.get("metadata", {}) if recommendation else {}
+        assessment_plan = self._build_lesson_assessment_plan(
+            context=context,
+            chunks=chunks,
+            mastery=mastery,
+            requested_target_count=target_count,
+        )
+        resolved_target_count = max(
+            1,
+            int(
+                target_count
+                if target_count is not None
+                else assessment_plan.target_count_auto
+            ),
+        )
+        recommendation_source = str(
+            recommendation_metadata.get("source")
+            or ("stored_recommendation" if recommendation and recommendation.get("_id") else "")
+        ).strip() or None
+        nlp_status = self.question_fallback_service.question_nlp_service.get_backend_status()
+        chunk_debug: List[Dict[str, Any]] = []
+        if chunks:
+            chunk_profiles = self.question_fallback_service._build_chunk_profiles(
+                chunks=chunks,
+                target_concepts=target_concepts,
+            )
+            for chunk in chunks:
+                chunk_id = str(chunk.get("_id") or "").strip()
+                profile = chunk_profiles.get(chunk_id, {})
+                chunk_debug.append(
+                    {
+                        "chunk_id": chunk_id,
+                        "instruction_role": str(
+                            profile.get("instruction_role")
+                            or chunk.get("instruction_role")
+                            or "explanation"
+                        ),
+                        "covered_concepts": list(profile.get("covered_concepts") or []),
+                        "target_match": bool(profile.get("target_match")),
+                        "target_semantic_score": round(
+                            float(profile.get("target_semantic_score", 0.0) or 0.0),
+                            4,
+                        ),
+                        "target_lexical_score": round(
+                            float(profile.get("target_lexical_score", 0.0) or 0.0),
+                            4,
+                        ),
+                        "keyword_overlap_terms": list(
+                            profile.get("keyword_overlap_terms") or []
+                        ),
+                        "questionability_score": round(
+                            float(profile.get("questionability_score", 0.0) or 0.0),
+                            4,
+                        ),
+                        "priority_score": round(
+                            float(profile.get("priority_score", 0.0) or 0.0),
+                            4,
+                        ),
+                        "claim_count": int(profile.get("claim_count", 0) or 0),
+                        "has_code": bool(profile.get("has_code")),
+                        "has_example": bool(profile.get("has_example")),
+                        "estimated_read_time": round(
+                            float(profile.get("estimated_read_time", 0.0) or 0.0),
+                            2,
+                        ),
+                    }
+                )
+            chunk_debug.sort(
+                key=lambda item: float(item.get("priority_score", 0.0) or 0.0),
+                reverse=True,
+            )
+
+        predicted_generation_path = "llm_attempt_expected"
+        if not scope_ready:
+            predicted_generation_path = "blocked_before_generation"
+        elif not allow_llm:
+            predicted_generation_path = "template_then_local_fallback_only"
+        elif (
+            not bool(llm_status.get("client_available"))
+            or bool(llm_status.get("cooldown_active"))
+        ):
+            predicted_generation_path = "llm_requested_but_local_fallback_expected"
+
+        message = "LLM preflight looks ready."
+        if not scope_ready:
+            message = scope_error or "Question generation scope is not ready."
+        elif not allow_llm:
+            message = (
+                "LLM is disabled by request or adaptive config; generation will use "
+                "template/local fallback."
+            )
+        elif not bool(llm_status.get("client_available")):
+            message = str(
+                llm_status.get("init_error")
+                or llm_status.get("last_error")
+                or "Lesson question LLM client is unavailable."
+            )
+        elif bool(llm_status.get("cooldown_active")):
+            message = (
+                "Lesson question LLM is in cooldown after quota exhaustion; "
+                "generation will fall back locally until cooldown expires."
+            )
+        elif target_concepts and not recommendation_covers_targets:
+            message = (
+                "LLM can run, but current recommended chunks do not cover the requested "
+                "target concepts well."
+            )
+
+        return {
+            "lesson_id": lesson_id,
+            "target_count": resolved_target_count,
+            "question_types": list(question_types),
+            "requested_difficulty": difficulty,
+            "effective_difficulty": effective_difficulty,
+            "bloom_levels": list(bloom_levels),
+            "llm_requested": allow_llm,
+            "predicted_generation_path": predicted_generation_path,
+            "target_concepts": list(target_concepts),
+            "existing_count": existing_count,
+            "recommendation_available": bool(recommendation),
+            "recommendation_source": recommendation_source,
+            "recommendation_selection_strategy": (
+                str(recommendation.get("selection_strategy") or "").strip()
+                if recommendation
+                else None
+            ),
+            "recommendation_chunk_count": len(recommendation.get("chunk_ids", []))
+            if recommendation
+            else 0,
+            "recommendation_resource_count": len(recommendation.get("resource_ids", []))
+            if recommendation
+            else 0,
+            "recommendation_covers_target_concepts": recommendation_covers_targets,
+            "scope_ready": scope_ready,
+            "scope_error": scope_error,
+            "chunk_ids": chunk_ids,
+            "loaded_chunk_ids": loaded_chunk_ids,
+            "missing_chunk_ids": missing_chunk_ids,
+            "nlp_status": nlp_status,
+            "chunk_debug": chunk_debug,
+            "llm_status": llm_status,
+            "blockers": list(dict.fromkeys(blockers)),
+            "warnings": list(dict.fromkeys(warnings)),
+            "message": message,
         }
 
     def get_questions_for_lesson(self, lesson_id: str) -> Dict[str, Any]:
@@ -1043,6 +1596,9 @@ class LessonScopedQuestionGenerationService:
         difficulty: str,
         bloom_levels: List[str],
         base_message: str,
+        generation_metadata: Dict[str, Any],
+        excluded_signatures: set[str] | None = None,
+        assessment_plan: LessonAssessmentSizingResult | None = None,
     ) -> tuple[List[ValidatedLessonQuestion], str]:
         chunk_order = [str(chunk["_id"]) for chunk in chunks]
         chunk_map = {str(chunk["_id"]): chunk for chunk in chunks}
@@ -1071,30 +1627,34 @@ class LessonScopedQuestionGenerationService:
             chunk_map=chunk_map,
             score_map=score_map,
         )
-        fallback_questions: List[ValidatedLessonQuestion] = []
-
-        finalized: List[ValidatedLessonQuestion] = []
-        seen_signatures: set[str] = set()
+        allowed_question_types = set(
+            self._normalize_requested_question_types(question_types)
+        )
+        candidate_pool: List[ValidatedLessonQuestion] = []
+        seen_signatures: set[str] = set(excluded_signatures or set())
         for candidate in ordered_questions:
+            if candidate.question_type not in allowed_question_types:
+                continue
             signature = self._question_signature(candidate)
             if not signature or signature in seen_signatures:
                 continue
             seen_signatures.add(signature)
-            finalized.append(
+            candidate_pool.append(
                 self._enrich_question_metadata(
                     question=candidate,
                     chunk_map=chunk_map,
                     resource_map=resource_map,
                     score_map=score_map,
+                    generation_metadata=generation_metadata,
                     quality_score=self._score_question_quality(
                         candidate, chunk_map=chunk_map, score_map=score_map
                     ),
                 )
             )
-            if len(finalized) >= target_count:
+            if len(candidate_pool) >= max(target_count * 2, target_count + 4):
                 break
 
-        if len(finalized) < target_count:
+        if len(candidate_pool) < target_count:
             fallback_questions = self._build_fallback_questions(
                 context=context,
                 chunks=chunks,
@@ -1104,87 +1664,184 @@ class LessonScopedQuestionGenerationService:
                 bloom_levels=bloom_levels,
             )
             for candidate in fallback_questions:
+                if candidate.question_type not in allowed_question_types:
+                    continue
                 signature = self._question_signature(candidate)
                 if not signature or signature in seen_signatures:
                     continue
                 seen_signatures.add(signature)
-                finalized.append(
-                    self._enrich_question_metadata(
-                        question=candidate,
-                        chunk_map=chunk_map,
-                        resource_map=resource_map,
-                        score_map=score_map,
-                        quality_score=self._score_question_quality(
-                            candidate, chunk_map=chunk_map, score_map=score_map
-                        ),
-                    )
+                enriched_candidate = self._enrich_question_metadata(
+                    question=candidate,
+                    chunk_map=chunk_map,
+                    resource_map=resource_map,
+                    score_map=score_map,
+                    generation_metadata=generation_metadata,
+                    quality_score=self._score_question_quality(
+                        candidate, chunk_map=chunk_map, score_map=score_map
+                    ),
                 )
-                if len(finalized) >= target_count:
-                    break
+                candidate_pool.append(enriched_candidate)
 
-        if LOW_COUNT_FORCE_FILL_ENABLED and len(finalized) < target_count:
-            remaining = target_count - len(finalized)
+        if LOW_COUNT_FORCE_FILL_ENABLED and len(candidate_pool) < target_count:
+            remaining = target_count - len(candidate_pool)
             relaxed_fallback_questions = self._build_fallback_questions(
                 context=context,
                 chunks=chunks,
                 target_count=max(remaining * 3, target_count),
-                question_types=(
-                    question_types
-                    if len(set(question_types or [])) > 1
-                    else ["multiple_choice", "true_false"]
-                ),
+                question_types=["multiple_choice"],
                 difficulty=difficulty,
                 bloom_levels=bloom_levels,
                 relaxed_mode=True,
             )
             for candidate in relaxed_fallback_questions:
+                if candidate.question_type not in allowed_question_types:
+                    continue
                 signature = self._question_signature(candidate)
                 if not signature or signature in seen_signatures:
                     continue
                 seen_signatures.add(signature)
-                finalized.append(
-                    self._enrich_question_metadata(
-                        question=candidate,
-                        chunk_map=chunk_map,
-                        resource_map=resource_map,
-                        score_map=score_map,
-                        quality_score=self._score_question_quality(
-                            candidate, chunk_map=chunk_map, score_map=score_map
-                        ),
-                    )
+                enriched_candidate = self._enrich_question_metadata(
+                    question=candidate,
+                    chunk_map=chunk_map,
+                    resource_map=resource_map,
+                    score_map=score_map,
+                    generation_metadata=generation_metadata,
+                    quality_score=self._score_question_quality(
+                        candidate, chunk_map=chunk_map, score_map=score_map
+                    ),
                 )
-                if len(finalized) >= target_count:
-                    break
+                candidate_pool.append(enriched_candidate)
 
-        if len(finalized) < target_count:
+        if len(candidate_pool) < target_count:
             medium_fill_questions = self._build_reinforcement_questions(
                 context=context,
                 chunks=chunks,
-                target_count=target_count - len(finalized),
+                target_count=target_count - len(candidate_pool),
                 difficulty=difficulty,
                 bloom_levels=bloom_levels,
             )
             for candidate in medium_fill_questions:
+                if candidate.question_type not in allowed_question_types:
+                    continue
                 signature = self._question_signature(candidate)
                 if not signature or signature in seen_signatures:
                     continue
                 seen_signatures.add(signature)
-                finalized.append(
-                    self._enrich_question_metadata(
-                        question=candidate,
-                        chunk_map=chunk_map,
-                        resource_map=resource_map,
-                        score_map=score_map,
-                        quality_score=self._score_question_quality(
-                            candidate, chunk_map=chunk_map, score_map=score_map
-                        ),
-                    )
+                enriched_candidate = self._enrich_question_metadata(
+                    question=candidate,
+                    chunk_map=chunk_map,
+                    resource_map=resource_map,
+                    score_map=score_map,
+                    generation_metadata=generation_metadata,
+                    quality_score=self._score_question_quality(
+                        candidate, chunk_map=chunk_map, score_map=score_map
+                    ),
                 )
-                if len(finalized) >= target_count:
-                    break
+                candidate_pool.append(enriched_candidate)
 
-        if not finalized:
+        if not candidate_pool:
             return [], base_message or "Không thể tạo câu hỏi hợp lệ từ lesson này."
+
+        required_target_concepts = self._extract_target_concepts(generation_metadata)
+        if required_target_concepts:
+            matched_pool = [
+                item
+                for item in candidate_pool
+                if bool((item.metadata or {}).get("target_concept_match"))
+            ]
+            if matched_pool:
+                unmatched_pool = [
+                    item
+                    for item in candidate_pool
+                    if not bool((item.metadata or {}).get("target_concept_match"))
+                ]
+                candidate_pool = matched_pool + unmatched_pool
+
+        candidate_pool, semantic_filtered_count = self._semantic_deduplicate_candidates(
+            context=context,
+            questions=candidate_pool,
+            target_concepts=required_target_concepts,
+        )
+        generation_metadata["semantic_filtered_count"] = int(
+            generation_metadata.get("semantic_filtered_count", 0) or 0
+        ) + int(semantic_filtered_count or 0)
+        candidate_pool, verification_filtered_count = self._verify_candidate_questions(
+            questions=candidate_pool,
+            target_concepts=required_target_concepts,
+            requested_bloom_levels=bloom_levels,
+            chunk_map=chunk_map,
+        )
+        generation_metadata["verification_filtered_count"] = int(
+            generation_metadata.get("verification_filtered_count", 0) or 0
+        ) + int(verification_filtered_count or 0)
+
+        coverage_report = self._validate_selected_concept_coverage(
+            candidate_pool,
+            assessment_plan=assessment_plan,
+            required_concepts=required_target_concepts,
+        )
+        if assessment_plan and not coverage_report.get("is_valid", True):
+            missing_candidates = self._build_missing_concept_candidates(
+                context=context,
+                chunks=chunks,
+                missing_concepts=coverage_report.get("missing_concepts", []),
+                target_count=max(
+                    len(coverage_report.get("missing_concepts", [])),
+                    int(
+                        assessment_plan.coverage_requirement.get(
+                            "required_concept_count", 1
+                        )
+                        or 1
+                    ),
+                ),
+                question_types=question_types,
+                difficulty=difficulty,
+                bloom_levels=bloom_levels,
+                chunk_map=chunk_map,
+                resource_map=resource_map,
+                score_map=score_map,
+                seen_signatures=seen_signatures,
+                generation_metadata=generation_metadata,
+            )
+            candidate_pool.extend(missing_candidates)
+
+        pre_filter_finalized = list(candidate_pool)
+        finalized = self._select_diverse_questions(
+            questions=candidate_pool,
+            target_count=target_count,
+            assessment_plan=assessment_plan,
+            required_concepts=required_target_concepts,
+        )
+        finalized = [
+            item for item in finalized if not self._is_low_quality_local_question(item)
+        ]
+        if len(finalized) < target_count:
+            finalized = self._extend_with_salvageable_local_questions(
+                current_questions=finalized,
+                source_questions=pre_filter_finalized,
+                target_count=target_count,
+            )
+        finalized = self._apply_quiz_distribution_plan(
+            finalized,
+            assessment_plan=assessment_plan,
+        )
+        if not finalized:
+            return [], base_message or "Khong the tao cau hoi hop le tu lesson nay."
+
+        coverage_report = self._validate_selected_concept_coverage(
+            finalized,
+            assessment_plan=assessment_plan,
+            required_concepts=required_target_concepts,
+        )
+        generation_metadata["concept_coverage_rate"] = coverage_report.get(
+            "coverage_rate", 0.0
+        )
+        generation_metadata["concept_coverage_missing"] = list(
+            coverage_report.get("missing_concepts", [])
+        )
+        generation_metadata["concept_coverage_pass"] = bool(
+            coverage_report.get("is_valid", False)
+        )
 
         covered_chunk_count = len(
             {chunk_id for item in finalized for chunk_id in item.chunk_ids}
@@ -1209,6 +1866,17 @@ class LessonScopedQuestionGenerationService:
         if len(finalized) < target_count:
             message = (
                 f"{message} Hiện tạo được {len(finalized)}/{target_count} câu hỏi từ nội dung đủ tin cậy trong lesson."
+            )
+        if assessment_plan:
+            message = (
+                f"{message} Lesson size: {assessment_plan.lesson_size}; "
+                f"coverage concept: {coverage_report.get('coverage_rate', 0.0):.0%}."
+            )
+        minimum_viable_fallback = 1
+        if used_local_fallback and len(finalized) < minimum_viable_fallback:
+            return [], (
+                "Du lieu lesson hien chua du sach de tao bo cau hoi cuc bo dang tin cay. "
+                "He thong da bo qua cac cau hoi co dau hieu nhieu. Hay thu lai khi LLM kha dung."
             )
         return finalized, message
 
@@ -1264,6 +1932,952 @@ class LessonScopedQuestionGenerationService:
             ordered.extend(buckets.get(chunk_id) or [])
         return ordered
 
+    def _select_diverse_questions(
+        self,
+        *,
+        questions: Sequence[ValidatedLessonQuestion],
+        target_count: int,
+        assessment_plan: LessonAssessmentSizingResult | None = None,
+        required_concepts: Sequence[str] | None = None,
+    ) -> List[ValidatedLessonQuestion]:
+        remaining = list(questions)
+        if target_count <= 0 or not remaining:
+            return []
+
+        selected: List[ValidatedLessonQuestion] = []
+        used_chunks: set[str] = set()
+        used_focuses: set[str] = set()
+        used_types: Dict[str, int] = {}
+        used_resources: set[str] = set()
+
+        while remaining and len(selected) < target_count:
+            best_index = 0
+            best_score = -1e9
+            for index, question in enumerate(remaining):
+                metadata = question.metadata or {}
+                score = float(metadata.get("quality_score", 0.0) or 0.0)
+                verification_score = float(metadata.get("verification_score", 0.0) or 0.0)
+                focus_key = self._normalize_text(
+                    str(metadata.get("question_focus") or question.correct_answer or "")
+                )
+                resource_ids = {
+                    str(item)
+                    for item in metadata.get("source_resource_ids", [])
+                    if str(item).strip()
+                }
+                if not resource_ids and metadata.get("source_resource_id"):
+                    resource_ids.add(str(metadata.get("source_resource_id")))
+
+                new_chunk_count = len(
+                    {chunk_id for chunk_id in question.chunk_ids if chunk_id not in used_chunks}
+                )
+                score += min(new_chunk_count, 2) * 0.65
+                if bool(metadata.get("target_concept_match")):
+                    score += 1.15
+                score += verification_score * 1.1
+                if bool(metadata.get("verification_pass")):
+                    score += 0.55
+                elif metadata.get("verification_hard_fail"):
+                    score -= 0.8
+                if focus_key and focus_key not in used_focuses:
+                    score += 0.8
+                else:
+                    score -= 0.25
+                score += 0.35 / (1 + used_types.get(question.question_type, 0))
+                if resource_ids and not resource_ids.issubset(used_resources):
+                    score += 0.25
+                if used_types.get(question.question_type, 0) >= 2:
+                    score -= 0.2
+                if len(question.chunk_ids) > 1:
+                    score += 0.15
+                if assessment_plan:
+                    current_coverage = self._validate_selected_concept_coverage(
+                        selected,
+                        assessment_plan=assessment_plan,
+                        required_concepts=required_concepts,
+                    )
+                    missing_concepts = set(
+                        current_coverage.get("missing_concepts", [])
+                    )
+                    question_concepts = set(self._extract_question_concepts(question))
+                    score += float(
+                        len(missing_concepts.intersection(question_concepts))
+                    ) * 1.35
+                    matched_targets = (
+                        question.metadata.get("matched_target_concepts", [])
+                        if isinstance(question.metadata, dict)
+                        else []
+                    )
+                    score += float(len(matched_targets or [])) * 0.45
+
+                    difficulty_counts = self._count_selected_difficulties(selected)
+                    difficulty_targets = (
+                        assessment_plan.difficulty_distribution.get("counts", {})
+                    )
+                    difficulty_key = (
+                        lesson_assessment_sizing_service.normalize_difficulty_label(
+                            question.difficulty
+                        )
+                    )
+                    if difficulty_counts.get(difficulty_key, 0) < difficulty_targets.get(
+                        difficulty_key, 0
+                    ):
+                        score += 0.95
+
+                    bloom_counts = self._count_selected_bloom_levels(selected)
+                    bloom_targets = assessment_plan.bloom_distribution.get("counts", {})
+                    if bloom_counts.get(question.bloom_level, 0) < bloom_targets.get(
+                        question.bloom_level, 0
+                    ):
+                        score += 1.05
+                    if question.bloom_level == "apply" and bloom_targets.get("apply", 0):
+                        score += 0.35
+                    if (
+                        assessment_plan.lesson_size in {"medium", "large"}
+                        and question.bloom_level == "analyze"
+                    ):
+                        score += 0.3
+                if score > best_score:
+                    best_score = score
+                    best_index = index
+
+            chosen = remaining.pop(best_index)
+            selected.append(chosen)
+            used_chunks.update(str(chunk_id) for chunk_id in chosen.chunk_ids if str(chunk_id).strip())
+            focus_key = self._normalize_text(
+                str((chosen.metadata or {}).get("question_focus") or chosen.correct_answer or "")
+            )
+            if focus_key:
+                used_focuses.add(focus_key)
+            used_types[chosen.question_type] = used_types.get(chosen.question_type, 0) + 1
+            resource_ids = {
+                str(item)
+                for item in (chosen.metadata or {}).get("source_resource_ids", [])
+                if str(item).strip()
+            }
+            if not resource_ids and (chosen.metadata or {}).get("source_resource_id"):
+                resource_ids.add(str((chosen.metadata or {}).get("source_resource_id")))
+            used_resources.update(resource_ids)
+
+        return selected[:target_count]
+
+    def _build_lesson_assessment_plan(
+        self,
+        *,
+        context: Dict[str, Any],
+        chunks: List[Dict[str, Any]],
+        mastery: float | None,
+        requested_target_count: int | None,
+    ) -> LessonAssessmentSizingResult:
+        lesson = context.get("lesson") or {}
+        lesson_concepts = self._resolve_lesson_concepts(context=context, chunks=chunks)
+        estimated_learning_time = self._resolve_estimated_learning_time(
+            lesson=lesson,
+            chunks=chunks,
+        )
+        total_token_length = sum(
+            self._estimate_chunk_token_length(str(chunk.get("content") or ""))
+            for chunk in chunks
+        )
+        return lesson_assessment_sizing_service.build_quiz_plan(
+            chunk_count=len(chunks),
+            total_token_length=total_token_length,
+            concept_count=len(lesson_concepts),
+            estimated_learning_time=estimated_learning_time,
+            concepts=lesson_concepts,
+            mastery=mastery,
+            requested_target_count=requested_target_count,
+        )
+
+    @staticmethod
+    def _normalize_requested_question_types(
+        question_types: Sequence[str] | None,
+    ) -> List[str]:
+        del question_types
+        return ["multiple_choice"]
+
+    def _decorate_generation_metadata(
+        self,
+        *,
+        metadata: Dict[str, Any],
+        assessment_plan: LessonAssessmentSizingResult,
+        target_count: int,
+    ) -> Dict[str, Any]:
+        decorated = dict(metadata or {})
+        decorated["lesson_size"] = assessment_plan.lesson_size
+        decorated["target_count_auto"] = assessment_plan.target_count_auto
+        decorated["target_count_resolved"] = target_count
+        decorated["difficulty_distribution"] = assessment_plan.difficulty_distribution
+        decorated["bloom_distribution"] = assessment_plan.bloom_distribution
+        decorated["lesson_concepts"] = list(assessment_plan.concepts)
+        decorated["estimated_learning_time"] = assessment_plan.estimated_learning_time
+        decorated["concept_coverage_target"] = dict(
+            assessment_plan.coverage_requirement
+        )
+        return decorated
+
+    @staticmethod
+    def compute_runtime_effective_lesson_size(
+        declared_lesson_size: str,
+        usable_chunk_count: int,
+        grounded_content_volume: int,
+    ) -> str:
+        declared = str(declared_lesson_size or "small").strip().lower()
+        usable = max(0, int(usable_chunk_count or 0))
+        grounded = max(0, int(grounded_content_volume or 0))
+        if declared == "large" and usable <= 2:
+            return "small"
+        if declared == "large" and usable <= 4:
+            return "medium"
+        if declared == "medium" and usable <= 2:
+            return "small"
+        if grounded < 220 and usable <= 2:
+            return "small"
+        if grounded < 500 and usable <= 4:
+            return "medium" if declared == "large" else declared
+        return declared if declared in {"small", "medium", "large"} else "small"
+
+    @staticmethod
+    def recalculate_target_count_for_degraded_mode(
+        lesson_size: str,
+        original_target_count: int,
+        usable_chunk_count: int,
+        mappable_concept_count: int,
+        llm_available: bool,
+    ) -> int:
+        original = max(1, int(original_target_count or 1))
+        usable = max(0, int(usable_chunk_count or 0))
+        mappable = max(0, int(mappable_concept_count or 0))
+        if usable <= 2:
+            degraded = min(original, 5)
+        elif usable == 3:
+            degraded = min(original, 6)
+        elif usable in {4, 5}:
+            degraded = min(original, 8)
+        else:
+            degraded = min(original, max(8, usable + min(mappable, 3)))
+
+        fallback_capacity = max(
+            1,
+            min(
+                max(usable * 3, 1),
+                max(usable + mappable + 1, 1),
+            ),
+        )
+        if not llm_available:
+            degraded = min(degraded, fallback_capacity)
+        if lesson_size == "small":
+            degraded = min(degraded, max(3, fallback_capacity))
+        return max(1, degraded)
+
+    @classmethod
+    def _estimate_usable_chunk_count(
+        cls,
+        chunks: Sequence[Dict[str, Any]],
+    ) -> int:
+        usable = 0
+        for chunk in chunks or []:
+            content = str(chunk.get("content") or "").strip()
+            metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+            covered_concepts = (
+                chunk.get("covered_concepts")
+                or metadata.get("covered_concepts")
+                or []
+            )
+            questionability = float(
+                chunk.get("questionability_score")
+                or metadata.get("questionability_score")
+                or 0.0
+            )
+            word_count = len(content.split())
+            if word_count >= 18 or covered_concepts or questionability >= 0.2:
+                usable += 1
+        return usable
+
+    @staticmethod
+    def _estimate_grounded_content_volume(chunks: Sequence[Dict[str, Any]]) -> int:
+        return sum(len(str(chunk.get("content") or "").split()) for chunk in chunks or [])
+
+    def _normalize_generation_target_concepts(
+        self,
+        *,
+        raw_target_concepts: Sequence[str],
+        context: Dict[str, Any],
+        chunks: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        lesson_context = {**context, "chunks": list(chunks or [])}
+        normalization = concept_normalization_service.normalize_target_concepts(
+            raw_target_concepts=raw_target_concepts,
+            lesson_context=lesson_context,
+        )
+        valid_targets = list(normalization.normalized_target_concepts)
+        rejected_targets = list(normalization.rejected_target_concepts)
+        concept_mapping_debug = list(normalization.concept_mapping_debug)
+        if not valid_targets:
+            valid_targets = concept_normalization_service.extract_fallback_target_concepts(
+                lesson_context,
+                limit=3,
+            )
+        return {
+            "valid_target_concepts": valid_targets,
+            "rejected_target_concepts": rejected_targets,
+            "concept_mapping_debug": concept_mapping_debug,
+        }
+
+    def _resolve_lesson_concepts(
+        self,
+        *,
+        context: Dict[str, Any],
+        chunks: List[Dict[str, Any]],
+    ) -> List[str]:
+        lesson = context.get("lesson") or {}
+        metadata = lesson.get("metadata") if isinstance(lesson.get("metadata"), dict) else {}
+        concepts: List[str] = []
+        for value in (
+            metadata.get("main_concept"),
+            lesson.get("topic"),
+        ):
+            if value:
+                concepts.append(str(value))
+        for source in (
+            metadata.get("covered_concepts"),
+            metadata.get("keywords"),
+            lesson.get("learning_objectives"),
+            lesson.get("keywords"),
+        ):
+            if isinstance(source, list):
+                concepts.extend(str(item) for item in source)
+        for chunk in chunks:
+            concepts.extend(
+                str(item)
+                for item in (
+                    chunk.get("covered_concepts")
+                    or (
+                        (chunk.get("metadata") or {}).get("covered_concepts")
+                        if isinstance(chunk.get("metadata"), dict)
+                        else []
+                    )
+                    or []
+                )
+            )
+        return lesson_assessment_sizing_service._normalize_concepts(concepts)
+
+    def _resolve_estimated_learning_time(
+        self,
+        *,
+        lesson: Dict[str, Any],
+        chunks: List[Dict[str, Any]],
+    ) -> int:
+        lesson_metadata = (
+            lesson.get("metadata") if isinstance(lesson.get("metadata"), dict) else {}
+        )
+        chunk_time = 0.0
+        for chunk in chunks:
+            chunk_metadata = (
+                chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+            )
+            chunk_time += float(
+                chunk.get("estimated_read_time")
+                or chunk_metadata.get("estimated_read_time")
+                or 0.0
+            )
+        if chunk_time > 0:
+            return max(1, int(round(chunk_time)))
+        lesson_time = float(
+            lesson_metadata.get("estimated_read_time")
+            or lesson_metadata.get("estimated_learning_time")
+            or 0.0
+        )
+        return max(1, int(round(lesson_time))) if lesson_time > 0 else max(1, len(chunks) * 4)
+
+    @staticmethod
+    def _estimate_chunk_token_length(content: str) -> int:
+        text = str(content or "").strip()
+        if not text:
+            return 0
+        return max(1, int(round(len(text.split()) * 1.3)))
+
+    def _resolve_llm_status_code(
+        self,
+        *,
+        allow_llm: bool,
+        llm_debug_status: Dict[str, Any] | None,
+        validation: Any | None = None,
+    ) -> str:
+        if not allow_llm:
+            return "disabled"
+        debug = llm_debug_status or {}
+        last_error = str(
+            debug.get("last_error")
+            or self.llm_client.get_last_error()
+            or ""
+        ).strip().lower()
+        if bool(debug.get("cooldown_active")):
+            return "cooldown"
+        if not bool(debug.get("client_available")):
+            return "client_unavailable"
+        if "quota" in last_error or "resource_exhausted" in last_error or "429" in last_error:
+            return "quota_exhausted"
+        if validation is None:
+            return "available"
+        if getattr(validation, "status", "") == "ok":
+            return "available"
+        if not list(getattr(validation, "questions", []) or []):
+            if "empty response" in last_error or "returned an empty response" in last_error:
+                return "empty_response"
+            return "invalid_response"
+        return "available"
+
+    def compute_concept_coverage_rate(
+        self,
+        questions: Sequence[ValidatedLessonQuestion],
+        *,
+        valid_target_concepts: Sequence[str],
+        chunk_map: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        normalized_targets = lesson_assessment_sizing_service._normalize_concepts(
+            valid_target_concepts or []
+        )
+        if not normalized_targets:
+            return {
+                "coverage_rate": None,
+                "covered_concepts": [],
+                "missing_concepts": [],
+                "covered_count": 0,
+                "total_concepts": 0,
+                "is_valid": False,
+                "status": "unavailable_due_to_invalid_targets",
+            }
+
+        covered: set[str] = set()
+        for concept in normalized_targets:
+            for question in questions or []:
+                if self._question_covers_canonical_concept(
+                    question=question,
+                    concept=concept,
+                    chunk_map=chunk_map,
+                ):
+                    covered.add(concept)
+                    break
+
+        coverage_rate = len(covered) / max(1, len(normalized_targets))
+        status = "covered"
+        if coverage_rate < 0.5:
+            status = "insufficient_coverage"
+        elif coverage_rate < 0.8:
+            status = "partial_coverage"
+        return {
+            "coverage_rate": round(coverage_rate, 4),
+            "covered_concepts": sorted(covered),
+            "missing_concepts": [
+                concept for concept in normalized_targets if concept not in covered
+            ],
+            "covered_count": len(covered),
+            "total_concepts": len(normalized_targets),
+            "is_valid": coverage_rate >= 0.8,
+            "status": status,
+        }
+
+    def _question_covers_canonical_concept(
+        self,
+        *,
+        question: ValidatedLessonQuestion,
+        concept: str,
+        chunk_map: Dict[str, Dict[str, Any]],
+    ) -> bool:
+        normalized_concept = self._normalize_text(concept)
+        candidate_texts = self._collect_question_concept_candidates(
+            question=question,
+            chunk_map=chunk_map,
+            include_chunk_content=True,
+        )
+        normalized_combined = " ".join(candidate_texts).strip()
+        if not normalized_combined:
+            return False
+        if any(
+            self._candidate_matches_concept(candidate, normalized_concept)
+            for candidate in candidate_texts
+        ):
+            return True
+        semantic_score = self.question_fallback_service.question_nlp_service.semantic_similarity(
+            normalized_combined,
+            [normalized_concept],
+        )
+        return semantic_score >= 0.55
+
+    @staticmethod
+    def resolve_generation_status(
+        *,
+        saved_count: int,
+        effective_target_count: int,
+        concept_coverage_rate: float | None,
+        llm_available: bool,
+        degraded_mode: bool,
+    ) -> str:
+        saved = max(0, int(saved_count or 0))
+        target = max(1, int(effective_target_count or 1))
+        if saved == 0:
+            return "failed"
+        if saved / max(target, 1) < 0.7:
+            return "partial"
+        if concept_coverage_rate is not None and float(concept_coverage_rate) < 0.5:
+            return "insufficient_coverage"
+        if degraded_mode and not llm_available:
+            return "degraded_ok"
+        return "ok"
+
+    def build_generation_message(
+        self,
+        *,
+        llm_status: str,
+        degraded_mode: bool,
+        original_target_count: int,
+        effective_target_count: int,
+        usable_chunk_count: int,
+        saved_count: int,
+        concept_coverage_rate: float | None,
+        concept_coverage_status: str | None,
+    ) -> str:
+        messages: List[str] = []
+        if llm_status in {"cooldown", "quota_exhausted"}:
+            messages.append(
+                "LLM hiện tạm thời không khả dụng do cooldown quota."
+            )
+        elif llm_status in {"client_unavailable", "empty_response", "invalid_response"}:
+            messages.append(
+                "LLM hiện không trả được kết quả ổn định nên hệ thống chuyển sang tạo câu hỏi cục bộ."
+            )
+        if degraded_mode:
+            messages.append(
+                f"Hệ thống đã chuyển sang degraded local mode và điều chỉnh số lượng mục tiêu từ {original_target_count} xuống {effective_target_count} dựa trên {usable_chunk_count} chunk đủ tin cậy."
+            )
+        messages.append(f"Đã tạo {saved_count} câu hỏi.")
+        if concept_coverage_status == "unavailable_due_to_invalid_targets":
+            messages.append(
+                "Không đánh giá được độ bao phủ concept mục tiêu vì target concept ban đầu không hợp lệ; hệ thống đã fallback sang concept của lesson."
+            )
+        elif concept_coverage_rate is not None:
+            if concept_coverage_rate < 0.5:
+                messages.append("Độ bao phủ concept hiện chưa đạt yêu cầu.")
+            else:
+                messages.append(
+                    f"Độ bao phủ concept hiện đạt {concept_coverage_rate:.0%}."
+                )
+        if llm_status in {"cooldown", "quota_exhausted"}:
+            messages.append(
+                "Khuyến nghị thử lại sau khi dịch vụ AI hồi phục nếu cần bộ câu hỏi đầy đủ hơn."
+            )
+        return " ".join(messages).strip()
+
+    def _build_generation_next_action(
+        self,
+        *,
+        llm_status: str,
+        llm_debug_status: Dict[str, Any],
+        concept_coverage_status: str | None,
+        degraded_mode: bool,
+    ) -> Dict[str, Any]:
+        if llm_status in {"cooldown", "quota_exhausted"}:
+            return {
+                "type": "retry_after_cooldown",
+                "retry_after_seconds": int(
+                    llm_debug_status.get("cooldown_remaining_seconds", 0) or 0
+                ),
+            }
+        if concept_coverage_status == "insufficient_coverage":
+            return {
+                "type": "review_lesson_content",
+                "reason": "not_enough_grounded_concepts",
+            }
+        if degraded_mode:
+            return {
+                "type": "continue_with_degraded_quiz",
+                "warning": "local_generation_only",
+            }
+        return {}
+
+    def _validate_selected_concept_coverage(
+        self,
+        questions: Sequence[ValidatedLessonQuestion],
+        *,
+        assessment_plan: LessonAssessmentSizingResult | None,
+        required_concepts: Sequence[str] | None = None,
+    ) -> Dict[str, Any]:
+        normalized_required_concepts = lesson_assessment_sizing_service._normalize_concepts(
+            required_concepts or []
+        )
+        if normalized_required_concepts:
+            return lesson_assessment_sizing_service.validate_concept_coverage(
+                questions=questions,
+                lesson_concepts=normalized_required_concepts,
+            )
+        if assessment_plan is None:
+            return {
+                "is_valid": True,
+                "coverage_rate": 1.0,
+                "missing_concepts": [],
+            }
+        return lesson_assessment_sizing_service.validate_concept_coverage(
+            questions=questions,
+            lesson_concepts=assessment_plan.concepts,
+        )
+
+    def _build_missing_concept_candidates(
+        self,
+        *,
+        context: Dict[str, Any],
+        chunks: List[Dict[str, Any]],
+        missing_concepts: List[str],
+        target_count: int,
+        question_types: List[str],
+        difficulty: str,
+        bloom_levels: List[str],
+        chunk_map: Dict[str, Dict[str, Any]],
+        resource_map: Dict[str, Dict[str, Any]],
+        score_map: Dict[str, float],
+        seen_signatures: set[str],
+        generation_metadata: Dict[str, Any],
+    ) -> List[ValidatedLessonQuestion]:
+        if not missing_concepts or target_count <= 0:
+            return []
+
+        target_chunks = [
+            chunk
+            for chunk in chunks
+            if set(
+                lesson_assessment_sizing_service._normalize_concepts(
+                    chunk.get("covered_concepts")
+                    or (
+                        (chunk.get("metadata") or {}).get("covered_concepts")
+                        if isinstance(chunk.get("metadata"), dict)
+                        else []
+                    )
+                    or []
+                )
+            ).intersection(set(missing_concepts))
+        ]
+        coverage_context = {
+            **context,
+            "target_concepts": list(missing_concepts),
+        }
+        candidates = self._build_fallback_questions(
+            context=coverage_context,
+            chunks=target_chunks or chunks,
+            target_count=max(target_count, len(missing_concepts)),
+            question_types=question_types,
+            difficulty=difficulty,
+            bloom_levels=bloom_levels or ["understand", "apply"],
+            relaxed_mode=True,
+        )
+        enriched: List[ValidatedLessonQuestion] = []
+        for candidate in candidates:
+            signature = self._question_signature(candidate)
+            if not signature or signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            enriched.append(
+                self._enrich_question_metadata(
+                    question=candidate,
+                    chunk_map=chunk_map,
+                    resource_map=resource_map,
+                    score_map=score_map,
+                    generation_metadata=generation_metadata,
+                    quality_score=self._score_question_quality(
+                        candidate, chunk_map=chunk_map, score_map=score_map
+                    ),
+                )
+            )
+        return enriched
+
+    def _apply_quiz_distribution_plan(
+        self,
+        questions: Sequence[ValidatedLessonQuestion],
+        *,
+        assessment_plan: LessonAssessmentSizingResult | None,
+    ) -> List[ValidatedLessonQuestion]:
+        finalized = list(questions or [])
+        if not finalized or assessment_plan is None:
+            return finalized
+
+        bloom_targets = dict(assessment_plan.bloom_distribution.get("counts", {}))
+        difficulty_targets = dict(
+            assessment_plan.difficulty_distribution.get("counts", {})
+        )
+        bloom_sequence = self._expand_distribution_sequence(bloom_targets)
+        difficulty_sequence = self._expand_distribution_sequence(difficulty_targets)
+        finalized.sort(
+            key=lambda item: float((item.metadata or {}).get("quality_score", 0.0) or 0.0),
+            reverse=True,
+        )
+        relabeled: List[ValidatedLessonQuestion] = []
+        for index, question in enumerate(finalized):
+            target_bloom = (
+                bloom_sequence[index]
+                if index < len(bloom_sequence)
+                else question.bloom_level
+            )
+            target_difficulty_key = (
+                difficulty_sequence[index]
+                if index < len(difficulty_sequence)
+                else lesson_assessment_sizing_service.normalize_difficulty_label(
+                    question.difficulty
+                )
+            )
+            metadata = dict(question.metadata or {})
+            metadata["original_bloom_level"] = question.bloom_level
+            metadata["original_difficulty"] = question.difficulty
+            metadata["planned_bloom_level"] = target_bloom
+            metadata["planned_difficulty"] = (
+                lesson_assessment_sizing_service.denormalize_difficulty_label(
+                    target_difficulty_key
+                )
+            )
+            relabeled.append(
+                replace(
+                    question,
+                    bloom_level=target_bloom,
+                    difficulty=lesson_assessment_sizing_service.denormalize_difficulty_label(
+                        target_difficulty_key
+                    ),
+                    metadata=metadata,
+                )
+            )
+        return relabeled
+
+    @staticmethod
+    def _expand_distribution_sequence(targets: Dict[str, int]) -> List[str]:
+        sequence: List[str] = []
+        for key, count in targets.items():
+            sequence.extend([key] * max(0, int(count or 0)))
+        return sequence
+
+    def _extract_question_concepts(self, question: ValidatedLessonQuestion) -> List[str]:
+        return lesson_assessment_sizing_service._extract_question_concepts(question)
+
+    def _count_selected_bloom_levels(
+        self,
+        questions: Sequence[ValidatedLessonQuestion],
+    ) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for question in questions or []:
+            key = str(question.bloom_level or "").strip().lower()
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _count_selected_difficulties(
+        self,
+        questions: Sequence[ValidatedLessonQuestion],
+    ) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for question in questions or []:
+            key = lesson_assessment_sizing_service.normalize_difficulty_label(
+                question.difficulty
+            )
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _extract_grounded_evidence(
+        self,
+        *,
+        question: ValidatedLessonQuestion,
+        chunk_map: Dict[str, Dict[str, Any]],
+    ) -> tuple[str, List[str], float]:
+        metadata = question.metadata or {}
+        existing_excerpt = str(metadata.get("source_excerpt") or "").strip()
+        focus = str(metadata.get("question_focus") or question.correct_answer or "").strip()
+        covered_concepts = [
+            str(item).strip()
+            for item in metadata.get("covered_concepts", [])
+            if str(item).strip()
+        ]
+        search_terms = [
+            focus,
+            question.correct_answer,
+            *covered_concepts[:3],
+        ]
+        search_terms = [
+            term for term in search_terms if self._normalize_text(term)
+        ]
+        best_excerpt = existing_excerpt
+        best_score = self._score_evidence_excerpt(
+            excerpt=existing_excerpt,
+            question=question,
+            search_terms=search_terms,
+        )
+        best_terms = self._match_terms_in_excerpt(existing_excerpt, search_terms)
+
+        for chunk_id in question.chunk_ids:
+            chunk = chunk_map.get(chunk_id) or {}
+            content = str(chunk.get("content") or "").strip()
+            if not content:
+                continue
+            candidates = self._candidate_evidence_windows(content)
+            for excerpt in candidates:
+                score = self._score_evidence_excerpt(
+                    excerpt=excerpt,
+                    question=question,
+                    search_terms=search_terms,
+                )
+                if score <= best_score:
+                    continue
+                best_excerpt = excerpt
+                best_score = score
+                best_terms = self._match_terms_in_excerpt(excerpt, search_terms)
+
+        return best_excerpt, best_terms, round(max(best_score, 0.0), 4)
+
+    def _candidate_evidence_windows(self, content: str) -> List[str]:
+        normalized = re.sub(r"\s+", " ", str(content or "")).strip()
+        if not normalized:
+            return []
+        sentences = [
+            item.strip()
+            for item in re.split(r"(?<=[\.\!\?])\s+", normalized)
+            if item.strip()
+        ]
+        if not sentences:
+            return [normalized[:240]]
+        windows: List[str] = []
+        for index, sentence in enumerate(sentences):
+            windows.append(sentence[:260])
+            if index + 1 < len(sentences):
+                windows.append(f"{sentence} {sentences[index + 1]}"[:260].strip())
+        if normalized not in windows:
+            windows.append(normalized[:240].strip())
+        return windows[:24]
+
+    def _score_evidence_excerpt(
+        self,
+        *,
+        excerpt: str,
+        question: ValidatedLessonQuestion,
+        search_terms: Sequence[str],
+    ) -> float:
+        normalized_excerpt = self._normalize_text(excerpt)
+        if not normalized_excerpt:
+            return -1.0
+        score = 0.0
+        if 55 <= len(excerpt.strip()) <= 220:
+            score += 1.2
+        elif len(excerpt.strip()) < 35:
+            score -= 0.6
+        else:
+            score += 0.4
+
+        matches = self._match_terms_in_excerpt(excerpt, search_terms)
+        score += len(matches) * 0.75
+        if self._normalize_text(question.correct_answer) in normalized_excerpt:
+            score += 0.8
+        question_focus = self._normalize_text(
+            str((question.metadata or {}).get("question_focus") or "")
+        )
+        if question_focus and question_focus in normalized_excerpt:
+            score += 0.9
+        if normalized_excerpt.count(":") >= 2 or ">>>" in excerpt:
+            score -= 0.8
+        return score
+
+    def _match_terms_in_excerpt(
+        self, excerpt: str, search_terms: Sequence[str]
+    ) -> List[str]:
+        normalized_excerpt = self._normalize_text(excerpt)
+        matched: List[str] = []
+        seen: set[str] = set()
+        for term in search_terms:
+            normalized = self._normalize_text(term)
+            if not normalized or normalized in seen:
+                continue
+            tokens = [token for token in normalized.split() if len(token) >= 3]
+            if not tokens:
+                continue
+            overlap = sum(1 for token in tokens if token in normalized_excerpt)
+            if overlap / max(len(tokens), 1) >= 0.5:
+                matched.append(term)
+                seen.add(normalized)
+        return matched
+
+    def _strengthen_distractors(
+        self,
+        *,
+        question: ValidatedLessonQuestion,
+        chunk_map: Dict[str, Dict[str, Any]],
+    ) -> tuple[List[str], str]:
+        if question.question_type != "multiple_choice":
+            return question.distractors, "not_applicable"
+
+        answer_key = self._normalize_text(question.correct_answer)
+        existing: List[str] = []
+        seen: set[str] = {answer_key}
+        for item in question.distractors:
+            normalized = self._normalize_text(item)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            existing.append(str(item).strip())
+
+        candidate_scores: Dict[str, float] = {}
+        focus = str((question.metadata or {}).get("question_focus") or "").strip()
+        covered_concepts = [
+            str(item).strip()
+            for item in (question.metadata or {}).get("covered_concepts", [])
+            if str(item).strip()
+        ]
+        answer_category = self._classify_term(question.correct_answer)
+
+        def add_candidate(raw_value: str, weight: float) -> None:
+            candidate = str(raw_value or "").strip()
+            normalized = self._normalize_text(candidate)
+            if not candidate or normalized in seen:
+                return
+            if not self._is_domain_term(normalized):
+                return
+            category = self._classify_term(candidate)
+            score = weight
+            if category == answer_category:
+                score += 0.8
+            if focus and normalized == self._normalize_text(focus):
+                return
+            candidate_scores[candidate] = max(candidate_scores.get(candidate, 0.0), score)
+
+        for concept in covered_concepts:
+            add_candidate(concept, 2.2)
+
+        for chunk in chunk_map.values():
+            metadata = chunk.get("metadata") or {}
+            for concept in metadata.get("covered_concepts") or []:
+                add_candidate(str(concept), 1.8)
+            content = str(chunk.get("content") or "")
+            for token in re.findall(r"\b[a-zA-Z][a-zA-Z0-9_]{3,}\b", content):
+                add_candidate(token, 0.8)
+
+        for fallback in self._FALLBACK_DISTRACTOR_TERMS():
+            add_candidate(fallback, 0.4)
+
+        ordered_candidates = [
+            candidate
+            for candidate, _ in sorted(
+                candidate_scores.items(),
+                key=lambda item: (-item[1], len(item[0])),
+            )
+        ]
+        improved = list(existing)
+        for candidate in ordered_candidates:
+            normalized = self._normalize_text(candidate)
+            if normalized in {self._normalize_text(item) for item in improved}:
+                continue
+            improved.append(candidate)
+            if len(improved) >= 3:
+                break
+
+        strategy = "existing"
+        if len(improved) >= 3 and improved[:3] != list(question.distractors[:3]):
+            strategy = "lesson_contrast_pool"
+        return improved[:3], strategy
+
+    @classmethod
+    def _FALLBACK_DISTRACTOR_TERMS(cls) -> List[str]:
+        return list(cls._FALLBACK_DISTRACTORS)
+
     def _enrich_question_metadata(
         self,
         *,
@@ -1271,9 +2885,11 @@ class LessonScopedQuestionGenerationService:
         chunk_map: Dict[str, Dict[str, Any]],
         resource_map: Dict[str, Dict[str, Any]],
         score_map: Dict[str, float],
+        generation_metadata: Dict[str, Any],
         quality_score: float,
     ) -> ValidatedLessonQuestion:
         metadata = dict(question.metadata or {})
+        target_concepts = self._extract_target_concepts(generation_metadata)
         source_page_numbers = sorted(
             {
                 page_number
@@ -1322,6 +2938,31 @@ class LessonScopedQuestionGenerationService:
             or not str(metadata.get("question_focus") or "").strip()
         ):
             metadata["question_focus"] = self._extract_question_focus(question.question)
+        if target_concepts:
+            metadata.setdefault("target_concepts", list(target_concepts))
+        strengthened_distractors, distractor_strategy = self._strengthen_distractors(
+            question=question,
+            chunk_map=chunk_map,
+        )
+        evidence_excerpt, evidence_terms, evidence_score = self._extract_grounded_evidence(
+            question=question,
+            chunk_map=chunk_map,
+        )
+        if evidence_excerpt:
+            metadata["source_excerpt"] = evidence_excerpt
+        if evidence_terms:
+            metadata["evidence_terms"] = evidence_terms
+        metadata["evidence_score"] = evidence_score
+        metadata["distractor_strategy"] = distractor_strategy
+        matched_target_concepts = self._resolve_matched_target_concepts(
+            question=question,
+            target_concepts=target_concepts,
+            chunk_map=chunk_map,
+        )
+        metadata["matched_target_concepts"] = matched_target_concepts
+        if matched_target_concepts and not str(metadata.get("concept_focus") or "").strip():
+            metadata["concept_focus"] = matched_target_concepts[0]
+        metadata["target_concept_match"] = bool(matched_target_concepts)
         if source_page_numbers:
             metadata.setdefault("source_page_number", source_page_numbers[0])
             metadata["source_page_numbers"] = source_page_numbers
@@ -1339,12 +2980,6 @@ class LessonScopedQuestionGenerationService:
         if source_scores:
             metadata.setdefault("source_score", max(source_scores.values()))
             metadata["source_scores"] = source_scores
-        metadata["quality_score"] = round(float(quality_score), 4)
-        metadata["confidence_score"] = self._compute_confidence_score(
-            question=question,
-            quality_score=quality_score,
-            max_chunk_score=max(source_scores.values(), default=0.0),
-        )
         metadata["generation_source"] = str(
             metadata.get("generation_source")
             or metadata.get("generation_mode")
@@ -1356,11 +2991,34 @@ class LessonScopedQuestionGenerationService:
             "reasoning_note", "Question grounded on recommended lesson chunk(s)."
         )
 
+        provisional_question = ValidatedLessonQuestion(
+            question_type=question.question_type,
+            question=question.question,
+            correct_answer=question.correct_answer,
+            distractors=strengthened_distractors,
+            explanation=question.explanation,
+            difficulty=question.difficulty,
+            bloom_level=question.bloom_level,
+            chunk_ids=question.chunk_ids,
+            metadata=metadata,
+        )
+        improved_quality_score = self._score_question_quality(
+            provisional_question,
+            chunk_map=chunk_map,
+            score_map=score_map,
+        )
+        metadata["quality_score"] = round(float(max(quality_score, improved_quality_score)), 4)
+        metadata["confidence_score"] = self._compute_confidence_score(
+            question=provisional_question,
+            quality_score=float(metadata["quality_score"]),
+            max_chunk_score=max(source_scores.values(), default=0.0),
+        )
+
         return ValidatedLessonQuestion(
             question_type=question.question_type,
             question=question.question,
             correct_answer=question.correct_answer,
-            distractors=question.distractors,
+            distractors=strengthened_distractors,
             explanation=question.explanation,
             difficulty=question.difficulty,
             bloom_level=question.bloom_level,
@@ -1383,6 +3041,7 @@ class LessonScopedQuestionGenerationService:
             question.metadata.get("question_focus")
             or self._extract_question_focus(question.question)
         ).strip()
+        evidence_score = float(question.metadata.get("evidence_score", 0.0) or 0.0)
         max_chunk_score = max(
             (
                 float(score_map.get(chunk_id, 0.0))
@@ -1411,11 +3070,14 @@ class LessonScopedQuestionGenerationService:
             score += 0.75
         elif len(source_excerpt) < 45:
             score -= 0.65
+        score += min(evidence_score, 4.0) * 0.2
 
         if question_focus:
             score += 0.35
             if self._normalize_text(question_focus) in self._AMBIGUOUS_TERMS:
                 score -= 0.3
+        if bool(question.metadata.get("target_concept_match")):
+            score += 0.55
 
         if question.question_type == "multiple_choice":
             unique_choices = {
@@ -1430,6 +3092,8 @@ class LessonScopedQuestionGenerationService:
                 for item in [question.correct_answer, *question.distractors]
             ):
                 score += 0.2
+            if str(question.metadata.get("distractor_strategy") or "") == "lesson_contrast_pool":
+                score += 0.35
         elif question.question_type == "short_answer":
             if len(question.correct_answer.strip()) >= 18:
                 score += 0.35
@@ -1467,6 +3131,10 @@ class LessonScopedQuestionGenerationService:
         normalized_quality = max(0.0, min(1.0, float(quality_score) / 5.0))
         normalized_chunk = max(0.0, min(1.0, float(max_chunk_score)))
         coverage = max(0.0, min(1.0, len(question.chunk_ids) / 2.0))
+        evidence_signal = max(
+            0.0,
+            min(1.0, float(question.metadata.get("evidence_score", 0.0) or 0.0) / 4.0),
+        )
         distractor_quality = 0.0
         if question.question_type == "multiple_choice":
             unique_choices = {
@@ -1475,18 +3143,169 @@ class LessonScopedQuestionGenerationService:
                 if self._normalize_text(item)
             }
             distractor_quality = max(0.0, min(1.0, len(unique_choices) / 4.0))
+            if str(question.metadata.get("distractor_strategy") or "") == "lesson_contrast_pool":
+                distractor_quality = min(1.0, distractor_quality + 0.15)
         elif question.question_type == "short_answer":
             distractor_quality = 0.7
         else:
             distractor_quality = 0.6
         weighted = (
             QUESTION_CONFIDENCE_BASELINE
-            + normalized_quality * 0.42
-            + normalized_chunk * 0.24
-            + coverage * 0.18
-            + distractor_quality * 0.16
+            + normalized_quality * 0.34
+            + normalized_chunk * 0.20
+            + coverage * 0.16
+            + distractor_quality * 0.14
+            + evidence_signal * 0.16
         )
         return round(max(0.0, min(1.0, weighted)), 4)
+
+    def _is_low_quality_local_question(
+        self, question: ValidatedLessonQuestion
+    ) -> bool:
+        generation_mode = str(question.metadata.get("generation_mode") or "").strip()
+        if generation_mode not in {"local_fallback", "local_fill"}:
+            return False
+
+        source_excerpt = str(question.metadata.get("source_excerpt") or "").strip()
+        normalized_excerpt = self._normalize_text(source_excerpt)
+        question_focus = str(
+            question.metadata.get("question_focus") or question.correct_answer
+        ).strip()
+        normalized_focus = self._normalize_text(question_focus)
+        normalized_answer = self._normalize_text(question.correct_answer)
+        normalized_question = self._normalize_text(question.question)
+        fallback_score = float(question.metadata.get("fallback_excerpt_score", 0.0) or 0.0)
+        is_functional_claim = (
+            question.question_type == "multiple_choice"
+            and "mo ta dung nhat" in normalized_question
+            and normalized_answer.startswith(("dung de ", "cho phep ", "giup ", "co the ", "la "))
+        )
+        is_descriptive_fallback = (
+            question.question_type == "multiple_choice"
+            and (
+                "theo noi dung bai hoc" in normalized_question
+                or "trong vi du cua bai hoc" in normalized_question
+                or "theo phan gioi thieu cua bai hoc" in normalized_question
+                or "theo phan tom tat cua bai hoc" in normalized_question
+            )
+            and len(normalized_answer) >= 12
+        )
+
+        minimum_excerpt_score = 0.35 if is_functional_claim else 0.75
+        if source_excerpt and fallback_score and fallback_score < minimum_excerpt_score:
+            return True
+        if normalized_excerpt.startswith("example "):
+            return True
+        if ">>>" in source_excerpt or normalized_excerpt.count(":") >= 2:
+            return True
+        if re.search(r"\b(serial|twitter|affiliation|venue|venues|record|records)\b", normalized_excerpt):
+            return True
+        if (
+            not is_descriptive_fallback
+            and (
+                normalized_focus in self._AMBIGUOUS_TERMS
+                or normalized_answer in self._AMBIGUOUS_TERMS
+            )
+        ):
+            return True
+        if (
+            not is_descriptive_fallback
+            and (
+                normalized_focus in self._FALLBACK_STOP_WORDS
+                or normalized_answer in self._FALLBACK_STOP_WORDS
+            )
+        ):
+            return True
+        if (
+            not is_functional_claim
+            and not is_descriptive_fallback
+            and not self._is_domain_term(normalized_focus)
+            and not self._is_domain_term(normalized_answer)
+        ):
+            return True
+        if question.question_type == "true_false" and (
+            not self._is_reinforcement_true_false_safe(
+                statement=source_excerpt or question.question,
+                focus=question_focus,
+            )
+        ):
+            return True
+        if question.question_type == "multiple_choice":
+            normalized_choices = {
+                self._normalize_text(item)
+                for item in [question.correct_answer, *question.distractors]
+                if self._normalize_text(item)
+            }
+            if len(normalized_choices) < 4:
+                return True
+            if is_descriptive_fallback and len(normalized_answer) >= 12:
+                return False
+        return False
+
+    def _is_salvageable_local_question(
+        self, question: ValidatedLessonQuestion
+    ) -> bool:
+        generation_mode = str(question.metadata.get("generation_mode") or "").strip()
+        if generation_mode not in {"local_fallback", "local_fill"}:
+            return False
+
+        source_excerpt = str(question.metadata.get("source_excerpt") or "").strip()
+        normalized_excerpt = self._normalize_text(source_excerpt)
+        normalized_question = self._normalize_text(question.question)
+        normalized_answer = self._normalize_text(question.correct_answer)
+
+        if not normalized_question or not normalized_answer:
+            return False
+        if normalized_excerpt.startswith("example "):
+            return False
+        if ">>>" in source_excerpt or normalized_excerpt.count(":") >= 2:
+            return False
+        if re.search(
+            r"\b(serial|twitter|affiliation|venue|venues|record|records)\b",
+            normalized_excerpt,
+        ):
+            return False
+        if question.question_type == "true_false":
+            return self._is_reinforcement_true_false_safe(
+                statement=source_excerpt or question.question,
+                focus=str(question.metadata.get("question_focus") or question.correct_answer),
+            )
+        if question.question_type == "multiple_choice":
+            normalized_choices = {
+                self._normalize_text(item)
+                for item in [question.correct_answer, *question.distractors]
+                if self._normalize_text(item)
+            }
+            return len(normalized_choices) == 4
+        return len(normalized_answer) >= 8
+
+    def _extend_with_salvageable_local_questions(
+        self,
+        *,
+        current_questions: List[ValidatedLessonQuestion],
+        source_questions: List[ValidatedLessonQuestion],
+        target_count: int,
+    ) -> List[ValidatedLessonQuestion]:
+        if len(current_questions) >= target_count:
+            return list(current_questions[:target_count])
+
+        extended = list(current_questions)
+        seen_signatures = {
+            self._question_signature(item)
+            for item in extended
+            if self._question_signature(item)
+        }
+        for item in source_questions:
+            if len(extended) >= target_count:
+                break
+            signature = self._question_signature(item)
+            if not signature or signature in seen_signatures:
+                continue
+            if not self._is_salvageable_local_question(item):
+                continue
+            seen_signatures.add(signature)
+            extended.append(item)
+        return extended[:target_count]
 
     @staticmethod
     def _resolve_adaptive_difficulty(
@@ -1521,11 +3340,274 @@ class LessonScopedQuestionGenerationService:
         return ""
 
     def _question_signature(self, question: ValidatedLessonQuestion) -> str:
-        stem = self._normalize_text(question.question)
-        answer = self._normalize_text(question.correct_answer)
+        return self._question_signature_from_parts(
+            question_text=question.question,
+            correct_answer=question.correct_answer,
+        )
+
+    def _question_signature_from_parts(
+        self, *, question_text: Any, correct_answer: Any
+    ) -> str:
+        stem = self._normalize_text(question_text)
+        answer = self._normalize_text(correct_answer)
         if not stem:
             return ""
         return f"{stem}::{answer}"
+
+    def _collect_excluded_question_signatures(
+        self,
+        *,
+        existing_questions: Sequence[Dict[str, Any]] | None,
+        generation_metadata: Dict[str, Any] | None,
+    ) -> set[str]:
+        signatures: set[str] = set()
+        for item in existing_questions or []:
+            signature = self._question_signature_from_parts(
+                question_text=item.get("question"),
+                correct_answer=item.get("correct_answer"),
+            )
+            if signature:
+                signatures.add(signature)
+
+        metadata = generation_metadata if isinstance(generation_metadata, dict) else {}
+        previous_questions = metadata.get("previous_questions")
+        if not isinstance(previous_questions, list):
+            previous_questions = (
+                metadata.get("generation_strategy", {}).get("previous_questions")
+                if isinstance(metadata.get("generation_strategy"), dict)
+                else []
+            )
+
+        for item in previous_questions or []:
+            if not isinstance(item, dict):
+                continue
+            signature = self._question_signature_from_parts(
+                question_text=item.get("question"),
+                correct_answer=item.get("correct_answer"),
+            )
+            if signature:
+                signatures.add(signature)
+        return signatures
+
+    def _build_semantic_dedup_text(self, question: ValidatedLessonQuestion) -> str:
+        metadata = question.metadata or {}
+        focus = str(
+            metadata.get("concept_focus")
+            or metadata.get("question_focus")
+            or ""
+        ).strip()
+        source_excerpt = str(metadata.get("source_excerpt") or "").strip()
+        parts = [
+            str(question.question_type or "").strip(),
+            str(question.question or "").strip(),
+            str(question.correct_answer or "").strip(),
+            focus,
+            source_excerpt[:240],
+        ]
+        return " | ".join(part for part in parts if part)
+
+    @staticmethod
+    def _concept_sets_overlap(left: Sequence[str], right: Sequence[str]) -> bool:
+        left_set = set(lesson_assessment_sizing_service._normalize_concepts(left))
+        right_set = set(lesson_assessment_sizing_service._normalize_concepts(right))
+        if not left_set or not right_set:
+            return True
+        return bool(left_set.intersection(right_set))
+
+    def _semantic_deduplicate_candidates(
+        self,
+        *,
+        context: Dict[str, Any],
+        questions: Sequence[ValidatedLessonQuestion],
+        target_concepts: Sequence[str],
+    ) -> tuple[List[ValidatedLessonQuestion], int]:
+        if not QUESTION_SEMANTIC_DEDUP_ENABLED or not questions:
+            return list(questions), 0
+
+        semantic_texts = [self._build_semantic_dedup_text(question) for question in questions]
+        embeddings = embedding_service.embed_texts(semantic_texts)
+        subject_id = str((context.get("subject") or {}).get("_id") or "").strip()
+        lesson_id = str((context.get("lesson") or {}).get("_id") or "").strip()
+        memory_candidates = self.question_semantic_memory_repository.find_candidates(
+            subject_id=subject_id,
+            exclude_lesson_id=lesson_id,
+            concept_ids=target_concepts,
+            limit=QUESTION_SEMANTIC_DEDUP_LOOKBACK,
+        )
+
+        external_vectors: List[tuple[np.ndarray, List[str], str]] = []
+        for item in memory_candidates:
+            raw_embedding = item.get("embedding") or []
+            if not isinstance(raw_embedding, list) or not raw_embedding:
+                continue
+            try:
+                vector = np.array(raw_embedding, dtype=float)
+            except Exception:
+                continue
+            external_vectors.append(
+                (
+                    vector,
+                    [str(value) for value in (item.get("concept_ids") or [])],
+                    str(item.get("question_id") or "").strip(),
+                )
+            )
+
+        kept: List[ValidatedLessonQuestion] = []
+        kept_vectors: List[tuple[np.ndarray, List[str], str]] = []
+        filtered = 0
+
+        for question, semantic_text, embedding in zip(questions, semantic_texts, embeddings):
+            try:
+                candidate_vector = np.array(embedding, dtype=float)
+            except Exception:
+                kept.append(question)
+                continue
+
+            question_concepts = self._extract_question_concepts(question)
+            duplicate_score = 0.0
+            duplicate_source = ""
+
+            for existing_vector, existing_concepts, existing_question_id in external_vectors:
+                if not self._concept_sets_overlap(question_concepts, existing_concepts):
+                    continue
+                similarity = cosine_similarity(candidate_vector, existing_vector)
+                if similarity >= QUESTION_SEMANTIC_DEDUP_THRESHOLD:
+                    duplicate_score = similarity
+                    duplicate_source = f"memory:{existing_question_id}" if existing_question_id else "memory"
+                    break
+
+            if not duplicate_source:
+                for kept_vector, kept_concepts, kept_signature in kept_vectors:
+                    if not self._concept_sets_overlap(question_concepts, kept_concepts):
+                        continue
+                    similarity = cosine_similarity(candidate_vector, kept_vector)
+                    if similarity >= QUESTION_SEMANTIC_DEDUP_THRESHOLD:
+                        duplicate_score = similarity
+                        duplicate_source = f"batch:{kept_signature}" if kept_signature else "batch"
+                        break
+
+            if duplicate_source:
+                question.metadata["semantic_duplicate_score"] = round(float(duplicate_score), 4)
+                question.metadata["semantic_duplicate_source"] = duplicate_source
+                filtered += 1
+                continue
+
+            question.metadata["semantic_text"] = semantic_text
+            kept.append(question)
+            kept_vectors.append(
+                (
+                    candidate_vector,
+                    question_concepts,
+                    self._question_signature(question),
+                )
+            )
+
+        if not kept and questions:
+            fallback_question = list(questions)[0]
+            fallback_question.metadata["semantic_text"] = semantic_texts[0]
+            kept = [fallback_question]
+            filtered = max(0, filtered - 1)
+        return kept, filtered
+
+    def _persist_question_semantic_memory(
+        self,
+        *,
+        question_ids: Sequence[str],
+        questions: Sequence[ValidatedLessonQuestion],
+        context: Dict[str, Any],
+    ) -> int:
+        if not question_ids or not questions:
+            return 0
+
+        semantic_texts = [
+            str((question.metadata or {}).get("semantic_text") or "").strip()
+            or self._build_semantic_dedup_text(question)
+            for question in questions
+        ]
+        embeddings = embedding_service.embed_texts(semantic_texts)
+        records: List[Dict[str, Any]] = []
+        for question_id, question, semantic_text, embedding in zip(
+            question_ids,
+            questions,
+            semantic_texts,
+            embeddings,
+        ):
+            records.append(
+                {
+                    "question_id": str(question_id),
+                    "subject_id": str((context.get("subject") or {}).get("_id") or ""),
+                    "chapter_id": str((context.get("chapter") or {}).get("_id") or ""),
+                    "lesson_id": str((context.get("lesson") or {}).get("_id") or ""),
+                    "question_type": str(question.question_type or ""),
+                    "concept_ids": self._extract_question_concepts(question),
+                    "semantic_text": semantic_text,
+                    "embedding": embedding,
+                }
+            )
+        return self.question_semantic_memory_repository.insert_many(records)
+
+    def _verify_candidate_questions(
+        self,
+        *,
+        questions: Sequence[ValidatedLessonQuestion],
+        target_concepts: Sequence[str],
+        requested_bloom_levels: Sequence[str],
+        chunk_map: Dict[str, Dict[str, Any]],
+    ) -> tuple[List[ValidatedLessonQuestion], int]:
+        if not questions:
+            return [], 0
+
+        verified: List[ValidatedLessonQuestion] = []
+        rejected: List[ValidatedLessonQuestion] = []
+        filtered = 0
+
+        for question in questions:
+            result = question_cross_verification_service.verify_question(
+                question=question,
+                target_concepts=target_concepts,
+                requested_bloom_levels=requested_bloom_levels,
+                chunk_map=chunk_map,
+            )
+            metadata = dict(question.metadata or {})
+            existing_matches = [
+                str(value).strip()
+                for value in (metadata.get("matched_target_concepts") or [])
+                if str(value).strip()
+            ]
+            merged_matches = lesson_assessment_sizing_service._normalize_concepts(
+                [*existing_matches, *result.matched_target_concepts]
+            )
+            metadata["matched_target_concepts"] = merged_matches
+            metadata["target_concept_match"] = bool(merged_matches)
+            metadata["verification_score"] = result.overall_score
+            metadata["verification_pass"] = result.passed
+            metadata["verification_hard_fail"] = result.hard_fail
+            metadata["verification_blockers"] = list(result.blockers)
+            metadata["verification_checks"] = {
+                "concept_alignment": result.concept_score,
+                "bloom_alignment": result.bloom_score,
+                "distractor_quality": result.distractor_score,
+                "grounding_quality": result.grounding_score,
+            }
+            metadata["predicted_bloom_level"] = result.predicted_bloom_level
+            if merged_matches and not str(metadata.get("concept_focus") or "").strip():
+                metadata["concept_focus"] = merged_matches[0]
+
+            enriched_question = replace(question, metadata=metadata)
+            if result.hard_fail:
+                rejected.append(enriched_question)
+                filtered += 1
+                continue
+            verified.append(enriched_question)
+
+        if not verified and rejected:
+            rejected.sort(
+                key=lambda item: float((item.metadata or {}).get("verification_score", 0.0) or 0.0),
+                reverse=True,
+            )
+            verified = [rejected[0]]
+            filtered = max(0, filtered - 1)
+        return verified, filtered
 
     @staticmethod
     def _determine_generation_mode(questions: List[ValidatedLessonQuestion]) -> str:
@@ -1535,13 +3617,9 @@ class LessonScopedQuestionGenerationService:
             str(question.metadata.get("generation_mode") or "llm")
             for question in questions
         }
-        if generation_modes <= {"local_fallback", "local_fill", "existing_reuse"}:
+        if generation_modes <= {"local_fallback", "local_fill"}:
             return "local_fallback"
-        if (
-            "local_fallback" in generation_modes
-            or "local_fill" in generation_modes
-            or "existing_reuse" in generation_modes
-        ):
+        if "local_fallback" in generation_modes or "local_fill" in generation_modes:
             return "hybrid"
         return "llm"
 
@@ -1556,10 +3634,32 @@ class LessonScopedQuestionGenerationService:
         covered_chunk_count: int,
         llm_error: str | None,
         message: str,
+        cache_stats: Dict[str, Any] | None = None,
+        runtime_details: Dict[str, Any] | None = None,
     ) -> None:
         extra_error = f" | llm_error={llm_error}" if llm_error else ""
+        extra_cache = ""
+        if cache_stats:
+            extra_cache = (
+                " | cache_hits=%s | cache_misses=%s | cache_hit_rate=%s | cache_entries=%s"
+                % (
+                    cache_stats.get("hits", 0),
+                    cache_stats.get("misses", 0),
+                    cache_stats.get("request_hit_rate", cache_stats.get("hit_rate", 0.0)),
+                    cache_stats.get("entries", 0),
+                )
+            )
+        extra_runtime = ""
+        if runtime_details:
+            runtime_parts = [
+                f"{key}={value}"
+                for key, value in runtime_details.items()
+                if value is not None and value != []
+            ]
+            if runtime_parts:
+                extra_runtime = " | " + " | ".join(runtime_parts)
         logger.info(
-            "lesson_question_generation | lesson_id=%s | status=%s | mode=%s | questions=%s | chunks=%s | covered_chunks=%s | message=%s%s",
+            "lesson_question_generation | lesson_id=%s | status=%s | mode=%s | questions=%s | chunks=%s | covered_chunks=%s | message=%s%s%s%s",
             lesson_id,
             status,
             generation_mode,
@@ -1568,6 +3668,8 @@ class LessonScopedQuestionGenerationService:
             covered_chunk_count,
             message,
             extra_error,
+            extra_cache,
+            extra_runtime,
         )
 
     def _resolve_recommendation(
@@ -1577,8 +3679,38 @@ class LessonScopedQuestionGenerationService:
         if recommendation:
             return recommendation
 
+        fallback_payload = self._build_recommendation_fallback_payload(
+            lesson_id=lesson_id,
+            context=context,
+        )
+        if not fallback_payload:
+            return None
+        return self.recommendation_repository.upsert_for_lesson(
+            lesson_id, fallback_payload
+        )
+
+    def _peek_recommendation(
+        self, lesson_id: str, context: Dict[str, Any]
+    ) -> Dict[str, Any] | None:
+        recommendation = self.recommendation_repository.get_by_lesson(lesson_id)
+        if recommendation:
+            return recommendation
+
+        return self._build_recommendation_fallback_payload(
+            lesson_id=lesson_id,
+            context=context,
+        )
+
+    def _build_recommendation_fallback_payload(
+        self, *, lesson_id: str, context: Dict[str, Any]
+    ) -> Dict[str, Any] | None:
         lesson = context.get("lesson") or self.lesson_repository.get(lesson_id)
         if not lesson:
+            return None
+
+        subject = context.get("subject") or {}
+        chapter = context.get("chapter") or {}
+        if not subject or not chapter:
             return None
 
         chunk_ids = lesson.get("recommended_chunk_ids") or []
@@ -1587,8 +3719,8 @@ class LessonScopedQuestionGenerationService:
 
         resource_ids = lesson.get("recommended_resource_ids") or []
         fallback_payload = {
-            "subject_id": context["subject"]["_id"],
-            "chapter_id": context["chapter"]["_id"],
+            "subject_id": subject["_id"],
+            "chapter_id": chapter["_id"],
             "lesson_id": lesson["_id"],
             "chunk_ids": list(chunk_ids),
             "resource_ids": list(resource_ids),
@@ -1598,9 +3730,42 @@ class LessonScopedQuestionGenerationService:
                 "selected_count": len(chunk_ids),
             },
         }
-        return self.recommendation_repository.upsert_for_lesson(
-            lesson_id, fallback_payload
+        return fallback_payload
+
+    def _recommendation_covers_target_concepts(
+        self,
+        *,
+        recommendation: Dict[str, Any] | None,
+        target_concepts: Sequence[str],
+    ) -> bool:
+        normalized_targets = self._extract_target_concepts(
+            {"target_concepts": list(target_concepts or [])}
         )
+        if not normalized_targets:
+            return True
+        if not recommendation:
+            return False
+
+        sequence_metadata = recommendation.get("sequence_metadata") or {}
+        covered_required = self._extract_target_concepts(
+            {
+                "target_concepts": list(
+                    sequence_metadata.get("covered_required_concepts")
+                    or sequence_metadata.get("required_concepts")
+                    or []
+                )
+            }
+        )
+        if any(target in covered_required for target in normalized_targets):
+            return True
+
+        for chunk in recommendation.get("recommended_chunks") or []:
+            covered = self._extract_target_concepts(
+                {"target_concepts": list(chunk.get("covered_concepts") or [])}
+            )
+            if any(target in covered for target in normalized_targets):
+                return True
+        return False
 
     def _load_generation_scope(
         self,
@@ -1627,10 +3792,57 @@ class LessonScopedQuestionGenerationService:
             chunks = [chunk_map[item] for item in chunk_ids if item in chunk_map]
         return recommendation, chunk_ids, chunks
 
+    @staticmethod
+    def _enrich_chunks_with_recommendation_metadata(
+        *,
+        chunks: List[Dict[str, Any]],
+        recommendation: Dict[str, Any] | None,
+    ) -> List[Dict[str, Any]]:
+        recommended_chunk_map = {
+            str(item.get("chunk_id") or ""): item
+            for item in (recommendation or {}).get("recommended_chunks", [])
+            if str(item.get("chunk_id") or "").strip()
+        }
+        enriched: List[Dict[str, Any]] = []
+        for chunk in chunks:
+            chunk_id = str(chunk.get("_id") or "")
+            metadata = recommended_chunk_map.get(chunk_id, {})
+            chunk_copy = dict(chunk)
+            if metadata:
+                matched_required_concepts = [
+                    str(item).strip()
+                    for item in (metadata.get("matched_required_concepts") or [])
+                    if str(item).strip()
+                ]
+                covered_concepts = [
+                    str(item).strip()
+                    for item in (metadata.get("covered_concepts") or [])
+                    if str(item).strip()
+                ]
+                combined_concepts = lesson_assessment_sizing_service._normalize_concepts(
+                    [*covered_concepts, *matched_required_concepts]
+                )
+                chunk_copy["instruction_role"] = str(
+                    metadata.get("instruction_role")
+                    or chunk_copy.get("instruction_role")
+                    or "explanation"
+                )
+                chunk_copy["covered_concepts"] = combined_concepts
+                chunk_copy["matched_required_concepts"] = matched_required_concepts
+                chunk_copy["questionability_score"] = float(
+                    metadata.get("questionability_score", 0.0) or 0.0
+                )
+                chunk_copy["estimated_read_time"] = int(
+                    metadata.get("estimated_read_time", 0) or 0
+                )
+            enriched.append(chunk_copy)
+        return enriched
+
     def _run_generation(
         self,
         *,
         context: Dict[str, Any],
+        recommendation: Dict[str, Any] | None,
         chunks: List[Dict[str, Any]],
         chunk_ids: List[str],
         target_count: int,
@@ -1638,6 +3850,11 @@ class LessonScopedQuestionGenerationService:
         difficulty: str,
         bloom_levels: List[str],
     ):
+        recommended_chunk_map = {
+            str(item.get("chunk_id") or ""): item
+            for item in (recommendation or {}).get("recommended_chunks", [])
+            if str(item.get("chunk_id") or "").strip()
+        }
         resource_ids = [
             str(chunk.get("resource_id"))
             for chunk in chunks
@@ -1667,6 +3884,36 @@ class LessonScopedQuestionGenerationService:
                     context.get("recommendation_scores", {}).get(str(chunk["_id"]), 0.0)
                     if isinstance(context.get("recommendation_scores"), dict)
                     else 0.0
+                ),
+                "instruction_role": str(
+                    recommended_chunk_map.get(str(chunk["_id"]), {}).get(
+                        "instruction_role"
+                    )
+                    or "explanation"
+                ),
+                "covered_concepts": [
+                    str(item)
+                    for item in (
+                        recommended_chunk_map.get(str(chunk["_id"]), {}).get(
+                            "covered_concepts"
+                        )
+                        or []
+                    )
+                    if str(item).strip()
+                ],
+                "questionability_score": float(
+                    recommended_chunk_map.get(str(chunk["_id"]), {}).get(
+                        "questionability_score",
+                        0.0,
+                    )
+                    or 0.0
+                ),
+                "estimated_read_time": int(
+                    recommended_chunk_map.get(str(chunk["_id"]), {}).get(
+                        "estimated_read_time",
+                        0,
+                    )
+                    or 0
                 ),
                 "content": str(chunk.get("content") or ""),
             }
@@ -1725,81 +3972,227 @@ class LessonScopedQuestionGenerationService:
         relaxed_mode: bool = False,
     ) -> List[ValidatedLessonQuestion]:
         lesson_title = str(context["lesson"].get("title") or "this lesson").strip()
-        keyword_profile = self._build_keyword_profile(context)
+        keyword_profile = self._build_keyword_profile(
+            context,
+            metadata={"target_concepts": list(context.get("target_concepts") or [])},
+        )
         strict_keywords = keyword_profile["strict"]
         broad_keywords = keyword_profile["broad"]
-        selected_types = question_types or ["multiple_choice"]
-        selected_bloom_levels = bloom_levels or ["understand"]
-        chunk_candidates = []
-        for chunk in chunks:
-            excerpt = self._select_excerpt(
-                content=str(chunk.get("content") or ""),
-                strict_keywords=strict_keywords,
-                broad_keywords=broad_keywords,
-            )
-            if not excerpt:
-                continue
-            score = self._score_excerpt_for_fallback(
-                excerpt=excerpt,
-                strict_keywords=strict_keywords,
-                broad_keywords=broad_keywords,
-            )
-            if score <= 0:
-                continue
-            chunk_candidates.append((score, chunk, excerpt))
-        chunk_candidates.sort(key=lambda item: item[0], reverse=True)
-        strong_candidates = [item for item in chunk_candidates if item[0] >= 1.25]
-        if strong_candidates:
-            chunk_candidates = strong_candidates
-        if not chunk_candidates:
-            for chunk in chunks:
-                excerpt = self._select_excerpt(
-                    content=str(chunk.get("content") or ""),
-                    strict_keywords=strict_keywords,
-                    broad_keywords=broad_keywords,
-                )
-                if excerpt:
-                    chunk_candidates.append((0.0, chunk, excerpt))
+        selected_types = [
+            question_type
+            for question_type in (question_types or ["multiple_choice"])
+            if question_type == "multiple_choice"
+        ] or ["multiple_choice"]
 
+        chunk_text_by_id = {
+            str(chunk["_id"]): str(chunk.get("content") or "") for chunk in chunks
+        }
+        candidates = self.question_fallback_service.build_candidates(
+            lesson_title=lesson_title,
+            lesson_summary=str(context["lesson"].get("summary") or ""),
+            chunks=chunks,
+            target_count=target_count,
+            question_types=selected_types,
+            difficulty=difficulty,
+            bloom_levels=bloom_levels,
+            retry_attempts=1 if relaxed_mode else 0,
+            target_concepts=context.get("target_concepts") or [],
+        )
+        validation = self.question_validation_service.validate_candidates(
+            candidates=candidates,
+            allowed_chunk_ids=list(chunk_text_by_id.keys()),
+            chunk_text_by_id=chunk_text_by_id,
+            default_difficulty=difficulty,
+            default_bloom_levels=bloom_levels or ["understand"],
+        )
         questions: List[ValidatedLessonQuestion] = []
-        for index, (excerpt_score, chunk, excerpt) in enumerate(chunk_candidates):
-            if len(questions) >= target_count:
-                break
-            question_type = selected_types[index % len(selected_types)]
-            bloom_level = selected_bloom_levels[index % len(selected_bloom_levels)]
-            question = self._build_fallback_question(
-                question_type=question_type,
-                lesson_title=lesson_title,
+        chunk_map = {str(chunk["_id"]): chunk for chunk in chunks if chunk.get("_id")}
+        for question in validation.questions:
+            excerpt = str(question.metadata.get("source_excerpt") or "").strip()
+            excerpt_score = self._score_excerpt_for_fallback(
                 excerpt=excerpt,
                 strict_keywords=strict_keywords,
                 broad_keywords=broad_keywords,
-                relaxed_mode=relaxed_mode,
             )
-            if not question:
+            if not relaxed_mode and float(excerpt_score) < 1.25:
                 continue
-            if not relaxed_mode and float(excerpt_score) < 1.0:
-                continue
+            metadata = dict(question.metadata)
+            metadata["fallback_excerpt_score"] = round(float(excerpt_score), 4)
+            metadata["reasoning_note"] = (
+                "Generated by deterministic local fallback from recommended chunk."
+            )
+            metadata["generation_mode"] = "local_fallback"
+            metadata["generation_source"] = "local_fallback"
             questions.append(
                 ValidatedLessonQuestion(
-                    question_type=question_type,
-                    question=question["question"],
-                    correct_answer=question["correct_answer"],
-                    distractors=question["distractors"],
-                    explanation=question.get("explanation")
-                    or f"Câu hỏi được tạo trực tiếp từ đoạn trích của bài học '{lesson_title}'.",
-                    difficulty=difficulty,
-                    bloom_level=bloom_level,
-                    chunk_ids=[str(chunk["_id"])],
-                    metadata={
-                        "source_excerpt": excerpt,
-                        "question_focus": question.get("focus_term") or "",
-                        "fallback_excerpt_score": round(float(excerpt_score), 4),
-                        "reasoning_note": "Generated by deterministic local fallback from recommended chunk.",
-                        "generation_mode": "local_fallback",
-                    },
+                    question_type=question.question_type,
+                    question=question.question,
+                    correct_answer=question.correct_answer,
+                    distractors=question.distractors,
+                    explanation=question.explanation,
+                    difficulty=question.difficulty,
+                    bloom_level=question.bloom_level,
+                    chunk_ids=question.chunk_ids,
+                    metadata=metadata,
                 )
             )
-        return questions
+            if len(questions) >= target_count:
+                break
+        required_target_concepts = self._extract_target_concepts(
+            {"target_concepts": list(context.get("target_concepts") or [])}
+        )
+        coverage_report = (
+            self.compute_concept_coverage_rate(
+                questions,
+                valid_target_concepts=required_target_concepts,
+                chunk_map=chunk_map,
+            )
+            if required_target_concepts
+            else {"missing_concepts": []}
+        )
+        missing_concepts = list(coverage_report.get("missing_concepts", []))
+        if missing_concepts or len(questions) < target_count:
+            reinforcement_context = {
+                **context,
+                "target_concepts": list(
+                    missing_concepts
+                    or required_target_concepts
+                    or context.get("target_concepts")
+                    or []
+                ),
+            }
+            reinforcement_chunks = self._filter_chunks_for_required_concepts(
+                chunks=chunks,
+                required_concepts=missing_concepts,
+            )
+            reinforcement_questions = self._build_reinforcement_questions(
+                context=reinforcement_context,
+                chunks=reinforcement_chunks or chunks,
+                target_count=max(target_count - len(questions), len(missing_concepts)),
+                difficulty=difficulty,
+                bloom_levels=bloom_levels or ["understand", "apply"],
+            )
+            if reinforcement_questions:
+                questions = self._prioritize_local_fallback_question_pool(
+                    questions=[*questions, *reinforcement_questions],
+                    target_count=max(target_count, len(questions) + len(missing_concepts)),
+                    required_concepts=required_target_concepts,
+                    chunk_map=chunk_map,
+                )
+        return questions[: max(target_count, len(required_target_concepts or []))]
+
+    def _filter_chunks_for_required_concepts(
+        self,
+        *,
+        chunks: List[Dict[str, Any]],
+        required_concepts: Sequence[str],
+    ) -> List[Dict[str, Any]]:
+        normalized_required = lesson_assessment_sizing_service._normalize_concepts(
+            required_concepts or []
+        )
+        if not normalized_required:
+            return list(chunks)
+        filtered: List[Dict[str, Any]] = []
+        for chunk in chunks:
+            chunk_concepts = lesson_assessment_sizing_service._normalize_concepts(
+                chunk.get("covered_concepts")
+                or (
+                    (chunk.get("metadata") or {}).get("covered_concepts")
+                    if isinstance(chunk.get("metadata"), dict)
+                    else []
+                )
+                or []
+            )
+            if set(chunk_concepts).intersection(set(normalized_required)):
+                filtered.append(chunk)
+        return filtered
+
+    def _prioritize_local_fallback_question_pool(
+        self,
+        *,
+        questions: Sequence[ValidatedLessonQuestion],
+        target_count: int,
+        required_concepts: Sequence[str],
+        chunk_map: Dict[str, Dict[str, Any]],
+    ) -> List[ValidatedLessonQuestion]:
+        if target_count <= 0:
+            return []
+
+        deduped: List[ValidatedLessonQuestion] = []
+        seen_signatures: set[str] = set()
+        for question in questions:
+            signature = self._question_signature(question)
+            if not signature or signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            deduped.append(question)
+        if not deduped:
+            return []
+
+        ranked_questions = sorted(
+            deduped,
+            key=lambda item: self._rank_local_fallback_question(item),
+            reverse=True,
+        )
+        normalized_required = lesson_assessment_sizing_service._normalize_concepts(
+            required_concepts or []
+        )
+        if not normalized_required:
+            return ranked_questions[:target_count]
+
+        prioritized: List[ValidatedLessonQuestion] = []
+        used_signatures: set[str] = set()
+        for concept in normalized_required:
+            matched_question = next(
+                (
+                    item
+                    for item in ranked_questions
+                    if self._question_signature(item) not in used_signatures
+                    and self._question_covers_canonical_concept(
+                        question=item,
+                        concept=concept,
+                        chunk_map=chunk_map,
+                    )
+                ),
+                None,
+            )
+            if matched_question is None:
+                continue
+            signature = self._question_signature(matched_question)
+            if not signature:
+                continue
+            used_signatures.add(signature)
+            prioritized.append(matched_question)
+
+        for item in ranked_questions:
+            if len(prioritized) >= target_count:
+                break
+            signature = self._question_signature(item)
+            if not signature or signature in used_signatures:
+                continue
+            used_signatures.add(signature)
+            prioritized.append(item)
+        return prioritized[:target_count]
+
+    def _rank_local_fallback_question(
+        self, question: ValidatedLessonQuestion
+    ) -> float:
+        metadata = question.metadata or {}
+        score = float(metadata.get("fallback_excerpt_score", 0.0) or 0.0)
+        score += float(metadata.get("fallback_priority_score", 0.0) or 0.0)
+        score += float(len(metadata.get("matched_target_concepts") or [])) * 1.15
+        if bool(metadata.get("target_concept_match")):
+            score += 1.35
+        generation_mode = str(metadata.get("generation_mode") or "").strip().lower()
+        if generation_mode == "local_fill":
+            score += 0.2
+        elif generation_mode == "local_fallback":
+            score += 0.15
+        if question.question_type == "multiple_choice":
+            score += 0.2
+        if question.bloom_level in {"apply", "analyze"}:
+            score += 0.1
+        return score
 
     def _build_reinforcement_questions(
         self,
@@ -1814,10 +4207,17 @@ class LessonScopedQuestionGenerationService:
             return []
 
         lesson_title = str(context["lesson"].get("title") or "this lesson").strip()
-        keyword_profile = self._build_keyword_profile(context)
+        keyword_profile = self._build_keyword_profile(
+            context,
+            metadata={"target_concepts": list(context.get("target_concepts") or [])},
+        )
         strict_keywords = keyword_profile["strict"]
         broad_keywords = keyword_profile["broad"]
         selected_bloom_levels = bloom_levels or ["understand"]
+        chunk_map = {str(chunk["_id"]): chunk for chunk in chunks if chunk.get("_id")}
+        required_target_concepts = self._extract_target_concepts(
+            {"target_concepts": list(context.get("target_concepts") or [])}
+        )
 
         chunk_candidates = []
         for chunk in chunks:
@@ -1839,11 +4239,6 @@ class LessonScopedQuestionGenerationService:
 
         chunk_candidates.sort(key=lambda item: item[0], reverse=True)
         questions: List[ValidatedLessonQuestion] = []
-        true_false_budget = max(
-            1,
-            int(round(float(target_count) * max(0.0, min(1.0, REINFORCEMENT_TRUE_FALSE_RATIO)))),
-        )
-        used_true_false = 0
         focus_usage: Dict[str, int] = {}
         max_per_focus = 2 if target_count >= 5 else 1
         for index, (_, chunk, excerpt) in enumerate(chunk_candidates):
@@ -1851,11 +4246,8 @@ class LessonScopedQuestionGenerationService:
                 break
 
             excerpt_norm = self._normalize_text(excerpt)
-            focus = self._find_focus_term(
-                excerpt=excerpt_norm,
-                strict_keywords=strict_keywords,
-                broad_keywords=broad_keywords,
-            ) or self._find_specific_focus_term(
+            focus = self._resolve_reinforcement_focus(
+                chunk=chunk,
                 excerpt=excerpt_norm,
                 strict_keywords=strict_keywords,
                 broad_keywords=broad_keywords,
@@ -1866,11 +4258,7 @@ class LessonScopedQuestionGenerationService:
             if focus_usage.get(normalized_focus, 0) >= max_per_focus:
                 continue
 
-            question_type = (
-                "true_false"
-                if (index % 3 == 2 and used_true_false < true_false_budget)
-                else "multiple_choice"
-            )
+            question_type = "multiple_choice"
             bloom_level = selected_bloom_levels[index % len(selected_bloom_levels)]
 
             if question_type == "multiple_choice":
@@ -1896,7 +4284,11 @@ class LessonScopedQuestionGenerationService:
                     f"Dựa trên đoạn trích của bài '{lesson_title}', khái niệm nào xuất hiện trực tiếp trong nội dung?",
                     f"Theo nội dung bài '{lesson_title}', đáp án nào khớp nhất với thuật ngữ đã nêu trong đoạn trích?",
                 ]
-                question_text = mc_templates[index % len(mc_templates)]
+                question_text = self._build_reinforcement_mc_prompt(
+                    lesson_title=lesson_title,
+                    instruction_role=str(chunk.get("instruction_role") or "explanation"),
+                    index=index,
+                )
                 correct_answer = focus
                 distractors = distractors[:3]
                 explanation = (
@@ -1906,16 +4298,9 @@ class LessonScopedQuestionGenerationService:
                 statement = self._clean_true_false_statement(
                     self._summarize_excerpt(excerpt=excerpt, focus_term=focus)
                 )
-                if (
-                    len(statement) < 20
-                    or not re.match(r"^[A-Za-z].{18,}$", statement)
-                    or statement.startswith("]")
-                    or "range(" in statement
-                    or "#" in statement
-                    or len(statement) > REINFORCEMENT_STATEMENT_MAX_LEN
-                    or statement.count("(") >= 2
-                    or statement.count("[") >= 2
-                    or statement.count("{") >= 1
+                if not self._is_reinforcement_true_false_safe(
+                    statement=statement,
+                    focus=focus,
                 ):
                     continue
                 tf_templates = [
@@ -1930,27 +4315,126 @@ class LessonScopedQuestionGenerationService:
                 )
                 used_true_false += 1
 
-            questions.append(
-                ValidatedLessonQuestion(
-                    question_type=question_type,
-                    question=question_text,
-                    correct_answer=correct_answer,
-                    distractors=distractors,
-                    explanation=explanation,
-                    difficulty=difficulty,
-                    bloom_level=bloom_level,
-                    chunk_ids=[str(chunk["_id"])],
-                    metadata={
-                        "source_excerpt": excerpt,
-                        "question_focus": focus,
-                        "reasoning_note": "Generated by medium-quality reinforcement fill from lesson chunk.",
-                        "generation_mode": "local_fill",
-                    },
+            chunk_concepts = lesson_assessment_sizing_service._normalize_concepts(
+                chunk.get("covered_concepts")
+                or (
+                    (chunk.get("metadata") or {}).get("covered_concepts")
+                    if isinstance(chunk.get("metadata"), dict)
+                    else []
                 )
+                or []
+            )
+            question_metadata = {
+                "source_excerpt": excerpt,
+                "question_focus": focus,
+                "concept_focus": focus,
+                "instruction_role": str(chunk.get("instruction_role") or "explanation"),
+                "covered_concepts": chunk_concepts,
+                "target_concepts": list(required_target_concepts),
+                "fallback_excerpt_score": round(float(_), 4),
+                "reasoning_note": "Generated by medium-quality reinforcement fill from lesson chunk.",
+                "generation_mode": "local_fill",
+                "generation_source": "local_fill",
+            }
+            question_item = ValidatedLessonQuestion(
+                question_type=question_type,
+                question=question_text,
+                correct_answer=correct_answer,
+                distractors=distractors,
+                explanation=explanation,
+                difficulty=difficulty,
+                bloom_level=bloom_level,
+                chunk_ids=[str(chunk["_id"])],
+                metadata=question_metadata,
+            )
+            matched_targets = self._resolve_matched_target_concepts(
+                question=question_item,
+                target_concepts=required_target_concepts,
+                chunk_map=chunk_map,
+            )
+            question_item.metadata["matched_target_concepts"] = matched_targets
+            question_item.metadata["target_concept_match"] = bool(matched_targets)
+            questions.append(
+                question_item
             )
             focus_usage[normalized_focus] = focus_usage.get(normalized_focus, 0) + 1
 
         return questions
+
+    def _resolve_reinforcement_focus(
+        self,
+        *,
+        chunk: Dict[str, Any],
+        excerpt: str,
+        strict_keywords: List[str],
+        broad_keywords: List[str],
+    ) -> str:
+        for source in (
+            chunk.get("covered_concepts"),
+            (chunk.get("metadata") or {}).get("covered_concepts")
+            if isinstance(chunk.get("metadata"), dict)
+            else [],
+        ):
+            values = source if isinstance(source, list) else []
+            for value in values:
+                normalized = self._normalize_text(str(value))
+                if (
+                    normalized
+                    and normalized not in self._FALLBACK_STOP_WORDS
+                    and normalized not in self._AMBIGUOUS_TERMS
+                ):
+                    return str(value).strip()
+        return self._find_focus_term(
+            excerpt=excerpt,
+            strict_keywords=strict_keywords,
+            broad_keywords=broad_keywords,
+        ) or self._find_specific_focus_term(
+            excerpt=excerpt,
+            strict_keywords=strict_keywords,
+            broad_keywords=broad_keywords,
+        )
+
+    @staticmethod
+    def _build_reinforcement_mc_prompt(
+        *,
+        lesson_title: str,
+        instruction_role: str,
+        index: int,
+    ) -> str:
+        role = str(instruction_role or "explanation").strip().lower()
+        if role == "worked_example":
+            return f"Theo vi du trong bai '{lesson_title}', khai niem nao dang duoc minh hoa ro nhat?"
+        if role == "summary":
+            return f"Theo phan tom tat cua bai '{lesson_title}', khai niem nao la y chinh duoc nhan manh?"
+        if role == "introduction":
+            return f"Theo phan gioi thieu cua bai '{lesson_title}', khai niem nao duoc dua ra lam trong tam?"
+        prompts = [
+            f"Theo doan trich cua bai '{lesson_title}', khai niem nao la trong tam noi dung?",
+            f"Dua tren doan trich cua bai '{lesson_title}', khai niem nao duoc giai thich truc tiep?",
+            f"Theo noi dung bai '{lesson_title}', dap an nao khop nhat voi khai niem da neu trong doan trich?",
+        ]
+        return prompts[index % len(prompts)]
+
+    def _is_reinforcement_true_false_safe(self, *, statement: str, focus: str) -> bool:
+        normalized = self._normalize_text(statement)
+        if len(normalized) < 20:
+            return False
+        if not re.match(r"^[a-z].{18,}$", normalized):
+            return False
+        if normalized.startswith("example "):
+            return False
+        if "range(" in normalized or "#" in normalized:
+            return False
+        if len(statement) > REINFORCEMENT_STATEMENT_MAX_LEN:
+            return False
+        if statement.count("(") >= 2 or statement.count("[") >= 2 or statement.count("{") >= 1:
+            return False
+        if normalized.count(":") >= 2:
+            return False
+        focus_key = self._normalize_text(focus)
+        if focus_key and focus_key not in normalized:
+            return False
+        return True
 
     def _build_validation_from_fallback(
         self,
@@ -1974,6 +4458,7 @@ class LessonScopedQuestionGenerationService:
         self,
         *,
         lesson_title: str,
+        lesson_summary: str,
         chunks: List[Dict[str, Any]],
         target_count: int,
         question_types: List[str],
@@ -1984,6 +4469,7 @@ class LessonScopedQuestionGenerationService:
     ):
         template_candidates = self.question_template_service.build_candidates(
             lesson_title=lesson_title,
+            lesson_summary=lesson_summary,
             chunks=chunks,
             target_count=target_count,
             question_types=question_types,
@@ -1999,99 +4485,106 @@ class LessonScopedQuestionGenerationService:
             default_bloom_levels=bloom_levels,
         )
 
-    def _build_existing_fill_questions(
+    def _collect_additional_llm_questions(
         self,
         *,
-        existing_questions: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        recommendation: Dict[str, Any] | None,
+        chunks: List[Dict[str, Any]],
+        chunk_ids: List[str],
+        existing_questions: List[ValidatedLessonQuestion],
         target_count: int,
+        question_types: List[str],
+        difficulty: str,
+        bloom_levels: List[str],
     ) -> List[ValidatedLessonQuestion]:
-        if target_count <= 0:
+        if not existing_questions or target_count <= len(existing_questions):
             return []
 
-        filled: List[ValidatedLessonQuestion] = []
-        for item in existing_questions:
-            if len(filled) >= target_count:
-                break
-            question_text = str(item.get("question") or "").strip()
-            correct_answer = str(item.get("correct_answer") or "").strip()
-            explanation = str(item.get("explanation") or "").strip()
-            question_type = str(item.get("question_type") or "multiple_choice").strip()
-            difficulty = str(item.get("difficulty") or "beginner").strip()
-            bloom_level = str(item.get("bloom_level") or "understand").strip()
-            chunk_ids = [str(chunk_id) for chunk_id in item.get("chunk_ids", []) if str(chunk_id)]
-            raw_distractors = item.get("distractors") or []
-            distractors = [
-                str(choice).strip()
-                for choice in raw_distractors
-                if str(choice).strip()
+        merged_questions = list(existing_questions)
+        used_chunk_ids = {
+            chunk_id
+            for question in existing_questions
+            for chunk_id in question.chunk_ids
+            if chunk_id
+        }
+        attempt = 0
+        while (
+            len(merged_questions) < target_count
+            and attempt < max(1, LLM_FILL_MAX_ATTEMPTS)
+        ):
+            attempt += 1
+            candidate_chunks = [
+                chunk
+                for chunk in chunks
+                if str(chunk.get("_id") or "").strip() not in used_chunk_ids
             ]
-            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            if not candidate_chunks:
+                candidate_chunks = list(chunks)
+            candidate_chunk_ids = [
+                str(chunk.get("_id") or "").strip()
+                for chunk in candidate_chunks
+                if str(chunk.get("_id") or "").strip()
+            ]
+            if not candidate_chunk_ids:
+                break
 
-            if not question_text or not correct_answer or not explanation or not chunk_ids:
-                continue
-            if question_type not in {"multiple_choice", "short_answer", "true_false"}:
-                continue
-            if question_type == "multiple_choice" and len(distractors) < 2:
-                continue
-            if question_type == "true_false":
-                if correct_answer not in {"True", "False"}:
-                    continue
-                distractors = ["False" if correct_answer == "True" else "True"]
-
-            filled.append(
-                ValidatedLessonQuestion(
-                    question_type=question_type,
-                    question=question_text,
-                    correct_answer=correct_answer,
-                    distractors=distractors[:3],
-                    explanation=explanation,
-                    difficulty=difficulty,
-                    bloom_level=bloom_level,
-                    chunk_ids=chunk_ids,
-                    metadata={
-                        **metadata,
-                        "generation_mode": "existing_reuse",
-                        "reasoning_note": "Reused from existing question bank to maintain minimum target count.",
-                    },
-                )
+            fill_validation = self._run_generation(
+                context=context,
+                recommendation=recommendation,
+                chunks=candidate_chunks,
+                chunk_ids=candidate_chunk_ids,
+                target_count=max(1, target_count - len(merged_questions)),
+                question_types=question_types,
+                difficulty=difficulty,
+                bloom_levels=bloom_levels,
             )
+            if not fill_validation or fill_validation.status != "ok":
+                break
 
-        return filled
+            merged_validation = self.question_validation_service.merge_deduplicate(
+                question_groups=[merged_questions, list(fill_validation.questions)],
+                target_count=target_count,
+                max_per_chunk=QUESTION_DIVERSITY_MAX_PER_CHUNK,
+            )
+            if len(merged_validation.questions) <= len(merged_questions):
+                break
+            merged_questions = list(merged_validation.questions)
+            used_chunk_ids = {
+                chunk_id
+                for question in merged_questions
+                for chunk_id in question.chunk_ids
+                if chunk_id
+            }
+
+        if len(merged_questions) <= len(existing_questions):
+            return []
+        existing_signatures = {
+            self.question_validation_service._signature(question)
+            for question in existing_questions
+        }
+        return [
+            question
+            for question in merged_questions
+            if self.question_validation_service._signature(question)
+            not in existing_signatures
+        ]
 
     def _build_existing_or_insufficient_response(
         self,
         *,
         lesson_id: str,
         chunk_ids: List[str],
-        existing_count: int,
         default_message: str,
         source_stats: Dict[str, int] | None = None,
         filtered_count: int = 0,
+        cache_stats: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         stats = source_stats or {
             "template": 0,
             "llm": 0,
             "local_fallback": 0,
-            "existing_reuse": 0,
         }
-        if existing_count > 0:
-            stats = {**stats, "existing_reuse": max(stats.get("existing_reuse", 0), existing_count)}
-            return {
-                "lesson_id": lesson_id,
-                "status": "reused_existing",
-                "generated_count": 0,
-                "saved_count": 0,
-                "question_ids": [],
-                "chunks_used": chunk_ids,
-                "insufficient_data": False,
-                "reused_existing": True,
-                "existing_count": existing_count,
-                "sources": stats,
-                "filtered_count": filtered_count,
-                "message": self._build_llm_fallback_message(
-                    f"AI hiện chưa sinh được bộ câu hỏi mới. Hệ thống đang dùng lại {existing_count} câu hỏi đã tạo trước đó cho bài học này."
-                ),
-            }
         return {
             "lesson_id": lesson_id,
             "status": "insufficient_context",
@@ -2103,8 +4596,42 @@ class LessonScopedQuestionGenerationService:
             "reused_existing": False,
             "existing_count": 0,
             "sources": stats,
+            "fallback_used": bool(stats.get("local_fallback", 0)),
+            "cache_stats": cache_stats or self._claim_cache_stats_since(None),
             "filtered_count": filtered_count,
             "message": self._build_llm_fallback_message(default_message),
+        }
+
+    def _snapshot_claim_cache_stats(self) -> Dict[str, Any]:
+        return dict(self.question_template_service.get_claim_cache_stats())
+
+    def _claim_cache_stats_since(
+        self, before: Dict[str, Any] | None
+    ) -> Dict[str, Any]:
+        after = self._snapshot_claim_cache_stats()
+        baseline = before or {}
+        hits = max(
+            0,
+            int(after.get("hits", 0) or 0) - int(baseline.get("hits", 0) or 0),
+        )
+        misses = max(
+            0,
+            int(after.get("misses", 0) or 0) - int(baseline.get("misses", 0) or 0),
+        )
+        stores = max(
+            0,
+            int(after.get("stores", 0) or 0) - int(baseline.get("stores", 0) or 0),
+        )
+        requests = hits + misses
+        return {
+            "scope": "shared_template_claim_cache",
+            "entries": int(after.get("entries", 0) or 0),
+            "hits": hits,
+            "misses": misses,
+            "stores": stores,
+            "requests": requests,
+            "request_hit_rate": round(hits / max(requests, 1), 4),
+            "lifetime_hit_rate": float(after.get("hit_rate", 0.0) or 0.0),
         }
 
     def _build_llm_fallback_message(self, default_message: str) -> str:
@@ -2160,10 +4687,27 @@ class LessonScopedQuestionGenerationService:
         return f"{cutoff}..."
 
     @classmethod
-    def _build_keyword_profile(cls, context: Dict[str, Any]) -> Dict[str, List[str]]:
+    def _build_keyword_profile(
+        cls,
+        context: Dict[str, Any],
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, List[str]]:
+        metadata = metadata or {}
+        target_concepts: List[str] = []
+        for source in (
+            metadata.get("target_concepts"),
+            metadata.get("current_focus_concepts"),
+            context.get("target_concepts"),
+        ):
+            values = source if isinstance(source, list) else [source] if source else []
+            for item in values:
+                token = str(item).strip()
+                if token and token not in target_concepts:
+                    target_concepts.append(token)
         strict_sources = [
             str(context["lesson"].get("title") or ""),
             *[str(item) for item in context["lesson"].get("keywords", [])],
+            *target_concepts,
         ]
         broad_sources = [
             *strict_sources,
@@ -2173,6 +4717,146 @@ class LessonScopedQuestionGenerationService:
             "strict": cls._collect_keywords(strict_sources, strict_mode=True),
             "broad": cls._collect_keywords(broad_sources, strict_mode=False),
         }
+
+    @classmethod
+    def _extract_target_concepts(
+        cls,
+        metadata: Dict[str, Any] | None,
+    ) -> List[str]:
+        metadata = metadata or {}
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for source in (
+            metadata.get("target_concepts"),
+            metadata.get("required_concepts"),
+            metadata.get("current_focus_concepts"),
+        ):
+            values = source if isinstance(source, list) else [source] if source else []
+            for item in values:
+                token = cls._normalize_text(str(item))
+                if not token or token in seen:
+                    continue
+                seen.add(token)
+                normalized.append(token)
+        return normalized
+
+    @classmethod
+    def _concept_token_set(cls, value: str) -> set[str]:
+        normalized = cls._normalize_text(value)
+        if not normalized:
+            return set()
+        tokens = {normalized}
+        for token in normalized.split():
+            singular = concept_normalization_service._singularize(token)
+            if len(singular) >= 3 and singular not in cls._FALLBACK_STOP_WORDS:
+                tokens.add(singular)
+        return tokens
+
+    @classmethod
+    def _candidate_matches_concept(cls, candidate: str, target: str) -> bool:
+        normalized_candidate = cls._normalize_text(candidate)
+        normalized_target = cls._normalize_text(target)
+        if not normalized_candidate or not normalized_target:
+            return False
+        if (
+            normalized_target in normalized_candidate
+            or normalized_candidate in normalized_target
+            or concept_normalization_service._match_canonical_concept(
+                normalized_target,
+                [normalized_candidate],
+            )
+            is not None
+        ):
+            return True
+
+        candidate_tokens = cls._concept_token_set(normalized_candidate)
+        target_tokens = cls._concept_token_set(normalized_target)
+        if not candidate_tokens or not target_tokens:
+            return False
+        overlap = candidate_tokens.intersection(target_tokens)
+        if overlap:
+            return True
+        return bool(
+            {
+                token
+                for token in candidate_tokens
+                if any(token in target_token or target_token in token for target_token in target_tokens)
+            }
+        )
+
+    def _collect_question_concept_candidates(
+        self,
+        *,
+        question: ValidatedLessonQuestion,
+        chunk_map: Dict[str, Dict[str, Any]],
+        include_chunk_content: bool = False,
+    ) -> List[str]:
+        candidate_texts: List[str] = [
+            str((question.metadata or {}).get("concept_focus") or ""),
+            str((question.metadata or {}).get("question_focus") or ""),
+            str((question.metadata or {}).get("source_excerpt") or ""),
+            str(question.correct_answer or ""),
+            str(question.question or ""),
+        ]
+        for key in ("covered_concepts", "target_concepts", "matched_target_concepts"):
+            for value in (question.metadata or {}).get(key) or []:
+                candidate_texts.append(str(value))
+        for chunk_id in question.chunk_ids:
+            chunk = chunk_map.get(chunk_id) or {}
+            metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+            for source in (
+                chunk.get("covered_concepts"),
+                chunk.get("matched_required_concepts"),
+                metadata.get("covered_concepts"),
+                metadata.get("matched_required_concepts"),
+            ):
+                values = source if isinstance(source, list) else [source] if source else []
+                for value in values:
+                    candidate_texts.append(str(value))
+            if include_chunk_content:
+                candidate_texts.append(str(chunk.get("content") or ""))
+        return [
+            self._normalize_text(value)
+            for value in candidate_texts
+            if self._normalize_text(value)
+        ]
+
+    def _resolve_matched_target_concepts(
+        self,
+        *,
+        question: ValidatedLessonQuestion,
+        target_concepts: Sequence[str],
+        chunk_map: Dict[str, Dict[str, Any]],
+    ) -> List[str]:
+        normalized_targets = self._extract_target_concepts(
+            {"target_concepts": list(target_concepts or [])}
+        )
+        if not normalized_targets:
+            return []
+        candidates = self._collect_question_concept_candidates(
+            question=question,
+            chunk_map=chunk_map,
+        )
+        matched: List[str] = []
+        for target in normalized_targets:
+            if any(self._candidate_matches_concept(candidate, target) for candidate in candidates):
+                matched.append(target)
+        return lesson_assessment_sizing_service._normalize_concepts(matched)
+
+    def _question_matches_target_concepts(
+        self,
+        *,
+        question: ValidatedLessonQuestion,
+        target_concepts: Sequence[str],
+        chunk_map: Dict[str, Dict[str, Any]],
+    ) -> bool:
+        return bool(
+            self._resolve_matched_target_concepts(
+                question=question,
+                target_concepts=target_concepts,
+                chunk_map=chunk_map,
+            )
+        )
 
     @classmethod
     def _collect_keywords(cls, sources: List[str], *, strict_mode: bool) -> List[str]:

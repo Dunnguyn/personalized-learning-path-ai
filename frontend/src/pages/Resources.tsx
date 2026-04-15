@@ -1,15 +1,101 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { resourcesIcon, searchIcon, downArrowIcon } from '../assets';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import PDFViewer from '../components/PDFViewer';
+import PageHero from '../components/ui/PageHero';
+import StatusPanel from '../components/ui/StatusPanel';
 import { useAuth } from '../contexts/AuthContext';
 import { resourceService } from '../services/resourceService';
 import { recommendationInteractionService } from '../services/recommendationInteractionService';
 import type { Resource, SearchResponse } from '../types/resource';
+import { apiClient } from '../utils/apiClient';
 
 type ResourceLevel = Resource['level'];
 const PDF_PAGE_MARKER_REGEX = /\[Page\s+\d+\]\s*/gi;
 const MAX_PREVIEW_LENGTH = 240;
+const RESOURCE_LEVEL_LABELS: Record<string, string> = {
+  beginner: 'Bắt đầu',
+  intermediate: 'Trung bình',
+  advanced: 'Nâng cao',
+};
+const RESOURCE_SOURCE_LABELS: Record<string, string> = {
+  youtube: 'YouTube',
+  pdf: 'PDF',
+  web: 'Trang web',
+};
+
+type ResourceSortOption = 'relevance' | 'newest' | 'level';
+
+const RESOURCE_SORT_OPTIONS: Array<{ value: ResourceSortOption; label: string }> = [
+  { value: 'relevance', label: 'Ưu tiên phù hợp' },
+  { value: 'newest', label: 'Mới cập nhật' },
+  { value: 'level', label: 'Theo cấp độ' },
+];
+
+const RESOURCE_FORM_COPY = {
+  web: {
+    kicker: 'Nguồn web',
+    title: 'Thêm tài nguyên dạng bài viết hoặc ghi chú',
+    description:
+      'Phù hợp khi bạn muốn lưu một bài viết, một landing page hoặc tự nhập nội dung để dùng lại trong thư viện.',
+    tips: ['Có thể bỏ trống URL nếu đây là ghi chú nội bộ.', 'Nên đặt chủ đề ngắn gọn để tìm lại nhanh hơn.'],
+    submitLabel: 'Thêm tài nguyên web',
+  },
+  youtube: {
+    kicker: 'Video YouTube',
+    title: 'Thêm video học tập từ YouTube',
+    description:
+      'Dùng khi bạn muốn gom video bài giảng, walkthrough hoặc demo kỹ thuật vào cùng luồng học hiện tại.',
+    tips: ['Dán đúng liên kết video để hệ thống lấy thumbnail ổn định.', 'Tiêu đề nên rõ chủ đề để phần gợi ý chính xác hơn.'],
+    submitLabel: 'Thêm video',
+  },
+  pdf: {
+    kicker: 'Tài liệu PDF',
+    title: 'Tải tài liệu PDF vào thư viện',
+    description:
+      'Phù hợp với ebook, slide hoặc tài liệu tham khảo muốn đọc trực tiếp và gắn vào hành trình học.',
+    tips: ['Chọn đúng chủ đề để gợi ý tài liệu liên quan tốt hơn.', 'Sau khi tải lên, hệ thống có thể cần ít phút để xử lý nội dung.'],
+    submitLabel: 'Tải lên PDF',
+  },
+} as const;
+
+const RESOURCE_TYPE_OPTIONS = [
+  {
+    type: 'web',
+    label: 'Trang web',
+    description: 'Bài viết, landing page hoặc ghi chú nội bộ',
+  },
+  {
+    type: 'youtube',
+    label: 'YouTube',
+    description: 'Video bài giảng, walkthrough hoặc demo kỹ thuật',
+  },
+  {
+    type: 'pdf',
+    label: 'PDF',
+    description: 'Ebook, slide hoặc tài liệu tham khảo để đọc trực tiếp',
+  },
+] as const;
+
+const getVisiblePaginationItems = (
+  currentPage: number,
+  totalPages: number,
+): Array<number | 'ellipsis'> => {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  if (currentPage <= 3) {
+    return [1, 2, 3, 4, 'ellipsis', totalPages];
+  }
+
+  if (currentPage >= totalPages - 2) {
+    return [1, 'ellipsis', totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+  }
+
+  return [1, 'ellipsis', currentPage - 1, currentPage, currentPage + 1, 'ellipsis', totalPages];
+};
 
 const parseResourceLevel = (value: FormDataEntryValue | null): ResourceLevel => {
   if (value === 'intermediate' || value === 'advanced') {
@@ -29,6 +115,80 @@ const truncateText = (value: string, maxLength: number = MAX_PREVIEW_LENGTH): st
   return `${value.slice(0, maxLength).trimEnd()}...`;
 };
 
+const estimateResourceMinutes = (resource: Resource) => {
+  if (resource.video_metadata?.duration && Number.isFinite(resource.video_metadata.duration)) {
+    return Math.max(Math.round(resource.video_metadata.duration / 60), 3);
+  }
+
+  const baseText = collapseText(resource.content_summary || resource.snippet || resource.content || '');
+  const estimatedFromWords = Math.round(baseText.split(/\s+/).filter(Boolean).length / 160);
+
+  if (resource.source === 'pdf') {
+    return Math.max(estimatedFromWords, 12);
+  }
+
+  if (resource.source === 'web') {
+    return Math.max(estimatedFromWords, 6);
+  }
+
+  return Math.max(estimatedFromWords, 8);
+};
+
+const computeResourceRelevanceScore = (
+  resource: Resource,
+  query: string,
+  levelFilter: string,
+  sourceFilter: string,
+) => {
+  let score = typeof resource.score === 'number' ? resource.score : 0.54;
+  const normalizedQuery = query.trim().toLowerCase();
+  const haystack = [resource.title, resource.topic, resource.content_summary, resource.snippet]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (normalizedQuery && haystack.includes(normalizedQuery)) {
+    score += 0.22;
+  }
+  if (levelFilter && resource.level === levelFilter) {
+    score += 0.12;
+  }
+  if (sourceFilter && resource.source === sourceFilter) {
+    score += 0.08;
+  }
+  if (resource.is_completed) {
+    score -= 0.06;
+  }
+
+  return Math.max(0.3, Math.min(score, 0.99));
+};
+
+const buildResourceWhyRecommended = (
+  resource: Resource,
+  query: string,
+  levelFilter: string,
+  sourceFilter: string,
+) => {
+  const reasons: string[] = [];
+  if (query.trim()) {
+    reasons.push(`Khớp với truy vấn "${query.trim()}".`);
+  }
+  if (levelFilter && resource.level === levelFilter) {
+    reasons.push(`Phù hợp với mức ${RESOURCE_LEVEL_LABELS[levelFilter] || levelFilter}.`);
+  }
+  if (sourceFilter && resource.source === sourceFilter) {
+    reasons.push(`Thuộc đúng nguồn ${RESOURCE_SOURCE_LABELS[sourceFilter] || sourceFilter}.`);
+  }
+  if (resource.topic) {
+    reasons.push(`Bám theo chủ đề ${resource.topic}.`);
+  }
+  if (resource.source === 'youtube' && resource.video_metadata?.channel) {
+    reasons.push(`Nguồn video từ ${resource.video_metadata.channel}.`);
+  }
+
+  return reasons[0] || 'Được ưu tiên vì phù hợp với ngữ cảnh học hiện tại của bạn.';
+};
+
 const formatPdfTitle = (value: string): string =>
   value
     .replace(/\.pdf$/i, '')
@@ -40,30 +200,24 @@ const formatPdfTitle = (value: string): string =>
 
 const getDisplayTitle = (resource: Resource): string => {
   const rawTitle = (resource.title || resource.topic || 'Tài nguyên').trim();
-
   if (resource.source !== 'pdf') {
     return rawTitle;
   }
-
   return formatPdfTitle(rawTitle) || 'Tài liệu PDF';
 };
 
 const getDisplaySnippet = (resource: Resource): string => {
   const rawPreview = resource.snippet || resource.content_summary || resource.content || '';
   const cleanedPreview = collapseText(rawPreview);
-
   if (cleanedPreview) {
     return truncateText(cleanedPreview, resource.source === 'pdf' ? 220 : MAX_PREVIEW_LENGTH);
   }
-
   if (resource.source === 'pdf') {
     return 'Tài liệu PDF này đã được thêm vào thư viện và sẵn sàng để xem trực tiếp.';
   }
-
   if (resource.source === 'youtube') {
     return 'Video này đã được thêm vào thư viện để bạn xem lại bất cứ lúc nào.';
   }
-
   return 'Tài nguyên được chọn để bổ trợ cho quá trình học tập hiện tại của bạn.';
 };
 
@@ -103,14 +257,28 @@ export default function Resources() {
     level: '',
     source: '',
   });
+  const [sortOption, setSortOption] = useState<ResourceSortOption>('relevance');
+  const trimmedSearchQuery = searchQuery.trim();
+  const hasActiveFilters = Boolean(trimmedSearchQuery || filters.level || filters.source);
+  const activeFilterChips = [
+    trimmedSearchQuery ? `Từ khóa: ${trimmedSearchQuery}` : null,
+    filters.level ? `Cấp độ: ${RESOURCE_LEVEL_LABELS[filters.level] || filters.level}` : null,
+    filters.source ? `Nguồn: ${RESOURCE_SOURCE_LABELS[filters.source] || filters.source}` : null,
+    sortOption !== 'relevance'
+      ? `Sáº¯p xáº¿p: ${RESOURCE_SORT_OPTIONS.find((option) => option.value === sortOption)?.label}`
+      : null,
+  ].filter(Boolean) as string[];
 
   const [showAddResource, setShowAddResource] = useState(false);
   const [addResourceType, setAddResourceType] = useState<'pdf' | 'youtube' | 'web'>('web');
+  const selectedFormCopy = RESOURCE_FORM_COPY[addResourceType];
   const [uploadingPDF, setUploadingPDF] = useState(false);
   const [addingResource, setAddingResource] = useState(false);
   const [deletingResourceId, setDeletingResourceId] = useState<string | null>(null);
   const [pendingDeleteResource, setPendingDeleteResource] = useState<Resource | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [aiHealth, setAiHealth] = useState<Record<string, unknown> | null>(null);
+  const [aiHealthError, setAiHealthError] = useState<string | null>(null);
 
   const [playingVideo, setPlayingVideo] = useState<{
     videoId: string;
@@ -121,6 +289,54 @@ export default function Resources() {
     title: string;
     resourceId: string;
   } | null>(null);
+
+  const selectedSourceLabel = filters.source ? RESOURCE_SOURCE_LABELS[filters.source] || filters.source : 'Mọi nguồn';
+  const selectedLevelLabel = filters.level ? RESOURCE_LEVEL_LABELS[filters.level] || filters.level : 'Mọi cấp độ';
+  const contextValue = conceptIdParam ? 'Theo khái niệm' : trimmedSearchQuery ? 'Theo truy vấn' : 'Toàn thư viện';
+  const contextDetail = conceptIdParam
+    ? `Đang ưu tiên tài nguyên gắn với khái niệm #${conceptIdParam}.`
+    : trimmedSearchQuery
+      ? trimmedSearchQuery
+      : 'Không có truy vấn đang áp dụng.';
+  const resultRangeStart = totalResults === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const resultRangeEnd = totalResults === 0 ? 0 : Math.min(currentPage * pageSize, totalResults);
+  const displayedResources = useMemo(() => {
+    const decorated = resources.map((resource) => ({
+      resource,
+      relevanceScore: computeResourceRelevanceScore(
+        resource,
+        trimmedSearchQuery,
+        filters.level,
+        filters.source,
+      ),
+      estimatedMinutes: estimateResourceMinutes(resource),
+      whyRecommended: buildResourceWhyRecommended(
+        resource,
+        trimmedSearchQuery,
+        filters.level,
+        filters.source,
+      ),
+    }));
+
+    return decorated
+      .sort((left, right) => {
+      if (sortOption === 'newest') {
+        return (
+          new Date(right.resource.created_at || 0).getTime() -
+          new Date(left.resource.created_at || 0).getTime()
+        );
+      }
+
+      if (sortOption === 'level') {
+        const order = { beginner: 1, intermediate: 2, advanced: 3 };
+        return order[left.resource.level] - order[right.resource.level];
+      }
+
+        return right.relevanceScore - left.relevanceScore;
+      })
+      .slice(0, 8);
+  }, [filters.level, filters.source, resources, sortOption, trimmedSearchQuery]);
+  const featuredResources = displayedResources.slice(0, 3);
 
   // Form refs for handling resets safely
   const pdfFormRef = useRef<HTMLFormElement>(null);
@@ -177,6 +393,40 @@ export default function Resources() {
   }, [fetchResources]);
 
   useEffect(() => {
+    if (!canManageResources) {
+      setAiHealth(null);
+      setAiHealthError(null);
+      return;
+    }
+
+    let active = true;
+    const loadAiHealth = async () => {
+      try {
+        const response =
+          ((await apiClient.get('/health/ai')) as Record<string, unknown>) || null;
+        if (!active) {
+          return;
+        }
+        setAiHealth(response);
+        setAiHealthError(null);
+      } catch (error) {
+        if (!active) {
+          return;
+        }
+        setAiHealth(null);
+        setAiHealthError(
+          error instanceof Error ? error.message : 'Không thể tải trạng thái AI stack.',
+        );
+      }
+    };
+
+    void loadAiHealth();
+    return () => {
+      active = false;
+    };
+  }, [canManageResources]);
+
+  useEffect(() => {
     if (!toast) {
       return undefined;
     }
@@ -188,6 +438,30 @@ export default function Resources() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    if (!playingVideo && !pendingDeleteResource) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+
+      if (pendingDeleteResource && !deletingResourceId) {
+        setPendingDeleteResource(null);
+        return;
+      }
+
+      if (playingVideo) {
+        setPlayingVideo(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [deletingResourceId, pendingDeleteResource, playingVideo]);
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     setCurrentPage(1);
@@ -196,6 +470,13 @@ export default function Resources() {
 
   const handleFilterChange = (key: string, value: string) => {
     setFilters((prev) => ({ ...prev, [key]: value }));
+    setCurrentPage(1);
+  };
+
+  const handleResetFilters = () => {
+    setSearchQuery('');
+    setFilters({ level: '', source: '' });
+    setSortOption('relevance');
     setCurrentPage(1);
   };
 
@@ -216,7 +497,7 @@ export default function Resources() {
   const handlePDFUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canManageResources) {
-      showToast('error', 'Ban khong co quyen them tai nguyen.');
+      showToast('error', 'Bạn không có quyền thêm tài nguyên.');
       return;
     }
     const form = new FormData(e.currentTarget as HTMLFormElement);
@@ -253,7 +534,7 @@ export default function Resources() {
   const handleYouTubeAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canManageResources) {
-      showToast('error', 'Ban khong co quyen them tai nguyen.');
+      showToast('error', 'Bạn không có quyền thêm tài nguyên.');
       return;
     }
     const form = new FormData(e.currentTarget as HTMLFormElement);
@@ -291,7 +572,7 @@ export default function Resources() {
   const handleWebAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canManageResources) {
-      showToast('error', 'Ban khong co quyen them tai nguyen.');
+      showToast('error', 'Bạn không có quyền thêm tài nguyên.');
       return;
     }
     const form = new FormData(e.currentTarget as HTMLFormElement);
@@ -334,6 +615,7 @@ export default function Resources() {
   };
 
   const totalPages = Math.ceil(totalResults / pageSize);
+  const paginationItems = getVisiblePaginationItems(currentPage, totalPages);
 
   const extractVideoId = (resource: Resource): string | null => {
     if (resource.video_id) {
@@ -359,18 +641,6 @@ export default function Resources() {
     return null;
   };
 
-  const getYouTubeThumbnail = (resource: Resource): string | null => {
-    if (resource.video_metadata?.thumbnail_url) {
-      return resource.video_metadata.thumbnail_url;
-    }
-
-    const videoId = extractVideoId(resource);
-    if (videoId) {
-      return `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
-    }
-
-    return null;
-  };
 
   const handlePlayVideo = (resource: Resource) => {
     const videoId = extractVideoId(resource);
@@ -388,7 +658,7 @@ export default function Resources() {
 
   const handleDeleteResource = async (resource: Resource) => {
     if (!canManageResources) {
-      showToast('error', 'Chi admin moi co the xoa tai nguyen.');
+      showToast('error', 'Chỉ admin mới có thể xóa tài nguyên.');
       return;
     }
     setPendingDeleteResource(resource);
@@ -400,7 +670,7 @@ export default function Resources() {
 
   const handleConfirmDeleteResource = async () => {
     if (!canManageResources) {
-      showToast('error', 'Chi admin moi co the xoa tai nguyen.');
+      showToast('error', 'Chỉ admin mới có thể xóa tài nguyên.');
       setPendingDeleteResource(null);
       return;
     }
@@ -479,30 +749,30 @@ export default function Resources() {
   const getSourceTheme = (source: string) => {
     if (source === 'youtube') {
       return {
-        chip: 'border-[#f2d7e0] bg-[#fff6fa] text-[#9b2f55]',
-        icon: 'border-[#f2d7e0] bg-[#fff6fa] text-[#9b2f55]',
-        preview: 'bg-[linear-gradient(180deg,#fff9fb_0%,#fcecf3_100%)]',
-        accent: 'bg-[#9b2f55]',
-        soft: 'bg-[#fff2f7]',
+        chip: 'border-[#f1d4e0] bg-[#fff5fa] text-[#aa476f]',
+        icon: 'border-[#f1d4e0] bg-[#fff5fa] text-[#aa476f]',
+        preview: 'bg-[linear-gradient(180deg,#fff9fc_0%,#fbeaf2_100%)]',
+        accent: 'bg-[#aa476f]',
+        soft: 'bg-[#fff1f7]',
       };
     }
 
     if (source === 'pdf') {
       return {
-        chip: 'border-[#e8dff3] bg-[#fbf8ff] text-[#6d4c8f]',
-        icon: 'border-[#e8dff3] bg-[#fbf8ff] text-[#6d4c8f]',
-        preview: 'bg-[linear-gradient(180deg,#fffaff_0%,#f5eefc_100%)]',
-        accent: 'bg-[#6d4c8f]',
-        soft: 'bg-[#f7f1ff]',
+        chip: 'border-[#edd8e5] bg-[#fff7fb] text-[#8f5377]',
+        icon: 'border-[#edd8e5] bg-[#fff7fb] text-[#8f5377]',
+        preview: 'bg-[linear-gradient(180deg,#fffafd_0%,#f8edf4_100%)]',
+        accent: 'bg-[#8f5377]',
+        soft: 'bg-[#fbf1f7]',
       };
     }
 
     return {
-      chip: 'border-[#dbe8f2] bg-[#f6fbff] text-[#2f657f]',
-      icon: 'border-[#dbe8f2] bg-[#f6fbff] text-[#2f657f]',
-      preview: 'bg-[linear-gradient(180deg,#fbfeff_0%,#edf7fc_100%)]',
-      accent: 'bg-[#2f657f]',
-      soft: 'bg-[#eef8fd]',
+      chip: 'border-[#f2d9e3] bg-[#fff7fa] text-[#ad5c7b]',
+      icon: 'border-[#f2d9e3] bg-[#fff7fa] text-[#ad5c7b]',
+      preview: 'bg-[linear-gradient(180deg,#fffbfd_0%,#f9edf3_100%)]',
+      accent: 'bg-[#ad5c7b]',
+      soft: 'bg-[#fff3f8]',
     };
   };
 
@@ -550,19 +820,6 @@ export default function Resources() {
         <path d="M12 3a15.3 15.3 0 0 0 0 18" />
       </svg>
     );
-  };
-
-  const getResourceTimestamp = (resource: Resource) => {
-    if (!resource.created_at) {
-      return 'Cập nhật gần đây';
-    }
-
-    const date = new Date(resource.created_at);
-    if (Number.isNaN(date.getTime())) {
-      return 'Cập nhật gần đây';
-    }
-
-    return `Cập nhật ${date.toLocaleDateString('vi-VN')}`;
   };
 
   const handleOpenResource = (resource: Resource) => {
@@ -630,250 +887,554 @@ export default function Resources() {
 
   return (
     <DashboardLayout>
-      <div className="page-shell pb-6">
-        <p className="page-kicker">Thư viện học tập</p>
-        <h1 className="page-title">Tài nguyên học tập</h1>
+      <div className="page-shell desktop-1440-resources pb-6">
+        <PageHero
+          className="mb-6 resources-hero-minimal"
+          descriptionClassName="hidden"
+          actionsClassName="hidden"
+          kicker="Thư viện tài nguyên"
+          title="Tìm kiếm, rà soát và vận hành thư viện học tập trong một màn hình."
+          description="Từ tìm kiếm, lọc nguồn đến thêm mới và mở nhanh, các tác vụ chính đã được gom lại để việc duyệt tài nguyên bớt đứt mạch."
+          actions={
+            <>
+              <span className="demo-pill">{totalResults} tài nguyên</span>
+              <span className="demo-pill">
+                {canManageResources ? 'Chế độ admin' : 'Chế độ learner'}
+              </span>
+              {canManageResources ? (
+                <button
+                  type="button"
+                  onClick={() => setShowAddResource((previous) => !previous)}
+                  className="theme-button-secondary px-4 py-2 text-[12px]"
+                >
+                  {showAddResource ? 'Thu gọn khung thêm mới' : 'Mở khung thêm mới'}
+                </button>
+              ) : null}
+            </>
+          }
+          metrics={[
+            {
+              label: 'Ngữ cảnh hiện tại',
+              value: contextValue,
+              detail: contextDetail,
+            },
+            {
+              label: 'Nguồn',
+              value: selectedSourceLabel,
+              detail: 'YouTube, PDF và web cùng nằm trong một luồng duyệt thống nhất.',
+            },
+            {
+              label: 'Cấp độ',
+              value: selectedLevelLabel,
+              detail: canManageResources ? 'Admin có thể thêm, xóa và kiểm tra trạng thái AI trực tiếp từ màn này.' : 'Learner chỉ có quyền xem, lọc và mở tài nguyên.',
+            },
+          ]}
+        >
+          <div className="hero-visual-grid">
+            <article className="hero-visual-card">
+              <span className="hero-visual-icon">
+                <img src={resourcesIcon} alt="" className="h-7 w-7 object-contain" />
+              </span>
+              <div>
+                <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/55">
+                  Thư viện
+                </p>
+                <p className="mt-2 text-[16px] font-semibold text-[#17141a]">
+                  Gom toàn bộ nguồn học vào một luồng duyệt
+                </p>
+              </div>
+            </article>
+            <article className="hero-visual-card">
+              <span className="hero-visual-icon">
+                <img src={searchIcon} alt="" className="h-7 w-7 object-contain" />
+              </span>
+              <div>
+                <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/55">
+                  Tìm kiếm
+                </p>
+                <p className="mt-2 text-[16px] font-semibold text-[#17141a]">
+                  Tìm nhanh theo chủ đề, truy vấn hoặc nguồn
+                </p>
+              </div>
+            </article>
+            <article className="hero-visual-card">
+              <span className="hero-visual-icon">
+                <img src={downArrowIcon} alt="" className="h-6 w-6 object-contain" />
+              </span>
+              <div>
+                <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/55">
+                  Luồng duyệt
+                </p>
+                <p className="mt-2 text-[16px] font-semibold text-[#17141a]">
+                  Giảm thao tác thừa khi lọc và mở tài nguyên
+                </p>
+              </div>
+            </article>
+          </div>
+        </PageHero>
+
+        {canManageResources && aiHealth && false ? (
+          <StatusPanel
+            className="mb-6"
+            tone={
+              String(
+                ((aiHealth!.embedding as Record<string, unknown> | undefined)?.backend as
+                  | string
+                  | undefined) || '',
+              ) === 'hash_fallback'
+                ? 'error'
+                : 'info'
+            }
+            title="AI embedding stack"
+            description={
+              String(
+                ((aiHealth!.embedding as Record<string, unknown> | undefined)?.backend as
+                  | string
+                  | undefined) || 'unknown',
+              ) === 'hash_fallback'
+                ? 'Hệ thống đang chạy bằng hash_fallback. Nên chuyển sang sentence-transformers hoặc Gemini embeddings trước khi demo semantic recommendation.'
+                : `Embedding backend đang hoạt động: ${String(
+                    ((aiHealth!.embedding as Record<string, unknown> | undefined)?.backend as
+                      | string
+                      | undefined) || 'unknown',
+                  )}.`
+            }
+          />
+        ) : null}
+
+        {canManageResources && aiHealthError && false ? (
+          <StatusPanel className="mb-6" tone="error" title="AI embedding stack" description={aiHealthError} />
+        ) : null}
 
         {error && (
-          <div className="white-panel mb-6 border border-red-200 px-4 py-3 text-[14px] text-red-700">
-            • {error}
-          </div>
+          <StatusPanel
+            className="white-panel mb-6 px-4 py-3 shadow-none"
+            tone="error"
+            description={error}
+          />
         )}
 
         {statusMessage && !error && (
-          <div className="white-panel mb-6 border border-emerald-200 px-4 py-3 text-[14px] text-emerald-700">
-            {statusMessage}
-          </div>
+          <StatusPanel
+            className="white-panel mb-6 border-emerald-200 px-4 py-3 text-emerald-700 shadow-none"
+            description={statusMessage}
+          />
         )}
 
         <div
-          className={`mb-6 rounded-[24px] border px-5 py-4 text-[14px] leading-6 ${
+          className={`hidden mb-6 rounded-[24px] border px-5 py-4 text-[14px] leading-6 ${
             canManageResources
               ? 'border-[#ead7df] bg-[#fff7fb] text-[#6f5260]'
               : 'border-[#dbe8f2] bg-[#f6fbff] text-[#2f657f]'
           }`}
         >
           {canManageResources
-            ? 'Bạn đang ở chế độ Admin. Tại màn này bạn có thể tìm kiếm, xem và quản lý resource học tập.'
-            : 'Tài khoản learner chỉ có quyền xem, tìm kiếm và mở resource. Các thao tác thêm hoặc xóa chỉ dành cho Admin.'}
+            ? 'Bạn đang ở chế độ Admin. Màn hình này hỗ trợ tìm kiếm, thêm mới, mở nhanh và dọn tài nguyên học tập trong cùng một luồng.'
+            : 'Tài khoản learner chỉ có quyền xem, tìm kiếm và mở tài nguyên. Các thao tác thêm mới hoặc xóa chỉ dành cho Admin.'}
         </div>
 
-        <div className="soft-panel sticky top-4 z-10 mb-[40px] space-y-4 p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-[13px] text-[#6f6661]">
-              {totalResults > 0
-                ? `${totalResults} tài nguyên khớp với bộ lọc`
-                : 'Tìm kiếm, lọc và thêm tài nguyên nhanh hơn'}
-            </p>
+        <div className="soft-panel z-10 mb-[40px] space-y-5 p-4 sm:p-5 lg:sticky lg:top-4 lg:p-6">
+          <div className="hidden rounded-[24px] border border-white/80 bg-white/75 px-4 py-4 shadow-[0_12px_30px_rgba(114,62,83,0.06)] sm:px-5">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+              <div className="max-w-2xl">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#b07a8e]">
+                  Điều khiển thư viện
+                </p>
+                <h2 className="mt-2 text-[22px] font-semibold tracking-[-0.04em] text-[#17141a] sm:text-[26px]">
+                  Lọc đúng tài nguyên trong ít thao tác hơn
+                </h2>
+                <p className="mt-3 text-[13px] leading-6 text-[#6f6661] sm:text-[14px]">
+                  {canManageResources
+                    ? 'Bảng điều khiển này ưu tiên thao tác nhanh: tìm kiếm, đổi nguồn, mở khung thêm mới và xóa bộ lọc ngay tại chỗ.'
+                    : 'Bảng điều khiển này giúp bạn chuyển giữa các nguồn học, đổi cấp độ và quay lại toàn thư viện mà không phải thao tác nhiều bước.'}
+                </p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-[18px] border border-[#ecdce3] bg-[#fff8fb] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b07a8e]">
+                    Phạm vi
+                  </p>
+                  <p className="mt-2 text-[15px] font-semibold text-[#17141a]">{contextValue}</p>
+                  <p className="mt-1 text-[12px] leading-5 text-[#7a646f]">{contextDetail}</p>
+                </div>
+                <div className="rounded-[18px] border border-[#ecdce3] bg-white px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b07a8e]">
+                    Kết quả
+                  </p>
+                  <p className="mt-2 text-[15px] font-semibold text-[#17141a]">
+                    {totalResults > 0 ? `${totalResults} tài nguyên phù hợp` : 'Chưa có kết quả phù hợp'}
+                  </p>
+                  <p className="mt-1 text-[12px] leading-5 text-[#7a646f]">
+                    {hasActiveFilters ? 'Bạn đang lọc theo truy vấn hoặc bộ lọc.' : 'Hiện chưa áp dụng bộ lọc nào.'}
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
-          <form onSubmit={handleSearch} className="flex flex-col gap-3 sm:flex-row">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Tìm kiếm tài nguyên..."
-              className="theme-input"
-            />
-            <button type="submit" className="theme-button justify-center sm:self-auto">
-              Tìm
-            </button>
-          </form>
+          {hasActiveFilters ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] border border-[#ecdce3] bg-white/70 px-4 py-3">
+              <p className="text-[12px] leading-5 text-[#7a646f]">
+                Đang áp dụng truy vấn hoặc bộ lọc. Bạn có thể xóa nhanh để quay lại toàn thư viện.
+              </p>
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="theme-button-secondary px-4 py-2 text-[12px]"
+              >
+                Xóa bộ lọc
+              </button>
+            </div>
+          ) : null}
+          <div className="resources-search-shell">
+            <form onSubmit={handleSearch} className="resources-search-form">
+              <span className="resources-search-leading" aria-hidden="true">
+                <img src={searchIcon} alt="" className="h-5 w-5 object-contain" />
+              </span>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Tìm kiếm..."
+                className="resources-search-input"
+              />
+              <button type="submit" className="resources-search-submit" aria-label="Tìm kiếm">
+                <img src={downArrowIcon} alt="" className="h-4 w-4 object-contain" />
+              </button>
+            </form>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <select
-              value={filters.level}
-              onChange={(e) => handleFilterChange('level', e.target.value)}
-              className="theme-input min-w-[160px] flex-1 rounded-full py-2 sm:w-auto sm:min-w-[180px] sm:flex-none"
-            >
-              <option value="">Tất cả cấp độ</option>
-              <option value="beginner">Bước đầu</option>
-              <option value="intermediate">Trung bình</option>
-              <option value="advanced">Nâng cao</option>
-            </select>
+            <div className="resources-filter-row">
+              <div className="resources-filter-pill">
+                <select
+                  value={filters.level}
+                  onChange={(e) => handleFilterChange('level', e.target.value)}
+                  className="resources-filter-select"
+                  aria-label="Lọc theo cấp độ"
+                >
+                  <option value="">Tất cả cấp độ</option>
+                  <option value="beginner">Bắt đầu</option>
+                  <option value="intermediate">Trung bình</option>
+                  <option value="advanced">Nâng cao</option>
+                </select>
+              </div>
 
-            <select
-              value={filters.source}
-              onChange={(e) => handleFilterChange('source', e.target.value)}
-              className="theme-input min-w-[160px] flex-1 rounded-full py-2 sm:w-auto sm:min-w-[180px] sm:flex-none"
-            >
-              <option value="">Tất cả nguồn</option>
-              <option value="youtube">YouTube</option>
-              <option value="pdf">PDF</option>
-              <option value="web">Trang web</option>
-            </select>
+              <div className="resources-filter-pill">
+                <select
+                  value={filters.source}
+                  onChange={(e) => handleFilterChange('source', e.target.value)}
+                  className="resources-filter-select"
+                  aria-label="Lọc theo nguồn"
+                >
+                  <option value="">Tất cả nguồn</option>
+                  <option value="youtube">YouTube</option>
+                  <option value="pdf">PDF</option>
+                  <option value="web">Trang web</option>
+                </select>
+              </div>
 
-            <button
-              disabled={!canManageResources}
-              onClick={() => canManageResources && setShowAddResource(!showAddResource)}
-              className="theme-button-secondary w-full justify-center disabled:cursor-not-allowed disabled:opacity-50 sm:ml-auto sm:w-auto"
-            >
-              + Thêm tài nguyên
-            </button>
+              <div className="resources-filter-pill">
+                <select
+                  value={sortOption}
+                  onChange={(e) => setSortOption(e.target.value as ResourceSortOption)}
+                  className="resources-filter-select"
+                  aria-label="Sắp xếp tài nguyên"
+                >
+                  {RESOURCE_SORT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {canManageResources ? (
+                <button
+                  type="button"
+                  onClick={() => setShowAddResource((previous) => !previous)}
+                  className="resources-filter-action"
+                >
+                  {showAddResource ? 'Thu gọn' : 'Thêm tài nguyên'}
+                </button>
+              ) : null}
+            </div>
           </div>
+          {hasActiveFilters ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {activeFilterChips.map((chip) => (
+                <span
+                  key={chip}
+                  className="rounded-full border border-[#ecdce3] bg-[#fff8fb] px-3 py-1.5 text-[11px] font-medium text-[#8c3451]"
+                >
+                  {chip}
+                </span>
+              ))}
+              <span className="rounded-full border border-[#e5edf5] bg-[#f7fbff] px-3 py-1.5 text-[11px] font-medium text-[#2f657f]">
+                {selectedSourceLabel}
+              </span>
+            </div>
+          ) : null}
         </div>
 
         {canManageResources && showAddResource && (
-          <div className="white-panel mb-[40px] p-8">
-            <div className="mb-6 flex flex-wrap gap-3">
-              {(['web', 'youtube', 'pdf'] as const).map((type) => (
+          <div className="white-panel mb-[40px] p-5 sm:p-6 lg:p-8">
+            <div className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(280px,1fr)] xl:items-start">
+              <div className="max-w-2xl">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#b07a8e]">
+                  {selectedFormCopy.kicker}
+                </p>
+                <h2 className="mt-3 text-[24px] font-semibold tracking-[-0.04em] text-[#17141a] sm:text-[28px]">
+                  {selectedFormCopy.title}
+                </h2>
+                <p className="mt-3 text-[14px] leading-7 text-[#6f5260]">
+                  {selectedFormCopy.description}
+                </p>
+              </div>
+              <div className="rounded-[24px] border border-[#f0d7e0] bg-[linear-gradient(180deg,#fffafd_0%,#fff4f8_100%)] p-4 sm:p-5">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#b07a8e]">
+                  Hướng dẫn nhanh
+                </p>
+                <p className="mt-3 text-[13px] leading-6 text-[#6f5260]">
+                  Chọn đúng loại tài nguyên trước khi nhập dữ liệu. Các trường chủ đề, cấp độ và nội dung rõ ràng sẽ giúp hệ thống gợi ý chính xác hơn.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <span className="rounded-full border border-white/80 bg-white/80 px-3 py-1.5 text-[11px] font-medium text-[#8c3451]">
+                    Có thể đổi loại ngay trong khung
+                  </span>
+                  <span className="rounded-full border border-white/80 bg-white/80 px-3 py-1.5 text-[11px] font-medium text-[#8c3451]">
+                    Ưu tiên tiêu đề ngắn và dễ quét
+                  </span>
+                </div>
                 <button
-                  key={type}
-                  onClick={() => setAddResourceType(type)}
-                  className={`rounded-full px-5 py-2.5 font-medium text-[13px] transition-colors ${
-                    addResourceType === type
-                      ? 'bg-[#8c3451] text-white'
-                      : 'bg-[#fdf0f5] text-[#8c3451] hover:bg-[#f8dce7]'
+                  type="button"
+                  onClick={() => setShowAddResource(false)}
+                  className="theme-button-secondary mt-5 justify-center px-5 py-3 text-[13px]"
+                >
+                  Thu gọn khung thêm mới
+                </button>
+              </div>
+            </div>
+
+            <div className="mb-6 grid gap-3 rounded-[24px] border border-[#f0d7e0] bg-[linear-gradient(180deg,#fffafd_0%,#fff4f8_100%)] p-4 sm:grid-cols-2 sm:p-5">
+              {selectedFormCopy.tips.map((tip) => (
+                <div
+                  key={tip}
+                  className="rounded-[18px] border border-white/80 bg-white/75 px-4 py-3 text-[13px] leading-6 text-[#7a5e6d]"
+                >
+                  {tip}
+                </div>
+              ))}
+            </div>
+            <div className="mb-6 grid gap-3 lg:grid-cols-3">
+              {RESOURCE_TYPE_OPTIONS.map((option) => (
+                <button
+                  key={option.type}
+                  type="button"
+                  onClick={() => setAddResourceType(option.type)}
+                  aria-pressed={addResourceType === option.type}
+                  className={`rounded-[22px] border px-5 py-4 text-left transition-colors ${
+                    addResourceType === option.type
+                      ? 'border-[#8c3451] bg-[#8c3451] text-white shadow-[0_18px_36px_rgba(114,62,83,0.18)]'
+                      : 'border-[#f0d7e0] bg-[#fff8fb] text-[#8c3451] hover:bg-[#fff1f6]'
                   }`}
                 >
-                  {type === 'web' ? 'Trang web' : type === 'youtube' ? 'YouTube' : 'PDF'}
+                  <p className="text-[14px] font-semibold">{option.label}</p>
+                  <p
+                    className={`mt-2 text-[12px] leading-5 ${
+                      addResourceType === option.type ? 'text-white/80' : 'text-[#7a5e6d]'
+                    }`}
+                  >
+                    {option.description}
+                  </p>
                 </button>
               ))}
             </div>
 
             {addResourceType === 'web' && (
-              <form ref={webFormRef} onSubmit={handleWebAdd} className="space-y-4">
-                <input
-                  type="text"
-                  name="title"
-                  placeholder="Tiêu đề"
-                  required
-                  className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
-                />
-                <input
-                  type="url"
-                  name="web_url"
-                  placeholder="URL (tùy chọn)"
-                  className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
-                />
-                <input
-                  type="text"
-                  name="topic"
-                  placeholder="Chủ đề"
-                  required
-                  className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
-                />
-                <textarea
-                  name="content"
-                  placeholder="Nội dung tài nguyên hoặc mô tả chi tiết"
-                  required
-                  rows={5}
-                  className="theme-input w-full resize-y rounded-[14px] px-4 py-3 text-[13px]"
-                />
-                <select
-                  name="level"
-                  className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
-                >
-                  <option value="beginner">Bước đầu</option>
-                  <option value="intermediate">Trung bình</option>
-                  <option value="advanced">Nâng cao</option>
-                </select>
-                <div className="flex gap-3">
+              <form ref={webFormRef} onSubmit={handleWebAdd} className="grid gap-4 lg:grid-cols-2">
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Tiêu đề</span>
+                  <input
+                    type="text"
+                    name="title"
+                    placeholder="Ví dụ: Tổng quan về Binary Search"
+                    className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">URL tham chiếu</span>
+                  <input
+                    type="url"
+                    name="web_url"
+                    placeholder="https://example.com"
+                    className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Chủ đề</span>
+                  <input
+                    type="text"
+                    name="topic"
+                    placeholder="Ví dụ: Thuật toán, React, SQL..."
+                    required
+                    className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Cấp độ</span>
+                  <select
+                    name="level"
+                    className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
+                  >
+                    <option value="beginner">Bắt đầu</option>
+                    <option value="intermediate">Trung bình</option>
+                    <option value="advanced">Nâng cao</option>
+                  </select>
+                </label>
+                <label className="space-y-2 lg:col-span-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Nội dung hoặc mô tả</span>
+                  <textarea
+                    name="content"
+                    placeholder="Tóm tắt ngắn nội dung, ghi chú chính hoặc trích ý quan trọng của tài nguyên..."
+                    required
+                    rows={6}
+                    className="theme-input w-full resize-y rounded-[14px] px-4 py-3 text-[13px]"
+                  />
+                </label>
+                <div className="flex flex-col gap-3 sm:flex-row lg:col-span-2">
                   <button
                     type="submit"
                     disabled={addingResource}
-                    className="theme-button px-6 py-3 text-[13px] disabled:opacity-50"
+                    className="theme-button w-full px-6 py-3 text-[13px] disabled:opacity-50 sm:w-auto"
                   >
-                    {addingResource ? 'Đang thêm...' : 'Thêm'}
+                    {addingResource ? 'Đang thêm...' : selectedFormCopy.submitLabel}
                   </button>
                   <button
                     type="button"
                     onClick={() => setShowAddResource(false)}
-                    className="theme-button-secondary px-6 py-3 text-[13px]"
+                    className="theme-button-secondary w-full px-6 py-3 text-[13px] sm:w-auto"
                   >
-                    Hủy
+                    {'Hủy'}
                   </button>
                 </div>
               </form>
             )}
+
 
             {addResourceType === 'youtube' && (
-              <form ref={youtubeFormRef} onSubmit={handleYouTubeAdd} className="space-y-4">
-                <input
-                  type="url"
-                  name="youtube_url"
-                  placeholder="Liên kết YouTube"
-                  required
-                  className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
-                />
-                <input
-                  type="text"
-                  name="title"
-                  placeholder="Tiêu đề"
-                  required
-                  className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
-                />
-                <input
-                  type="text"
-                  name="topic"
-                  placeholder="Chủ đề"
-                  required
-                  className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
-                />
-                <select
-                  name="level"
-                  className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
-                >
-                  <option value="beginner">Bước đầu</option>
-                  <option value="intermediate">Trung bình</option>
-                  <option value="advanced">Nâng cao</option>
-                </select>
-                <div className="flex gap-3">
+              <form ref={youtubeFormRef} onSubmit={handleYouTubeAdd} className="grid gap-4 lg:grid-cols-2">
+                <label className="space-y-2 lg:col-span-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Liên kết YouTube</span>
+                  <input
+                    type="url"
+                    name="youtube_url"
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    required
+                    className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Tiêu đề</span>
+                  <input
+                    type="text"
+                    name="title"
+                    placeholder="Ví dụ: React Query trong 20 phút"
+                    required
+                    className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Chủ đề</span>
+                  <input
+                    type="text"
+                    name="topic"
+                    placeholder="Ví dụ: Frontend, CI/CD, System Design..."
+                    required
+                    className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Cấp độ</span>
+                  <select
+                    name="level"
+                    className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
+                  >
+                    <option value="beginner">Bắt đầu</option>
+                    <option value="intermediate">Trung bình</option>
+                    <option value="advanced">Nâng cao</option>
+                  </select>
+                </label>
+                <div className="rounded-[18px] border border-[#f0d7e0] bg-[#fff8fb] px-4 py-3 text-[12px] leading-6 text-[#7a5e6d]">
+                  Ưu tiên dùng tiêu đề gần với nội dung video để thumbnail, tiêu đề và gợi ý liên quan nhất quán hơn.
+                </div>
+                <div className="flex flex-col gap-3 sm:flex-row lg:col-span-2">
                   <button
                     type="submit"
                     disabled={addingResource}
-                    className="theme-button px-6 py-3 text-[13px] disabled:opacity-50"
+                    className="theme-button w-full px-6 py-3 text-[13px] disabled:opacity-50 sm:w-auto"
                   >
-                    {addingResource ? 'Đang thêm...' : 'Thêm'}
+                    {addingResource ? 'Đang thêm...' : selectedFormCopy.submitLabel}
                   </button>
                   <button
                     type="button"
                     onClick={() => setShowAddResource(false)}
-                    className="theme-button-secondary px-6 py-3 text-[13px]"
+                    className="theme-button-secondary w-full px-6 py-3 text-[13px] sm:w-auto"
                   >
-                    Hủy
+                    {'Hủy'}
                   </button>
                 </div>
               </form>
             )}
 
+
             {addResourceType === 'pdf' && (
-              <form ref={pdfFormRef} onSubmit={handlePDFUpload} className="space-y-4">
-                <input
-                  type="file"
-                  name="pdf_file"
-                  accept=".pdf"
-                  required
-                  className="w-full px-4 py-2 border border-[#e4b6d0] rounded-[10px] text-[13px]"
-                />
-                <input
-                  type="text"
-                  name="topic"
-                  placeholder="Chủ đề"
-                  required
-                  className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
-                />
-                <select
-                  name="level"
-                  className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
-                >
-                  <option value="beginner">Bước đầu</option>
-                  <option value="intermediate">Trung bình</option>
-                  <option value="advanced">Nâng cao</option>
-                </select>
-                <div className="flex gap-3">
+              <form ref={pdfFormRef} onSubmit={handlePDFUpload} className="grid gap-4 lg:grid-cols-2">
+                <label className="space-y-2 lg:col-span-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Tệp PDF</span>
+                  <input
+                    type="file"
+                    name="pdf_file"
+                    accept=".pdf"
+                    required
+                    className="w-full rounded-[14px] border border-[#e4b6d0] bg-white px-4 py-3 text-[13px] text-[#6f5260]"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Chủ đề</span>
+                  <input
+                    type="text"
+                    name="topic"
+                    placeholder="Ví dụ: Machine Learning cơ bản"
+                    required
+                    className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Cấp độ</span>
+                  <select
+                    name="level"
+                    className="theme-input w-full rounded-[14px] px-4 py-3 text-[13px]"
+                  >
+                    <option value="beginner">Bắt đầu</option>
+                    <option value="intermediate">Trung bình</option>
+                    <option value="advanced">Nâng cao</option>
+                  </select>
+                </label>
+                <div className="rounded-[18px] border border-[#f0d7e0] bg-[#fff8fb] px-4 py-3 text-[12px] leading-6 text-[#7a5e6d] lg:col-span-2">
+                  Sau khi tải lên, hệ thống có thể cần vài phút để trích nội dung và đồng bộ preview. Giữ tên file ngắn, rõ chủ đề để dễ tra cứu hơn.
+                </div>
+                <div className="flex flex-col gap-3 sm:flex-row lg:col-span-2">
                   <button
                     type="submit"
                     disabled={uploadingPDF}
-                    className="theme-button px-6 py-3 text-[13px] disabled:opacity-50"
+                    className="theme-button w-full px-6 py-3 text-[13px] disabled:opacity-50 sm:w-auto"
                   >
-                    {uploadingPDF ? 'Đang tải lên...' : 'Tải lên'}
+                    {uploadingPDF ? 'Đang tải lên...' : selectedFormCopy.submitLabel}
                   </button>
                   <button
                     type="button"
                     onClick={() => setShowAddResource(false)}
-                    className="theme-button-secondary px-6 py-3 text-[13px]"
+                    className="theme-button-secondary w-full px-6 py-3 text-[13px] sm:w-auto"
                   >
-                    Hủy
+                    {'Hủy'}
                   </button>
                 </div>
               </form>
@@ -882,37 +1443,36 @@ export default function Resources() {
         )}
 
         {loading ? (
-          <div className="flex items-center justify-center min-h-[400px]">
-            <div className="text-center">
-              <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-b-2 border-[#8c3451]"></div>
-              <p className="text-[#8c3451]">Đang tải tài nguyên...</p>
-            </div>
-          </div>
+          <StatusPanel
+            className="flex min-h-[320px] items-center justify-center sm:min-h-[400px]"
+            centered
+            tone="info"
+            description={'Đang tải tài nguyên...'}
+          />
         ) : resources.length === 0 ? (
-          <div className="white-panel p-[60px] text-center">
-            <p className="text-[#8c3451] text-[16px]">Không tìm thấy tài nguyên nào</p>
-            <p className="text-gray-500 text-[13px] mt-2">
-              Hãy thử tìm kiếm hoặc thêm tài nguyên mới
-            </p>
-          </div>
+          <StatusPanel
+            className="white-panel px-6 py-12 sm:px-10 sm:py-[60px] shadow-none"
+            centered
+            tone="info"
+            title={'Không tìm thấy tài nguyên nào'}
+            description={'Hãy thử tìm kiếm lại, nới bộ lọc hoặc thêm tài nguyên mới.'}
+          />
         ) : (
           <>
-            <div className="mb-[40px] grid grid-cols-1 gap-6 md:grid-cols-2 2xl:grid-cols-3">
-              {resources.map((resource) => {
+            <div className="mb-[40px] grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+              {displayedResources.map(({ resource, relevanceScore, whyRecommended }) => {
                 const sourceTheme = getSourceTheme(resource.source);
                 const resourceId = getResourceIdentifier(resource);
                 const displayTitle = getDisplayTitle(resource);
                 const previewText = getDisplaySnippet(resource);
-                const resourceHost = resource.url
-                  ? resource.url.replace(/^https?:\/\//, '').replace(/^www\./, '')
-                  : 'Nguồn web';
 
                 return (
                   <article
                     key={resourceId || displayTitle}
-                    className="group flex min-h-[460px] flex-col overflow-hidden rounded-[34px] border border-[#ebe2e8] bg-[linear-gradient(180deg,#ffffff_0%,#fffafc_100%)] p-6 shadow-[0_18px_40px_rgba(114,62,83,0.08)] transition-all duration-200 hover:-translate-y-1.5 hover:shadow-[0_26px_54px_rgba(114,62,83,0.14)]"
+                    className="group flex min-h-[420px] flex-col overflow-hidden rounded-[30px] border border-[#ebe2e8] bg-[linear-gradient(180deg,#ffffff_0%,#fffafc_100%)] p-5 shadow-[0_18px_40px_rgba(114,62,83,0.08)] transition-all duration-200 hover:-translate-y-1.5 hover:shadow-[0_26px_54px_rgba(114,62,83,0.14)] sm:min-h-[460px] sm:rounded-[34px] sm:p-6"
                   >
-                    <div className="mb-5 flex items-start justify-between gap-4">
+                    <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0">
                         <p className="text-[12px] font-semibold tracking-[0.08em] text-[#8d7e84]">
                           {resource.topic || 'Bunny Library'}
@@ -921,10 +1481,10 @@ export default function Resources() {
                           {displayTitle}
                         </h3>
                       </div>
-                      <div className="flex shrink-0 items-start gap-2">
+                      <div className="flex shrink-0 flex-wrap items-start gap-2 sm:justify-end">
                         {resource.is_completed ? (
                           <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-semibold text-emerald-700">
-                            Đã học xong
+                            {'Đã học xong'}
                           </span>
                         ) : null}
                         <span
@@ -932,14 +1492,25 @@ export default function Resources() {
                         >
                           {getLevelLabel(resource.level)}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => void handleDeleteResource(resource)}
-                          disabled={!canManageResources || deletingResourceId === resourceId}
-                          className="rounded-full border border-[#ebe2e7] bg-white px-3 py-1.5 text-[11px] font-medium text-[#8c3451] transition-colors hover:bg-[#fff4f8] disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {deletingResourceId === resourceId ? 'Đang xóa...' : 'Xóa'}
-                        </button>
+                        {!resource.is_completed ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleMarkResourceCompleted(resource)}
+                            className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-[11px] font-medium text-emerald-700 transition hover:bg-emerald-50"
+                          >
+                            {'Đánh dấu đã học'}
+                          </button>
+                        ) : null}
+                        {canManageResources ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteResource(resource)}
+                            disabled={deletingResourceId === resourceId}
+                            className="rounded-full border border-[#ebe2e7] bg-white px-3 py-1.5 text-[11px] font-medium text-[#8c3451] transition-colors hover:bg-[#fff4f8] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {deletingResourceId === resourceId ? 'Đang xóa...' : 'Xóa'}
+                          </button>
+                        ) : null}
                       </div>
                     </div>
 
@@ -949,244 +1520,127 @@ export default function Resources() {
                       >
                         {getSourceLabel(resource.source)}
                       </span>
-                      <span
-                        className={`flex h-11 w-11 items-center justify-center rounded-full border ${sourceTheme.icon}`}
-                      >
-                        {getSourceIcon(resource.source)}
-                      </span>
-                    </div>
-
-                    <div
-                      className={`relative mb-5 flex min-h-[250px] flex-1 overflow-hidden rounded-[28px] border border-[#efeaed] ${sourceTheme.preview}`}
-                    >
-                      {resource.source === 'youtube' ? (
-                        (() => {
-                          const thumbnailUrl = getYouTubeThumbnail(resource);
-                          return thumbnailUrl ? (
-                            <button
-                              type="button"
-                              className="relative h-full w-full overflow-hidden text-left"
-                              onClick={() => handleOpenResource(resource)}
-                            >
-                              <img
-                                src={thumbnailUrl}
-                                alt={displayTitle}
-                                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none';
-                                  e.currentTarget.parentElement!.innerHTML =
-                                    '<p class="flex h-full items-center justify-center px-4 text-center text-[12px] text-[#7f3650]">Xem trước YouTube</p>';
-                                }}
-                              />
-                              <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(19,16,22,0.02)_0%,rgba(19,16,22,0.35)_100%)]" />
-                              <div className="absolute inset-x-5 bottom-5 flex items-end justify-between gap-4">
-                                <div className="max-w-[70%] rounded-[20px] bg-white/88 px-4 py-3 backdrop-blur-sm">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#9b2f55]">
-                                    YouTube
-                                  </p>
-                                  <p className="mt-1 line-clamp-2 text-[14px] font-medium leading-5 text-[#17141a]">
-                                    {displayTitle}
-                                  </p>
-                                </div>
-                                <span
-                                  className={`flex h-16 w-16 shrink-0 items-center justify-center rounded-full text-white shadow-[0_18px_30px_rgba(114,62,83,0.18)] ${sourceTheme.accent}`}
-                                >
-                                  <svg
-                                    className="ml-1 h-8 w-8"
-                                    fill="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path d="M8 5v14l11-7z" />
-                                  </svg>
-                                </span>
-                              </div>
-                            </button>
-                          ) : (
-                            <div className="flex h-full w-full items-center justify-center px-6 text-center text-[13px] font-medium text-[#7f3650]">
-                              Xem trước YouTube
-                            </div>
-                          );
-                        })()
-                      ) : resource.source === 'pdf' ? (
-                        <button
-                          type="button"
-                          className="relative h-full w-full overflow-hidden text-left"
-                          onClick={() => handleOpenResource(resource)}
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full px-3 py-1 text-[11px] font-semibold semantic-pill-blue">
+                          {Math.round(relevanceScore * 100)}%
+                        </span>
+                        <span
+                          className={`flex h-11 w-11 items-center justify-center rounded-full border ${sourceTheme.icon}`}
                         >
-                          {resource.thumbnail ? (
-                            <img
-                              src={resource.thumbnail}
-                              alt={displayTitle}
-                              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-                              onError={(e) => {
-                                e.currentTarget.style.display = 'none';
-                                e.currentTarget.parentElement!.innerHTML =
-                                  '<div class="flex h-full flex-col items-center justify-center gap-3 px-4 text-center"><p class="text-[12px] font-medium text-[#7f3650]">PDF không có xem trước</p></div>';
-                              }}
-                            />
-                          ) : (
-                            <div
-                              className={`flex h-full w-full flex-col items-center justify-center gap-4 px-6 text-center ${sourceTheme.soft}`}
-                            >
-                              <span
-                                className={`flex h-16 w-16 items-center justify-center rounded-[20px] border bg-white shadow-[0_12px_24px_rgba(114,62,83,0.08)] ${sourceTheme.icon}`}
-                              >
-                                {getSourceIcon(resource.source)}
-                              </span>
-                              <div>
-                                <p className="text-[12px] font-semibold tracking-[0.08em] text-[#8d7e84]">
-                                  Tệp PDF
-                                </p>
-                                <p className="mt-2 text-[16px] font-medium leading-6 text-[#1b171c]">
-                                  Xem nhanh tài liệu trực tiếp trong thư viện của bạn.
-                                </p>
-                              </div>
-                            </div>
-                          )}
-                          <div className="pointer-events-none absolute inset-x-5 bottom-5 flex items-center justify-between gap-4">
-                            <div className="rounded-[18px] bg-white/90 px-4 py-3 backdrop-blur-sm">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6d4c8f]">
-                                PDF
-                              </p>
-                              <p className="mt-1 text-[14px] font-medium text-[#17141a]">
-                                Xem trước tài liệu
-                              </p>
-                            </div>
-                            <span className="rounded-full bg-white/90 p-3 text-[#8c3451] shadow-[0_12px_24px_rgba(114,62,83,0.12)] backdrop-blur-sm">
-                              <svg
-                                className="h-6 w-6"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                                />
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-                                />
-                              </svg>
-                            </span>
-                          </div>
-                        </button>
-                      ) : (
-                        <div className="flex h-full w-full flex-col justify-between p-6">
-                          <div>
-                            <p className="text-[12px] font-semibold tracking-[0.08em] text-[#2f657f]/70">
-                              Nguồn tham khảo
-                            </p>
-                            <p className="mt-4 line-clamp-5 text-[17px] font-medium leading-8 text-[#1b171c]">
-                              {previewText}
-                            </p>
-                          </div>
-                          <div className="flex items-end justify-between gap-3">
-                            <span
-                              className={`max-w-[75%] rounded-full px-3 py-2 text-[12px] ${sourceTheme.soft} ${sourceTheme.icon}`}
-                            >
-                              {resourceHost}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenResource(resource)}
-                              className={`rounded-full border bg-white px-4 py-2 text-[12px] font-medium transition hover:bg-white ${sourceTheme.chip}`}
-                            >
-                              Mở nguồn
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <div
-                      className={`rounded-[24px] border px-4 py-4 ${sourceTheme.soft} border-white/70`}
-                    >
-                      <p className="line-clamp-2 min-h-[44px] break-words text-[13px] leading-6 text-[#6a625d]">
-                        {previewText}
-                      </p>
-
-                      <div className="mt-4 flex items-center justify-between gap-3 border-t border-white/80 pt-4">
-                        <div className="flex min-w-0 items-center gap-3">
-                          <span
-                            className={`flex h-10 w-10 items-center justify-center rounded-[14px] border bg-white ${sourceTheme.icon}`}
-                          >
-                            {getSourceIcon(resource.source)}
-                          </span>
-                          <div className="min-w-0">
-                            <p className="text-[13px] font-normal leading-5 tracking-normal text-[#8f7b87]">
-                              Mới cập nhật
-                            </p>
-                            <p className="line-clamp-1 text-[15px] font-semibold leading-6 tracking-[-0.01em] text-[#18141a]">
-                              {resource.topic || displayTitle}
-                            </p>
-                            <p className="text-[12px] font-normal leading-5 tracking-normal text-[#7a726d]">
-                              {getResourceTimestamp(resource)}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap justify-end gap-2">
-                          {resource.source !== 'web' && (
-                            <button
-                              type="button"
-                              onClick={() => handleOpenResource(resource)}
-                              className={`rounded-full border bg-white px-4 py-2 text-[12px] font-medium transition hover:bg-white ${sourceTheme.chip}`}
-                            >
-                              {resource.source === 'youtube' ? 'Xem video' : 'Xem trước'}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => void handleMarkResourceCompleted(resource)}
-                            disabled={resource.is_completed}
-                            className={`rounded-full border px-4 py-2 text-[12px] font-medium transition ${
-                              resource.is_completed
-                                ? 'cursor-not-allowed border-emerald-200 bg-emerald-50 text-emerald-700'
-                                : 'border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50'
-                            }`}
-                          >
-                            {resource.is_completed ? 'Đã học xong' : 'Đánh dấu đã học'}
-                          </button>
-                        </div>
+                          {getSourceIcon(resource.source)}
+                        </span>
                       </div>
                     </div>
+
+                    <div
+                      className={`mb-5 rounded-[24px] border px-4 py-4 ${sourceTheme.soft} border-white/70`}
+                    >
+                      <p className="line-clamp-2 min-h-[48px] break-words text-[13px] leading-5 text-[#6a625d] sm:text-[14px]">
+                        {previewText}
+                      </p>
+                      <details className="mt-3 text-[12px] text-[#2563eb]">
+                        <summary className="cursor-pointer list-none font-semibold">Vì sao?</summary>
+                        <p className="mt-2 leading-5 text-[#334155]">{whyRecommended}</p>
+                      </details>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleOpenResource(resource)}
+                      className="theme-button mt-4 w-full justify-center"
+                    >
+                      Mở tài nguyên
+                    </button>
                   </article>
                 );
               })}
+              </div>
+              <div className="space-y-4 xl:sticky xl:top-4 xl:self-start">
+                <div className="soft-panel p-5">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#3b82f6]">
+                    Gợi ý từ AI
+                  </p>
+                  <h3 className="mt-3 text-[22px] font-semibold tracking-[-0.04em] text-[#17141a]">
+                    Tài nguyên nổi bật
+                  </h3>
+                  <p className="mt-3 text-[13px] leading-6 text-[#625954]">
+                    Các gợi ý này được sắp theo mức phù hợp với truy vấn, nguồn và cấp độ đang xem.
+                  </p>
+                </div>
+                {featuredResources.map(({ resource, relevanceScore, whyRecommended }) => (
+                  <div
+                    key={`featured-${getResourceIdentifier(resource) || resource.title}`}
+                    className="white-panel p-5"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[15px] font-semibold leading-6 text-[#17141a]">
+                          {getDisplayTitle(resource)}
+                        </p>
+                        <p className="mt-1 text-[12px] text-[#8f6075]">{resource.topic}</p>
+                      </div>
+                      <span className="rounded-full px-3 py-1 text-[11px] font-semibold semantic-pill-blue">
+                        {Math.round(relevanceScore * 100)}%
+                      </span>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <span className={`rounded-full px-3 py-1 text-[11px] font-semibold ${getLevelColor(resource.level)}`}>
+                        {getLevelLabel(resource.level)}
+                      </span>
+                    </div>
+                    <details className="mt-4 text-[12px] text-[#2563eb]">
+                      <summary className="cursor-pointer list-none font-semibold">Vì sao?</summary>
+                      <p className="mt-2 leading-5 text-[#334155]">{whyRecommended}</p>
+                    </details>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenResource(resource)}
+                      className="theme-button mt-4 w-full justify-center"
+                    >
+                      Mở tài nguyên
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
 
             {totalPages > 1 && (
-              <div className="mb-[40px] flex justify-center gap-2">
+              <div className="mb-[40px] flex flex-wrap justify-center gap-2">
                 <button
                   onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
                   disabled={currentPage === 1}
                   className="theme-button-secondary px-4 py-2 text-[12px] disabled:opacity-50"
                 >
-                  ← Trước
+                  {'← Trước'}
                 </button>
-                {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
-                  <button
-                    key={page}
-                    onClick={() => setCurrentPage(page)}
-                    className={`px-3 py-1 text-[12px] rounded-[8px] transition-colors ${
-                      currentPage === page
-                        ? 'bg-[#8c3451] text-white'
-                        : 'border border-[#ce6a86] bg-white/80 hover:bg-[#fff4f8]'
-                    }`}
-                  >
-                    {page}
-                  </button>
-                ))}
+                {paginationItems.map((item, index) =>
+                  item === 'ellipsis' ? (
+                    <span
+                      key={`ellipsis-${index}`}
+                      className="flex items-center px-2 text-[12px] font-medium text-[#8f7b87]"
+                    >
+                      ...
+                    </span>
+                  ) : (
+                    <button
+                      key={item}
+                      onClick={() => setCurrentPage(item)}
+                      className={`min-w-[36px] rounded-[8px] px-3 py-1 text-[12px] transition-colors ${
+                        currentPage === item
+                          ? 'bg-[#8c3451] text-white'
+                          : 'border border-[#ce6a86] bg-white/80 hover:bg-[#fff4f8]'
+                      }`}
+                    >
+                      {item}
+                    </button>
+                  ),
+                )}
                 <button
                   onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
                   disabled={currentPage === totalPages}
                   className="theme-button-secondary px-4 py-2 text-[12px] disabled:opacity-50"
                 >
-                  Sau →
+                  {'Sau →'}
                 </button>
               </div>
             )}
@@ -1194,29 +1648,33 @@ export default function Resources() {
         )}
 
         {resources.length > 0 && (
-          <div className="text-center text-[13px] text-gray-600 mt-[40px]">
-            Hiển thị {(currentPage - 1) * pageSize + 1} đến{' '}
-            {Math.min(currentPage * pageSize, totalResults)} trên tổng {totalResults} tài nguyên
+          <div className="mt-[40px] text-center text-[13px] text-gray-600">
+            {`Hiển thị ${resultRangeStart} đến ${resultRangeEnd} trên tổng ${totalResults} tài nguyên`}
           </div>
         )}
       </div>
 
       {playingVideo && (
         <div
-          className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#1f0f17]/80 p-3 backdrop-blur-sm sm:p-4"
           onClick={() => setPlayingVideo(null)}
         >
           <div
-            className="bg-white rounded-[20px] overflow-hidden max-w-4xl w-full shadow-2xl"
+            className="w-full max-w-4xl overflow-hidden rounded-[24px] border border-[#f0d7e0] bg-white shadow-[0_28px_80px_rgba(45,31,17,0.28)] sm:rounded-[28px]"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="bg-[#8c3451] px-6 py-4 flex items-center justify-between">
-              <h3 className="text-white font-semibold text-[16px] flex-1 pr-4 line-clamp-1">
-                {playingVideo.title}
-              </h3>
+            <div className="flex items-start justify-between gap-4 bg-[linear-gradient(135deg,#8c3451_0%,#6f2a40_100%)] px-4 py-4 sm:px-6">
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/70">
+                  Tài nguyên video
+                </p>
+                <h3 className="mt-2 line-clamp-2 pr-2 text-[15px] font-semibold text-white sm:text-[16px]">
+                  {playingVideo.title}
+                </h3>
+              </div>
               <button
                 onClick={() => setPlayingVideo(null)}
-                className="text-white hover:bg-[#7a2d46] rounded-full p-2 transition-colors flex-shrink-0"
+                className="shrink-0 rounded-full p-2 text-white transition-colors hover:bg-white/10"
                 aria-label="Đóng"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1229,8 +1687,12 @@ export default function Resources() {
                 </svg>
               </button>
             </div>
-
-            <div className="relative w-full" style={{ paddingBottom: '56.25%' }}>
+            <div className="border-b border-[#f1e4ea] bg-[#fff8fb] px-4 py-3 text-[13px] leading-6 text-[#6f5260] sm:px-6">
+              {'Xem trực tiếp trong modal, nhấn '}
+              <span className="font-semibold text-[#8c3451]">Esc</span>
+              {' hoặc bấm ra ngoài để đóng.'}
+            </div>
+            <div className="relative w-full bg-black" style={{ paddingBottom: '56.25%' }}>
               <iframe
                 className="absolute inset-0 w-full h-full"
                 src={`https://www.youtube.com/embed/${playingVideo.videoId}?autoplay=1`}
@@ -1252,7 +1714,7 @@ export default function Resources() {
       />
 
       {toast && (
-        <div className="ui-toast-fade fixed right-5 top-5 z-[60] max-w-[360px]">
+        <div className="ui-toast-fade fixed inset-x-4 top-4 z-[60] mx-auto max-w-[360px] sm:inset-x-auto sm:right-5 sm:top-5 sm:mx-0">
           <div
             className={`rounded-[22px] border px-4 py-3 shadow-[0_18px_36px_rgba(114,62,83,0.18)] backdrop-blur-md ${
               toast.type === 'success'
@@ -1260,9 +1722,9 @@ export default function Resources() {
                 : 'border-rose-200 bg-white/95 text-rose-700'
             }`}
           >
-            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] opacity-70">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] opacity-70">
               {toast.type === 'success' ? 'Thành công' : 'Có lỗi xảy ra'}
-            </p>
+              </p>
             <p className="mt-1 text-[13px] font-medium">{toast.message}</p>
           </div>
         </div>
@@ -1271,25 +1733,47 @@ export default function Resources() {
       {canManageResources && pendingDeleteResource && (
         <div
           className="ui-fade-in fixed inset-0 z-50 flex items-center justify-center bg-[#3d1f2c]/30 px-4 backdrop-blur-sm"
-          onClick={() => setPendingDeleteResource(null)}
+          onClick={() => {
+            if (!deletingResourceId) {
+              setPendingDeleteResource(null);
+            }
+          }}
         >
           <div
-            className="ui-pop-in white-panel w-full max-w-[420px] rounded-[28px] border border-[#f0c7d5] p-7 shadow-[0_24px_50px_rgba(114,62,83,0.18)]"
+            className="ui-pop-in white-panel w-full max-w-[460px] rounded-[24px] border border-[#f0c7d5] p-5 shadow-[0_24px_50px_rgba(114,62,83,0.18)] sm:rounded-[28px] sm:p-7"
             onClick={(e) => e.stopPropagation()}
           >
-            <p className="mb-2 text-[12px] font-semibold uppercase tracking-[0.28em] text-[#b07a8e]">
-              Xác nhận xóa
-            </p>
-            <h3 className="mb-3 text-[28px] font-semibold tracking-[-0.04em] text-[#8c3451]">
-              Xóa tài nguyên này?
-            </h3>
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="mb-2 text-[12px] font-semibold uppercase tracking-[0.28em] text-[#b07a8e]">
+                  {'Xác nhận xóa'}
+                </p>
+                <h3 className="text-[24px] font-semibold tracking-[-0.04em] text-[#8c3451] sm:text-[28px]">
+                  {'Xóa tài nguyên này?'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingDeleteResource(null)}
+                disabled={!!deletingResourceId}
+                className="rounded-full p-2 text-[#8c3451] transition hover:bg-[#fff3f7] disabled:opacity-50"
+                aria-label="Đóng"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="mb-4 rounded-[18px] bg-[#fff8fb] px-4 py-3 text-[12px] font-medium text-[#8c3451]">
+              {getSourceLabel(pendingDeleteResource.source)} {'•'} {pendingDeleteResource.topic || 'Thư viện học tập'}
+            </div>
             <p className="mb-6 text-[14px] leading-6 text-[#6f5260]">
-              Tài nguyên{' '}
+              {'Tài nguyên '}
               <span className="font-semibold text-[#8c3451]">
                 {getDisplayTitle(pendingDeleteResource)}
               </span>{' '}
-              sẽ bị xóa khỏi danh sách, đồng thời dọn luôn dữ liệu chunk và gợi ý liên quan trong hệ
-              thống.
+              {'sẽ bị xóa khỏi danh sách, đồng thời dọn luôn dữ liệu chunk và gợi ý liên quan trong hệ'}
+              {' thống.'}
             </p>
 
             <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
@@ -1299,7 +1783,7 @@ export default function Resources() {
                 disabled={!!deletingResourceId}
                 className="theme-button-secondary justify-center px-5 py-3 text-[13px] disabled:opacity-50"
               >
-                Giữ lại
+                {'Giữ lại'}
               </button>
               <button
                 type="button"
@@ -1316,3 +1800,4 @@ export default function Resources() {
     </DashboardLayout>
   );
 }
+

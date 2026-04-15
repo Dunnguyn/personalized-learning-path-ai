@@ -16,6 +16,7 @@ from backend.app.services.knowledge_tracing_service import knowledge_tracing_ser
 from backend.app.services.adaptive_learning_loop_service import (
     adaptive_learning_loop_service,
 )
+from backend.app.services.learner_profile_service import learner_profile_service
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +34,21 @@ class ResourceItem(BaseModel):
     topic: str
     url: Optional[str] = None
     reason: str
-    reason_tags: List[str] = Field(default_factory=list)
+    why_selected: List[str] = Field(default_factory=list)
+    supports_concepts: List[str] = Field(default_factory=list)
+    fit_level: Optional[str] = None
     relevance_score: float = Field(ge=0, le=1)
-    recommendation_mode: Optional[str] = None
     estimated_time: Optional[int] = None
     primary_concepts: List[str] = Field(default_factory=list)
     quality_score: Optional[float] = Field(default=None, ge=0, le=1)
     expected_learning_gain: Optional[float] = Field(default=None, ge=0, le=1)
-    score_breakdown: Optional[dict] = None
+    retrieval_signals: Optional[dict] = None
     rank_position: Optional[int] = None
+    chunk_match_score: Optional[float] = Field(default=None, ge=0, le=1)
+    chunk_coverage_score: Optional[float] = Field(default=None, ge=0, le=1)
+    matched_chunk_preview: Optional[str] = None
+    matched_chunk_terms: List[str] = Field(default_factory=list)
+    supporting_chunk_count: Optional[int] = None
 
 
 class PersonalizedRecommendationResponse(BaseModel):
@@ -134,16 +141,13 @@ def get_personalized_resources(
     user_id: Optional[str] = Query(
         None, description="User ID (ObjectId or numeric user_id)"
     ),
-    goal: str = Query(..., min_length=1, max_length=200, description="Learning goal"),
-    level: LevelEnum = Query(LevelEnum.beginner, description="Current level"),
+    goal: Optional[str] = Query(
+        None, min_length=1, max_length=200, description="Learning goal"
+    ),
+    level: Optional[LevelEnum] = Query(None, description="Current level"),
     limit: int = Query(10, ge=1, le=50, description="Max recommendations"),
-    mode: Literal[
-        "continue_learning",
-        "reinforce_weaknesses",
-        "learn_new",
-        "quick_review",
-    ] = Query("continue_learning", description="Adaptive recommendation mode"),
-    include_breakdown: bool = Query(True, description="Include hybrid score breakdown"),
+    mode: str = Query("continue_learning", description="Adaptive recommendation mode"),
+    include_breakdown: bool = Query(False, description="Deprecated. Use /resources/debug for detailed score breakdown."),
     enable_reranking: bool = Query(
         True, description="Enable diversity-aware reranking"
     ),
@@ -161,10 +165,16 @@ def get_personalized_resources(
     effective_user_id = _resolve_requested_user_id(user_id, current_user)
 
     try:
-        level_str = enum_to_string(level)
-        result = hybrid_recommendation_service.recommend_resources(
+        personalization = learner_profile_service.personalization_context(
             user_id=effective_user_id,
             goal=goal,
+            level=enum_to_string(level) if level is not None else None,
+        )
+        resolved_goal = str(personalization.get("goal") or goal or "").strip()
+        level_str = str(personalization.get("level") or enum_to_string(level or LevelEnum.beginner))
+        result = hybrid_recommendation_service.recommend_resources(
+            user_id=effective_user_id,
+            goal=resolved_goal,
             level=level_str,
             limit=limit,
             enable_reranking=enable_reranking,
@@ -172,9 +182,6 @@ def get_personalized_resources(
         )
 
         recommended = result.get("recommended", [])
-        if not include_breakdown:
-            for item in recommended:
-                item.pop("score_breakdown", None)
 
         progress_pct = float(result.get("progress_percentage", 0.0) or 0.0)
 
@@ -187,12 +194,13 @@ def get_personalized_resources(
             user_id=effective_user_id,
             success=True,
             metadata={
-                "goal": goal,
+                "goal": resolved_goal,
                 "level": level_str,
                 "count": len(recommended),
-                "mode": mode,
+                "mode": result.get("recommendation_mode", "continue_learning"),
                 "reranking": result.get("reranking", {}).get("strategy"),
                 "diversity_ratio": result.get("reranking", {}).get("diversity_ratio"),
+                "include_breakdown": include_breakdown,
             },
         )
 
@@ -204,19 +212,24 @@ def get_personalized_resources(
                 rank_position=idx,
                 recommendation_score=item.get("relevance_score"),
                 success=True,
-                metadata={"goal": goal, "level": level_str, "mode": mode},
+                metadata={
+                    "goal": resolved_goal,
+                    "level": level_str,
+                    "mode": result.get("recommendation_mode", "continue_learning"),
+                    "include_breakdown": include_breakdown,
+                },
             )
 
         return {
             "user_id": effective_user_id,
-            "goal": goal,
+            "goal": resolved_goal,
             "level": level_str,
-            "mode": mode,
+            "mode": result.get("recommendation_mode", "continue_learning"),
             "recommended_resources": recommended,
             "completed_concepts": int(result.get("completed_concepts", 0)),
             "total_concepts": int(result.get("total_concepts", 0)),
             "progress_percentage": round(progress_pct, 1),
-            "message": f"Found {len(recommended)} adaptive recommendations for mode={mode}. Progress: {progress_pct:.1f}%",
+            "message": f"Found {len(recommended)} adaptive recommendations. Progress: {progress_pct:.1f}%",
             "reranking_metadata": result.get("reranking", {}),
         }
 
@@ -226,7 +239,7 @@ def get_personalized_resources(
             user_id=effective_user_id,
             success=False,
             error_code=e.__class__.__name__,
-            metadata={"goal": goal, "level": enum_to_string(level), "mode": mode},
+            metadata={"goal": goal, "level": enum_to_string(level), "mode": str(mode)},
         )
         logger.exception(
             f"Error generating recommendations for user {effective_user_id}: {e}"
@@ -242,8 +255,10 @@ def debug_personalized_resources(
     user_id: Optional[str] = Query(
         None, description="User ID (ObjectId or numeric user_id)"
     ),
-    goal: str = Query(..., min_length=1, max_length=200, description="Learning goal"),
-    level: LevelEnum = Query(LevelEnum.beginner, description="Current level"),
+    goal: Optional[str] = Query(
+        None, min_length=1, max_length=200, description="Learning goal"
+    ),
+    level: Optional[LevelEnum] = Query(None, description="Current level"),
     limit: int = Query(10, ge=1, le=50, description="Max recommendations"),
     enable_reranking: bool = Query(
         True, description="Enable diversity-aware reranking"
@@ -254,10 +269,16 @@ def debug_personalized_resources(
     effective_user_id = _resolve_requested_user_id(user_id, current_user)
 
     try:
-        level_str = enum_to_string(level)
-        debug_payload = hybrid_recommendation_service.recommendation_debug_snapshot(
+        personalization = learner_profile_service.personalization_context(
             user_id=effective_user_id,
             goal=goal,
+            level=enum_to_string(level) if level is not None else None,
+        )
+        resolved_goal = str(personalization.get("goal") or goal or "").strip()
+        level_str = str(personalization.get("level") or enum_to_string(level or LevelEnum.beginner))
+        debug_payload = hybrid_recommendation_service.recommendation_debug_snapshot(
+            user_id=effective_user_id,
+            goal=resolved_goal,
             level=level_str,
             limit=limit,
             enable_reranking=enable_reranking,
@@ -266,7 +287,7 @@ def debug_personalized_resources(
             "recommendation_debug_viewed",
             user_id=effective_user_id,
             success=True,
-            metadata={"goal": goal, "level": level_str, "limit": limit},
+            metadata={"goal": resolved_goal, "level": level_str, "limit": limit},
         )
         return debug_payload
     except Exception as exc:

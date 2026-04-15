@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Sequence
+import logging
 
 import numpy as np
 from bson import ObjectId
@@ -21,42 +22,67 @@ from backend.app.repositories import (
     SubjectRepository,
 )
 from backend.app.services.embedding_service import embed_text
+from backend.app.services.lesson_semantic_query_service import (
+    lesson_semantic_query_service,
+)
 from backend.app.services.recommendation_reranking_service import (
     ReRankingConfig,
     RecommendationRerankingService,
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class ChunkScoringWeights:
-    semantic_score: float = 0.30
-    lexical_score: float = 0.15
-    objective_coverage: float = 0.10
-    concept_coverage: float = 0.10
-    difficulty_fit: float = 0.10
-    instructional_role_fit: float = 0.10
+    semantic_score: float = 0.40
+    lexical_score: float = 0.20
+    objective_coverage: float = 0.15
+    instructional_role_fit: float = 0.15
     questionability_score: float = 0.10
-    novelty_score: float = 0.05
 
 
 class LessonChunkService:
     """Recommend lesson-scoped chunks as an instructional sequence."""
 
+    _INDEX_LINE_PATTERN = re.compile(
+        r"^[^\n]{2,120}?(?:,|\.)?\s+\d{1,4}(?:-\d{1,4})?\s*$"
+    )
+    _GENERIC_CONCEPT_TERMS = {
+        "python",
+        "lap trinh python",
+        "lập trình python",
+        "python nâng cao",
+        "python nang cao",
+        "nâng cao",
+        "nang cao",
+        "cơ bản",
+        "co ban",
+        "giới thiệu",
+        "gioi thieu",
+        "backend",
+        "lesson",
+        "bài học",
+        "bai hoc",
+        "chương",
+        "chuong",
+        "khái niệm",
+        "khai niem",
+        "tổng quan",
+        "tong quan",
+    }
     _DEFAULT_SEQUENCE = [
         "introduction",
         "explanation",
         "worked_example",
-        "misconception_fix",
         "summary",
-        "practice_hint",
     ]
     _ROLE_FALLBACKS = {
         "introduction": ("explanation", "summary"),
         "explanation": ("introduction", "worked_example", "summary"),
-        "worked_example": ("practice_hint", "explanation"),
-        "misconception_fix": ("explanation", "summary"),
-        "summary": ("practice_hint", "explanation"),
-        "practice_hint": ("worked_example", "summary"),
+        "worked_example": ("explanation", "summary"),
+        "summary": ("explanation", "introduction"),
     }
     _ROLE_BASE_FIT = {
         "introduction": 0.86,
@@ -72,12 +98,26 @@ class LessonChunkService:
     )
     _MAX_CANDIDATES = int(os.getenv("LESSON_CHUNK_MAX_CANDIDATES", "180"))
     _MODE_WEIGHT_OVERRIDES = {
-        "quick_review": {"instructional_role_fit": 0.14, "novelty_score": 0.08},
         "assessment_boost": {
-            "questionability_score": 0.15,
-            "objective_coverage": 0.12,
+            "questionability_score": 0.12,
+            "objective_coverage": 0.18,
         },
     }
+    _STRUCTURAL_NOISE_HEADINGS = (
+        "afterword",
+        "appendix",
+        "appendices",
+        "acknowledgments",
+        "acknowledgements",
+        "preface",
+        "foreword",
+        "table of contents",
+        "contents",
+        "index",
+        "glossary",
+        "references",
+        "bibliography",
+    )
 
     def __init__(self) -> None:
         self.subject_repository = SubjectRepository()
@@ -111,6 +151,21 @@ class LessonChunkService:
     @classmethod
     def _tokenize(cls, value: str) -> List[str]:
         return [token for token in re.findall(r"\w+", cls._normalize_text(value)) if len(token) >= 3]
+
+    @staticmethod
+    def _dedupe_keep_order(values: Sequence[str]) -> List[str]:
+        seen: set[str] = set()
+        ordered: List[str] = []
+        for value in values:
+            item = str(value or "").strip()
+            if not item:
+                continue
+            normalized = item.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(item)
+        return ordered
 
     @staticmethod
     def _to_vector(value: Any) -> np.ndarray | None:
@@ -151,27 +206,31 @@ class LessonChunkService:
         return {"lesson": lesson, "chapter": chapter, "subject": subject}
 
     def _build_query_text(self, context: Dict[str, Any]) -> str:
+        payload = self._lesson_semantic_query_payload(context)
+        return payload.get("bilingual_query") or payload.get("english_query") or ""
+
+    def _lesson_semantic_query_payload(self, context: Dict[str, Any]) -> Dict[str, Any]:
         lesson = context["lesson"]
         chapter = context["chapter"]
         subject = context["subject"]
-        objectives = lesson.get("learning_objectives") or []
-        keywords = lesson.get("keywords") or []
-        parts = [
-            str(subject.get("title") or ""),
-            str(subject.get("topic") or ""),
-            str(chapter.get("title") or ""),
-            str(chapter.get("description") or ""),
-            str(lesson.get("title") or ""),
-            str(lesson.get("summary") or ""),
-            " ".join(str(item) for item in objectives if item),
-            " ".join(str(item) for item in keywords if item),
-        ]
-        return " ".join(part for part in parts if part).strip()
+        return lesson_semantic_query_service.build_query_payload(
+            title=str(lesson.get("title") or ""),
+            summary=str(lesson.get("summary") or ""),
+            objectives=[str(item) for item in lesson.get("learning_objectives") or []],
+            keywords=[str(item) for item in lesson.get("keywords") or []],
+            chapter_title=str(chapter.get("title") or ""),
+            chapter_description=str(chapter.get("description") or ""),
+            subject_title=str(subject.get("title") or ""),
+            subject_topic=str(subject.get("topic") or ""),
+        )
 
     def _priority_terms(self, context: Dict[str, Any]) -> List[str]:
         lesson = context["lesson"]
         tokens: List[str] = []
+        payload = self._lesson_semantic_query_payload(context)
         for source in [
+            *payload.get("english_terms", []),
+            *payload.get("vietnamese_terms", []),
             str(lesson.get("title") or ""),
             str(lesson.get("summary") or ""),
             *[str(item) for item in lesson.get("learning_objectives") or []],
@@ -181,6 +240,274 @@ class LessonChunkService:
                 if token not in tokens:
                     tokens.append(token)
         return tokens[:16]
+
+    @classmethod
+    def _clean_concept_phrase(cls, phrase: str) -> str:
+        normalized = cls._normalize_text(phrase)
+        normalized = re.sub(
+            r"\b(?:python|advanced|beginner|intermediate|nâng cao|nang cao|cơ bản|co ban|giới thiệu|gioi thieu|tổng quan|tong quan|backend)\b",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(r"\s+", " ", normalized).strip(" -,:;/")
+        return normalized
+
+    def _lesson_required_concepts(self, context: Dict[str, Any]) -> List[str]:
+        lesson = context["lesson"]
+        raw_candidates: List[str] = []
+        title = str(lesson.get("title") or "").strip()
+        summary = str(lesson.get("summary") or "").strip()
+        keywords = [str(item) for item in lesson.get("keywords") or []]
+
+        title_focus = title.split(":", 1)[1] if ":" in title else title
+        for source in [title_focus, *keywords]:
+            cleaned_source = str(source or "").replace("/", ",").replace(";", ",")
+            raw_candidates.extend(
+                part.strip() for part in re.split(r",|\band\b|\bvà\b", cleaned_source, flags=re.IGNORECASE)
+            )
+
+        if not raw_candidates and summary:
+            raw_candidates.extend(
+                match.strip()
+                for match in re.findall(
+                    r"(decorator|generator|context manager|iterator|metaclass|descriptor|asyncio|coroutine|yield|with statement)",
+                    self._normalize_text(summary),
+                )
+            )
+
+        concepts: List[str] = []
+        for candidate in raw_candidates:
+            cleaned = self._clean_concept_phrase(candidate)
+            if (
+                not cleaned
+                or cleaned in self._GENERIC_CONCEPT_TERMS
+                or len(cleaned) < 3
+                or cleaned in concepts
+            ):
+                continue
+            concepts.append(cleaned)
+
+        return concepts[:6]
+
+    def _resolve_required_concepts(
+        self,
+        *,
+        context: Dict[str, Any],
+        metadata: Dict[str, Any] | None,
+    ) -> List[str]:
+        metadata = metadata or {}
+        requested: List[str] = []
+        for source in (
+            metadata.get("required_concepts"),
+            metadata.get("target_concepts"),
+            metadata.get("current_focus_concepts"),
+        ):
+            values = source if isinstance(source, list) else [source] if source else []
+            for item in values:
+                cleaned = self._clean_concept_phrase(str(item))
+                if (
+                    cleaned
+                    and cleaned not in self._GENERIC_CONCEPT_TERMS
+                    and len(cleaned) >= 3
+                    and cleaned not in requested
+                ):
+                    requested.append(cleaned)
+        if requested:
+            return requested[:6]
+        return self._lesson_required_concepts(context)
+
+    def _lesson_anchor_phrases(self, context: Dict[str, Any]) -> List[str]:
+        lesson = context["lesson"]
+        payload = self._lesson_semantic_query_payload(context)
+        raw_sources = [
+            str(lesson.get("title") or ""),
+            str(lesson.get("summary") or ""),
+            *[str(item) for item in lesson.get("learning_objectives") or []],
+            *[str(item) for item in lesson.get("keywords") or []],
+            *payload.get("english_terms", []),
+        ]
+        normalized_sources = [self._normalize_text(item) for item in raw_sources if str(item).strip()]
+        phrases: List[str] = []
+
+        for source in raw_sources:
+            compact = " ".join(self._tokenize(source))
+            if len(compact.split()) >= 2 and len(compact) <= 48:
+                phrases.append(compact)
+
+        has_loop_context = any(
+            ("vòng lặp" in item) or ("loop" in item)
+            for item in normalized_sources
+        )
+        has_condition_context = any(
+            ("điều kiện" in item) or ("condition" in item) or ("conditional" in item)
+            for item in normalized_sources
+        )
+
+        if has_loop_context and any(re.search(r"\bfor\b", item) for item in normalized_sources):
+            phrases.extend(["for loop", "vòng lặp for", "for statement"])
+        if has_loop_context and any(re.search(r"\bwhile\b", item) for item in normalized_sources):
+            phrases.extend(["while loop", "vòng lặp while", "while statement"])
+        if any(re.search(r"\belif\b", item) for item in normalized_sources):
+            phrases.extend(["elif", "elif statement"])
+        if any(re.search(r"\bif\b", item) for item in normalized_sources) and (
+            any(re.search(r"\belse\b", item) for item in normalized_sources) or has_condition_context
+        ):
+            phrases.extend(
+                [
+                    "if else",
+                    "if/else",
+                    "câu lệnh if",
+                    "câu lệnh else",
+                    "else branch",
+                    "conditional branch",
+                ]
+            )
+
+        return self._dedupe_keep_order([*phrases, *payload.get("english_terms", [])])[:18]
+
+    @classmethod
+    def _resource_text(cls, metadata: Dict[str, Any] | None) -> str:
+        metadata = metadata or {}
+        parts = [
+            str(metadata.get("source_title") or ""),
+            str(metadata.get("title") or ""),
+            str(metadata.get("heading") or ""),
+            str(metadata.get("section_title") or ""),
+            str(metadata.get("chapter_title") or ""),
+        ]
+        return " ".join(part for part in parts if part).strip()
+
+    @classmethod
+    def _anchor_match_score(
+        cls,
+        *,
+        content: str,
+        metadata: Dict[str, Any] | None,
+        anchor_phrases: Sequence[str],
+    ) -> float:
+        if not anchor_phrases:
+            return 0.0
+        haystack = cls._normalize_text(f"{cls._resource_text(metadata)} {content}")
+        hits = 0
+        for phrase in anchor_phrases:
+            normalized = cls._normalize_text(phrase)
+            if not normalized:
+                continue
+            if normalized in {"for", "while", "if", "else"}:
+                continue
+            if normalized in haystack:
+                hits += 1
+        return round(cls._clamp(hits / max(min(len(anchor_phrases), 4), 1)), 4)
+
+    @classmethod
+    def _is_structural_noise_chunk(
+        cls,
+        *,
+        content: str,
+        metadata: Dict[str, Any] | None,
+    ) -> bool:
+        resource_text = cls._normalize_text(cls._resource_text(metadata))
+        content_prefix = cls._normalize_text((content or "")[:220])
+        haystacks = [item for item in (resource_text, content_prefix) if item]
+        heading_noise = any(
+            any(item.startswith(noise) for noise in cls._STRUCTURAL_NOISE_HEADINGS)
+            for item in haystacks
+        )
+        return heading_noise or cls._index_like_score(content=content, metadata=metadata) >= 0.58
+
+    @classmethod
+    def _index_like_score(
+        cls,
+        *,
+        content: str,
+        metadata: Dict[str, Any] | None,
+    ) -> float:
+        normalized_content = cls._normalize_text(content)
+        normalized_resource_text = cls._normalize_text(cls._resource_text(metadata))
+        if not normalized_content:
+            return 0.0
+
+        lines = [line.strip() for line in (content or "").splitlines() if line.strip()]
+        if not lines:
+            return 0.0
+
+        page_ref_lines = sum(
+            1 for line in lines if cls._INDEX_LINE_PATTERN.match(line)
+        )
+        short_lines = sum(1 for line in lines if len(line) <= 80)
+        alpha_heading_lines = sum(
+            1
+            for line in lines
+            if re.fullmatch(r"[A-Z]", line.strip()) or re.fullmatch(r"[A-Z]\s+[A-Z]", line.strip())
+        )
+        comma_number_hits = len(
+            re.findall(r",\s*\d{1,4}(?:-\d{1,4})?", content or "")
+        )
+        page_number_hits = len(
+            re.findall(r"\b\d{1,4}(?:-\d{1,4})?\b", content or "")
+        )
+        sentence_hits = len(
+            re.findall(r"(?<=[.!?])\s+[A-ZÀ-ỸA-Z]", content or "")
+        )
+        keyword_noise = float(
+            any(noise in normalized_content for noise in ("table of contents", "glossary", "bibliography"))
+            or " index " in f" {normalized_content} "
+            or normalized_resource_text.startswith("index")
+        )
+
+        line_count = max(len(lines), 1)
+        score = (
+            0.3 * cls._clamp(page_ref_lines / max(min(line_count, 10), 1) * 2.0)
+            + 0.15 * cls._clamp(short_lines / line_count)
+            + 0.15 * cls._clamp(alpha_heading_lines / 3.0)
+            + 0.2 * cls._clamp(comma_number_hits / 8.0)
+            + 0.1 * cls._clamp(page_number_hits / max(line_count, 1) / 2.0)
+            + 0.1 * keyword_noise
+        )
+        if sentence_hits >= 2:
+            score -= 0.18
+        return round(cls._clamp(score), 4)
+
+    def _passes_relevance_gate(
+        self,
+        *,
+        candidate: Dict[str, Any],
+        anchor_phrases: Sequence[str],
+        strict: bool,
+    ) -> bool:
+        score_breakdown = candidate.get("score_breakdown", {}) or {}
+        semantic_score = float(score_breakdown.get("semantic_score", 0.0))
+        lexical_score = float(score_breakdown.get("lexical_score", 0.0))
+        objective_coverage = float(score_breakdown.get("objective_coverage", 0.0))
+        questionability_score = float(score_breakdown.get("questionability_score", 0.0))
+        anchor_match_score = float(candidate.get("anchor_match_score", 0.0))
+        index_like_score = float(candidate.get("index_like_score", 0.0))
+        required_concept_match_score = float(
+            candidate.get("required_concept_match_score", 0.0)
+        )
+        required_concepts = candidate.get("required_concepts") or []
+        covered_concepts = candidate.get("covered_concepts") or []
+        noisy_section = bool(candidate.get("structural_noise"))
+
+        if index_like_score >= 0.58:
+            return False
+        if required_concepts and required_concept_match_score <= 0.0:
+            return False
+        if noisy_section and anchor_match_score < 0.34 and objective_coverage <= 0.0:
+            return False
+        if noisy_section and questionability_score < 0.45 and semantic_score < 0.74:
+            return False
+        if objective_coverage >= 0.2:
+            return True
+        if anchor_match_score >= (0.45 if strict else 0.26):
+            return True
+        if covered_concepts and anchor_match_score >= 0.2 and semantic_score >= 0.3:
+            return True
+        if semantic_score >= (0.7 if strict else 0.58) and lexical_score >= 0.12 and anchor_match_score >= 0.12:
+            return True
+        if questionability_score >= 0.72 and anchor_match_score >= 0.18:
+            return True
+        return False
 
     def _candidate_chunks(
         self,
@@ -193,7 +520,7 @@ class LessonChunkService:
         chapter = context["chapter"]
         subject = context["subject"]
         requested_resource_ids = list(resource_ids or lesson.get("resource_ids") or [])
-        queries = [
+        seeded_queries = [
             {
                 "topic": str(
                     lesson.get("topic") or chapter.get("topic") or subject.get("topic") or ""
@@ -225,6 +552,35 @@ class LessonChunkService:
                 "limit": min(self._MAX_CANDIDATES, max(max_chunks * 8, 40)),
             },
         ]
+        global_backfill_queries = [
+            {
+                "topic": str(
+                    lesson.get("topic") or chapter.get("topic") or subject.get("topic") or ""
+                ).strip()
+                or None,
+                "level": str(lesson.get("level") or subject.get("level") or "beginner"),
+                "resource_ids": None,
+                "limit": min(self._MAX_CANDIDATES, max(max_chunks * 10, 40)),
+            },
+            {
+                "topic": str(
+                    lesson.get("topic") or chapter.get("topic") or subject.get("topic") or ""
+                ).strip()
+                or None,
+                "level": None,
+                "resource_ids": None,
+                "limit": min(self._MAX_CANDIDATES, max(max_chunks * 8, 32)),
+            },
+            {
+                "topic": None,
+                "level": str(lesson.get("level") or subject.get("level") or "beginner"),
+                "resource_ids": None,
+                "limit": min(self._MAX_CANDIDATES, max(max_chunks * 6, 28)),
+            },
+        ]
+        queries = seeded_queries + (
+            global_backfill_queries if requested_resource_ids else []
+        )
 
         seen: set[str] = set()
         candidates: List[Dict[str, Any]] = []
@@ -236,9 +592,44 @@ class LessonChunkService:
                     continue
                 seen.add(key)
                 candidates.append(row)
-            if len(candidates) >= max(max_chunks * 18, 60):
+            if len(candidates) >= max(max_chunks * 24, 90):
                 break
         return candidates[: self._MAX_CANDIDATES]
+
+    @staticmethod
+    def _normalize_resource_ids(values: Sequence[Any] | None) -> set[str]:
+        return {
+            str(value).strip()
+            for value in (values or [])
+            if str(value or "").strip()
+        }
+
+    def _apply_path_diversity_penalty(
+        self,
+        candidates: List[Dict[str, Any]],
+        *,
+        avoid_resource_ids: Sequence[Any] | None,
+    ) -> List[Dict[str, Any]]:
+        normalized_avoid_ids = self._normalize_resource_ids(avoid_resource_ids)
+        if not normalized_avoid_ids:
+            return candidates
+
+        adjusted: List[Dict[str, Any]] = []
+        for candidate in candidates:
+            resource_id = str(candidate.get("resource_id") or "").strip()
+            if resource_id not in normalized_avoid_ids:
+                adjusted.append(candidate)
+                continue
+
+            penalized = dict(candidate)
+            base_score = float(candidate.get("base_score", candidate.get("score", 0.0)) or 0.0)
+            next_score = max(0.0, round(base_score - 0.22, 6))
+            penalized["base_score"] = next_score
+            penalized["score"] = next_score
+            penalized["is_recently_seen"] = True
+            penalized["path_diversity_penalty"] = 0.22
+            adjusted.append(penalized)
+        return adjusted
 
     @staticmethod
     def _resolve_page_number(chunk: Dict[str, Any]) -> int | None:
@@ -494,11 +885,8 @@ class LessonChunkService:
         semantic_score: float,
         lexical_score: float,
         objective_coverage: float,
-        concept_coverage: float,
-        difficulty_fit: float,
         instructional_role_fit: float,
         questionability_score: float,
-        novelty_score: float,
         weights: ChunkScoringWeights,
     ) -> float:
         return round(
@@ -506,11 +894,8 @@ class LessonChunkService:
                 weights.semantic_score * semantic_score
                 + weights.lexical_score * lexical_score
                 + weights.objective_coverage * objective_coverage
-                + weights.concept_coverage * concept_coverage
-                + weights.difficulty_fit * difficulty_fit
                 + weights.instructional_role_fit * instructional_role_fit
                 + weights.questionability_score * questionability_score
-                + weights.novelty_score * novelty_score
             ),
             6,
         )
@@ -522,6 +907,8 @@ class LessonChunkService:
         context: Dict[str, Any],
         query_vector: np.ndarray | None,
         query_terms: Sequence[str],
+        anchor_phrases: Sequence[str],
+        required_concepts: Sequence[str],
         weights: ChunkScoringWeights,
     ) -> Dict[str, Any]:
         lesson = context["lesson"]
@@ -547,15 +934,36 @@ class LessonChunkService:
             example_presence_score=example_presence_score,
             role=role,
         )
+        anchor_match_score = self._anchor_match_score(
+            content=content,
+            metadata=metadata,
+            anchor_phrases=anchor_phrases,
+        )
+        normalized_required_concepts = [
+            self._normalize_text(item) for item in required_concepts if self._normalize_text(item)
+        ]
+        concept_haystack = self._normalize_text(
+            f"{self._resource_text(metadata)} {content}"
+        )
+        matched_required_concepts = [
+            concept
+            for concept in normalized_required_concepts
+            if concept in concept_haystack
+        ]
+        required_concept_match_score = round(
+            self._clamp(
+                len(matched_required_concepts)
+                / max(min(len(normalized_required_concepts), 2), 1)
+            ),
+            4,
+        )
+        index_like_score = self._index_like_score(content=content, metadata=metadata)
+        structural_noise = self._is_structural_noise_chunk(content=content, metadata=metadata)
 
         semantic_score = round(self._cosine(query_vector, chunk_vector), 6)
         lexical_score = round(self._lexical_score(query_terms, content), 6)
         objective_coverage = round(
             self._clamp(len(covered_objectives) / max(len(objectives), 1)),
-            6,
-        )
-        concept_coverage = round(
-            self._clamp(len(covered_concepts) / max(len(priority_terms[:8]), 1)),
             6,
         )
         difficulty = str(
@@ -564,10 +972,6 @@ class LessonChunkService:
             or lesson.get("level")
             or "beginner"
         ).lower()
-        difficulty_fit = round(
-            self._difficulty_fit(str(lesson.get("level") or "beginner"), difficulty),
-            6,
-        )
         instructional_role_fit = round(self._ROLE_BASE_FIT.get(role, 0.75), 6)
         estimated_read_time = self._estimate_read_time(content)
         preview = re.sub(r"\s+", " ", content).strip()[:280]
@@ -576,13 +980,32 @@ class LessonChunkService:
             "semantic_score": semantic_score,
             "lexical_score": lexical_score,
             "objective_coverage": objective_coverage,
-            "concept_coverage": concept_coverage,
-            "difficulty_fit": difficulty_fit,
             "instructional_role_fit": instructional_role_fit,
             "questionability_score": questionability_score,
-            "novelty_score": 1.0,
+            "anchor_match_score": anchor_match_score,
+            "index_like_score": index_like_score,
         }
-        score = self._score_chunk(weights=weights, **score_breakdown)
+        score = self._score_chunk(
+            semantic_score=semantic_score,
+            lexical_score=lexical_score,
+            objective_coverage=objective_coverage,
+            instructional_role_fit=instructional_role_fit,
+            questionability_score=questionability_score,
+            weights=weights,
+        )
+        if index_like_score >= 0.4:
+            score = round(
+                self._clamp(score - min(0.45, index_like_score * 0.55)),
+                6,
+            )
+        if normalized_required_concepts:
+            if required_concept_match_score <= 0.0:
+                score = round(self._clamp(score - 0.3), 6)
+            else:
+                score = round(
+                    self._clamp(score + min(0.18, required_concept_match_score * 0.18)),
+                    6,
+                )
 
         return {
             "chunk_id": str(chunk["_id"]),
@@ -598,6 +1021,11 @@ class LessonChunkService:
             "covered_concepts": covered_concepts,
             "estimated_read_time": estimated_read_time,
             "questionability_score": questionability_score,
+            "anchor_match_score": anchor_match_score,
+            "index_like_score": index_like_score,
+            "required_concepts": normalized_required_concepts,
+            "matched_required_concepts": matched_required_concepts,
+            "required_concept_match_score": required_concept_match_score,
             "fact_density_score": fact_density_score,
             "concept_explicitness_score": concept_explicitness_score,
             "example_presence_score": example_presence_score,
@@ -622,6 +1050,7 @@ class LessonChunkService:
             "popularity": 0.0,
             "is_recently_seen": False,
             "final_base_score": score,
+            "structural_noise": structural_noise,
         }
 
     def _cluster_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -698,6 +1127,7 @@ class LessonChunkService:
         candidates: List[Dict[str, Any]],
         max_chunks: int,
         weights: ChunkScoringWeights,
+        required_concepts: Sequence[str] | None = None,
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         if not candidates:
             return [], {
@@ -707,9 +1137,18 @@ class LessonChunkService:
                 "has_summary": False,
                 "roles_present": [],
                 "missing_roles": self._DEFAULT_SEQUENCE[:max_chunks],
+                "required_concepts": list(required_concepts or []),
+                "covered_required_concepts": [],
+                "missing_required_concepts": list(required_concepts or []),
             }
 
         desired_roles = self._DEFAULT_SEQUENCE[: max(max_chunks, 1)]
+        normalized_required_concepts = [
+            self._normalize_text(item)
+            for item in (required_concepts or [])
+            if self._normalize_text(item)
+        ]
+        covered_required_concepts: set[str] = set()
         unused = list(candidates)
         selected: List[Dict[str, Any]] = []
 
@@ -720,7 +1159,23 @@ class LessonChunkService:
             best_rank = float("-inf")
             for candidate in unused:
                 role_fit = self._target_role_fit(candidate["instruction_role"], target_role)
-                rank = 0.75 * float(candidate.get("base_score", 0.0)) + 0.25 * role_fit
+                matched_required_concepts = {
+                    self._normalize_text(item)
+                    for item in (candidate.get("matched_required_concepts") or [])
+                    if self._normalize_text(item)
+                }
+                new_required_concepts = matched_required_concepts - covered_required_concepts
+                concept_bonus = 0.0
+                if normalized_required_concepts:
+                    if new_required_concepts:
+                        concept_bonus += min(0.32, 0.16 * len(new_required_concepts))
+                    elif matched_required_concepts:
+                        concept_bonus += 0.04
+                rank = (
+                    0.68 * float(candidate.get("base_score", 0.0))
+                    + 0.22 * role_fit
+                    + concept_bonus
+                )
                 if rank > best_rank:
                     best_rank = rank
                     best_item = candidate
@@ -732,27 +1187,42 @@ class LessonChunkService:
                 self._target_role_fit(best_item["instruction_role"], target_role), 6
             )
             selected.append(enriched)
+            covered_required_concepts.update(
+                self._normalize_text(item)
+                for item in (best_item.get("matched_required_concepts") or [])
+                if self._normalize_text(item)
+            )
             unused = [item for item in unused if item["chunk_id"] != best_item["chunk_id"]]
 
-        for candidate in sorted(unused, key=lambda item: item.get("base_score", 0.0), reverse=True):
+        for candidate in sorted(
+            unused,
+            key=lambda item: (
+                -len(
+                    {
+                        self._normalize_text(concept)
+                        for concept in (item.get("matched_required_concepts") or [])
+                        if self._normalize_text(concept)
+                    }
+                    - covered_required_concepts
+                ),
+                -float(item.get("base_score", 0.0)),
+            ),
+        ):
             if len(selected) >= max_chunks:
                 break
             enriched = dict(candidate)
             enriched["sequence_target_role"] = candidate["instruction_role"]
             enriched["assigned_role_fit"] = 1.0
             selected.append(enriched)
+            covered_required_concepts.update(
+                self._normalize_text(item)
+                for item in (candidate.get("matched_required_concepts") or [])
+                if self._normalize_text(item)
+            )
 
         finalized: List[Dict[str, Any]] = []
-        selected_vectors: List[np.ndarray] = []
         for index, candidate in enumerate(selected, start=1):
-            vector = self._to_vector(candidate.get("embedding"))
-            max_similarity = max(
-                (self._cosine(vector, existing_vector) for existing_vector in selected_vectors),
-                default=0.0,
-            )
-            novelty_score = round(self._clamp(1.0 - max_similarity), 6)
             score_breakdown = dict(candidate.get("score_breakdown", {}))
-            score_breakdown["novelty_score"] = novelty_score
             score_breakdown["instructional_role_fit"] = round(
                 float(
                     candidate.get(
@@ -766,11 +1236,8 @@ class LessonChunkService:
                 semantic_score=float(score_breakdown.get("semantic_score", 0.0)),
                 lexical_score=float(score_breakdown.get("lexical_score", 0.0)),
                 objective_coverage=float(score_breakdown.get("objective_coverage", 0.0)),
-                concept_coverage=float(score_breakdown.get("concept_coverage", 0.0)),
-                difficulty_fit=float(score_breakdown.get("difficulty_fit", 0.0)),
                 instructional_role_fit=float(score_breakdown.get("instructional_role_fit", 0.0)),
                 questionability_score=float(score_breakdown.get("questionability_score", 0.0)),
-                novelty_score=novelty_score,
                 weights=weights,
             )
             enriched = dict(candidate)
@@ -779,19 +1246,32 @@ class LessonChunkService:
             enriched["score"] = candidate_score
             enriched["final_base_score"] = candidate_score
             finalized.append(enriched)
-            if vector is not None:
-                selected_vectors.append(vector)
 
         roles_present = [item["instruction_role"] for item in finalized]
+        ordered_covered_required_concepts: List[str] = []
+        for item in finalized:
+            for concept in item.get("matched_required_concepts") or []:
+                normalized_concept = self._normalize_text(concept)
+                if (
+                    normalized_concept
+                    and normalized_concept in covered_required_concepts
+                    and normalized_concept not in ordered_covered_required_concepts
+                ):
+                    ordered_covered_required_concepts.append(normalized_concept)
         sequence_metadata = {
             "has_introduction": "introduction" in roles_present,
             "has_explanation": "explanation" in roles_present,
             "has_example": "worked_example" in roles_present,
             "has_summary": "summary" in roles_present,
-            "has_practice_hint": "practice_hint" in roles_present,
-            "has_misconception_fix": "misconception_fix" in roles_present,
             "roles_present": roles_present,
             "missing_roles": [role for role in desired_roles if role not in roles_present],
+            "required_concepts": normalized_required_concepts,
+            "covered_required_concepts": ordered_covered_required_concepts,
+            "missing_required_concepts": [
+                concept
+                for concept in normalized_required_concepts
+                if concept not in ordered_covered_required_concepts
+            ],
         }
         return finalized, sequence_metadata
 
@@ -853,16 +1333,14 @@ class LessonChunkService:
                     ),
                     "covered_objectives": [],
                     "covered_concepts": [],
+                    "matched_required_concepts": [],
                     "estimated_read_time": self._estimate_read_time(
                         str(chunk.get("content") or "")
                     ),
                     "questionability_score": 0.5,
-                    "fact_density_score": 0.5,
-                    "concept_explicitness_score": 0.5,
-                    "example_presence_score": 0.2,
+                    "anchor_match_score": 0.0,
+                    "index_like_score": 0.0,
                     "score_breakdown": {},
-                    "cluster_id": None,
-                    "selected_as_representative": True,
                 }
                 for chunk in loaded_chunks
             ]
@@ -889,6 +1367,78 @@ class LessonChunkService:
             "created_at": recommendation.get("created_at") or datetime.utcnow(),
         }
 
+    def _stored_chunk_anchor_match_score(
+        self,
+        *,
+        chunk: Dict[str, Any],
+        anchor_phrases: Sequence[str],
+    ) -> float:
+        metadata = {
+            "source_title": chunk.get("resource_title"),
+            "title": chunk.get("resource_title"),
+            "section_title": chunk.get("heading"),
+        }
+        return self._anchor_match_score(
+            content=str(chunk.get("preview") or ""),
+            metadata=metadata,
+            anchor_phrases=anchor_phrases,
+        )
+
+    def _should_refresh_recommendation(
+        self,
+        *,
+        recommendation: Dict[str, Any] | None,
+        context: Dict[str, Any],
+    ) -> tuple[bool, str]:
+        if not recommendation:
+            return True, "missing_recommendation"
+
+        metadata = recommendation.get("metadata") or {}
+        selection_strategy = str(recommendation.get("selection_strategy") or "")
+        recommended_chunks = recommendation.get("recommended_chunks") or []
+        if metadata.get("auto_refresh_disabled"):
+            return False, "disabled"
+        if not recommended_chunks:
+            return True, "missing_chunks"
+        if selection_strategy != "local_semantic_lesson_scope_v1":
+            return True, "legacy_selection_strategy"
+        if metadata.get("fallback"):
+            return True, "fallback_recommendation"
+        if not metadata.get("anchor_phrases") or "gated_candidate_count" not in metadata:
+            return True, "missing_anchor_metadata"
+
+        anchor_phrases = self._lesson_anchor_phrases(context)
+        if not anchor_phrases:
+            return False, "no_anchor_phrases"
+
+        meaningful_chunks = 0
+        noisy_chunks = 0
+        for chunk in recommended_chunks:
+            anchor_score = float(chunk.get("anchor_match_score") or 0.0)
+            if anchor_score <= 0.0:
+                anchor_score = self._stored_chunk_anchor_match_score(
+                    chunk=chunk,
+                    anchor_phrases=anchor_phrases,
+                )
+            structural_noise = self._is_structural_noise_chunk(
+                content=str(chunk.get("preview") or ""),
+                metadata={"source_title": chunk.get("resource_title")},
+            )
+            objective_hits = len(chunk.get("covered_objectives") or [])
+            concept_hits = len(chunk.get("covered_concepts") or [])
+            if structural_noise and anchor_score < 0.25 and objective_hits == 0:
+                noisy_chunks += 1
+                continue
+            if anchor_score >= 0.2 or objective_hits > 0 or concept_hits > 0:
+                meaningful_chunks += 1
+
+        minimum_meaningful = max(2, min(len(recommended_chunks), 3))
+        if meaningful_chunks < minimum_meaningful:
+            return True, "low_lesson_alignment"
+        if noisy_chunks >= max(2, len(recommended_chunks) // 2):
+            return True, "structural_noise_detected"
+        return False, "fresh"
+
     def recommend_chunks(
         self,
         *,
@@ -913,8 +1463,19 @@ class LessonChunkService:
         except Exception:
             query_vector = None
 
+        lesson_query_payload = self._lesson_semantic_query_payload(context)
         weights = self._weights_for_mode((metadata or {}).get("mode"))
         query_terms = self._priority_terms(context)
+        anchor_phrases = self._lesson_anchor_phrases(context)
+        required_concepts = self._resolve_required_concepts(
+            context=context,
+            metadata=metadata,
+        )
+        for concept in required_concepts:
+            if concept not in query_terms:
+                query_terms.append(concept)
+            if len(concept.split()) >= 2 and concept not in anchor_phrases:
+                anchor_phrases.append(concept)
         candidates = self._candidate_chunks(
             context=context,
             resource_ids=resource_ids,
@@ -929,11 +1490,40 @@ class LessonChunkService:
                 context=context,
                 query_vector=query_vector,
                 query_terms=query_terms,
+                anchor_phrases=anchor_phrases,
+                required_concepts=required_concepts,
                 weights=weights,
             )
             for row in candidates
         ]
-        representatives = self._cluster_candidates(analyzed)
+        analyzed = self._apply_path_diversity_penalty(
+            analyzed,
+            avoid_resource_ids=((metadata or {}).get("avoid_resource_ids") or []),
+        )
+        strict_candidates = [
+            item
+            for item in analyzed
+            if self._passes_relevance_gate(
+                candidate=item,
+                anchor_phrases=anchor_phrases,
+                strict=True,
+            )
+        ]
+        relaxed_candidates = [
+            item
+            for item in analyzed
+            if self._passes_relevance_gate(
+                candidate=item,
+                anchor_phrases=anchor_phrases,
+                strict=False,
+            )
+        ]
+        filtered_candidates = (
+            strict_candidates
+            if len(strict_candidates) >= max(3, min(max_chunks, 4))
+            else relaxed_candidates or strict_candidates or analyzed
+        )
+        representatives = self._cluster_candidates(filtered_candidates)
         if diversity_lambda is not None:
             self.reranker.config.lambda_relevance = max(
                 0.0, min(1.0, float(diversity_lambda))
@@ -947,6 +1537,7 @@ class LessonChunkService:
             candidates=reranked_candidates,
             max_chunks=max_chunks,
             weights=weights,
+            required_concepts=required_concepts,
         )
         hydrated = self._hydrate_resource_metadata(selected)
         score_map = {
@@ -973,11 +1564,21 @@ class LessonChunkService:
                 "metadata": {
                     **(metadata or {}),
                     "query_text": query_text[:600],
+                    "lesson_query_payload": lesson_query_payload,
+                    "anchor_phrases": anchor_phrases,
+                    "required_concepts": list(required_concepts),
                     "candidate_count": len(candidates),
+                    "gated_candidate_count": len(filtered_candidates),
+                    "strict_candidate_count": len(strict_candidates),
                     "cluster_count": len(representatives),
                     "selected_count": len(hydrated),
                     "scores": score_map,
                     "diversity_reranking": rerank_metadata,
+                    "avoid_resource_ids": list(
+                        self._normalize_resource_ids(
+                            ((metadata or {}).get("avoid_resource_ids") or [])
+                        )
+                    ),
                     "selection_strategy": selection_strategy,
                     "instructional_roles": [item["instruction_role"] for item in hydrated],
                     "chunk_cluster_map": {
@@ -993,6 +1594,47 @@ class LessonChunkService:
 
     def get_recommendation(self, lesson_id: str) -> Dict[str, Any]:
         recommendation = self.recommendation_repository.get_by_lesson(lesson_id)
+        context = self._get_lesson_context(lesson_id)
+        should_refresh, reason = self._should_refresh_recommendation(
+            recommendation=recommendation,
+            context=context,
+        )
+        if should_refresh:
+            lesson = context["lesson"]
+            try:
+                return self.recommend_chunks(
+                    lesson_id=lesson_id,
+                    max_chunks=max(
+                        len((recommendation or {}).get("chunk_ids") or []),
+                        8,
+                    ),
+                    selection_strategy="local_semantic_lesson_scope_v1",
+                    enable_diversity_reranking=True,
+                    diversity_lambda=None,
+                    resource_ids=[
+                        str(item)
+                        for item in (
+                            lesson.get("resource_ids")
+                            or lesson.get("recommended_resource_ids")
+                            or (recommendation or {}).get("resource_ids")
+                            or []
+                        )
+                    ],
+                    metadata={
+                        **((recommendation or {}).get("metadata") or {}),
+                        "auto_refreshed": True,
+                        "refresh_reason": reason,
+                    },
+                )
+            except Exception as exc:
+                if recommendation:
+                    logger.warning(
+                        "Auto-refresh lesson recommendation failed for lesson_id=%s: %s",
+                        lesson_id,
+                        exc,
+                    )
+                else:
+                    raise
         if not recommendation:
             raise ValueError("Lesson recommendation not found.")
         return self._serialize_recommendation(recommendation)

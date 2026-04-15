@@ -11,6 +11,7 @@ Provides:
 import logging
 from fastapi import APIRouter, HTTPException, Depends, status
 
+from backend.app.api.schemas import LessonAttemptStatisticsResponse
 from backend.app.services.exercise_logging_service import ExerciseLoggingService
 from backend.app.repositories.exercise_attempt_repository import (
     ExerciseAttemptRepository,
@@ -19,7 +20,7 @@ from backend.app.database.mongo import get_db
 from backend.app.api.auth import get_current_user
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/exercise_attempts", tags=["Exercise Attempts"])
 
 # Initialize service and repository
 db = get_db()
@@ -123,7 +124,11 @@ def get_path_attempts(
         ) from exc
 
 
-@router.get("/lessons/{lesson_id}/statistics", status_code=status.HTTP_200_OK)
+@router.get(
+    "/lessons/{lesson_id}/statistics",
+    response_model=LessonAttemptStatisticsResponse,
+    status_code=status.HTTP_200_OK,
+)
 def get_lesson_statistics(
     lesson_id: str,
     current_user=Depends(get_current_user),
@@ -148,7 +153,7 @@ def get_lesson_statistics(
             user_id=user_id,
             lesson_id=lesson_id,
         )
-        return stats
+        return LessonAttemptStatisticsResponse(lesson_id=lesson_id, **(stats or {}))
     except Exception as exc:
         logger.exception(f"Failed to get lesson statistics: {exc}")
         raise HTTPException(

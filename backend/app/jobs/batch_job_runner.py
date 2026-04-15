@@ -6,16 +6,26 @@ import argparse
 import json
 from typing import Any, Dict
 
-from backend.app.jobs.compute_expected_learning_gain_job import (
-    compute_expected_learning_gain_job,
-)
 from backend.app.jobs.compute_learner_state_snapshot_job import (
     compute_learner_state_snapshot_job,
+)
+from backend.app.jobs.backfill_chunk_metadata_job import (
+    backfill_chunk_metadata_job,
+)
+from backend.app.jobs.backfill_adaptive_path_scope_job import (
+    backfill_adaptive_path_scope_job,
 )
 from backend.app.jobs.compute_resource_quality_job import compute_resource_quality_job
 
 
 def run_job(args: argparse.Namespace) -> Dict[str, Any]:
+    if args.job == "chunk_metadata":
+        return backfill_chunk_metadata_job.run(
+            full=args.full,
+            resource_id=args.resource_id,
+            dry_run=args.dry_run,
+            limit=args.limit,
+        )
     if args.job == "quality":
         return compute_resource_quality_job.run(
             full=args.full,
@@ -28,15 +38,22 @@ def run_job(args: argparse.Namespace) -> Dict[str, Any]:
             user_id=args.user_id,
             dry_run=args.dry_run,
         )
-    if args.job == "expected_gain":
-        return compute_expected_learning_gain_job.run(
-            resource_id=args.resource_id,
-            incremental=args.incremental,
+    if args.job == "adaptive_path_scope":
+        return backfill_adaptive_path_scope_job.run(
+            user_id=args.user_id,
             dry_run=args.dry_run,
+            limit=args.limit,
+            collection=args.collection,
         )
     return {
         "job": "all",
         "results": [
+            backfill_chunk_metadata_job.run(
+                full=args.full,
+                resource_id=args.resource_id,
+                dry_run=args.dry_run,
+                limit=args.limit,
+            ),
             compute_resource_quality_job.run(
                 full=args.full,
                 incremental=args.incremental,
@@ -47,10 +64,11 @@ def run_job(args: argparse.Namespace) -> Dict[str, Any]:
                 user_id=args.user_id,
                 dry_run=args.dry_run,
             ),
-            compute_expected_learning_gain_job.run(
-                resource_id=args.resource_id,
-                incremental=args.incremental,
+            backfill_adaptive_path_scope_job.run(
+                user_id=args.user_id,
                 dry_run=args.dry_run,
+                limit=args.limit,
+                collection=args.collection,
             ),
         ],
     }
@@ -60,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run adaptive recommendation batch jobs.")
     parser.add_argument(
         "--job",
-        choices=["quality", "learner_state", "expected_gain", "all"],
+        choices=["chunk_metadata", "quality", "learner_state", "adaptive_path_scope", "all"],
         default="all",
     )
     parser.add_argument("--user-id", default=None)
@@ -68,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--incremental", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--collection",
+        choices=["all", "lesson_quiz_attempts", "user_learning_state"],
+        default="all",
+    )
     return parser
 
 

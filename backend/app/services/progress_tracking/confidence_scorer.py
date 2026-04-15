@@ -1,27 +1,30 @@
 import os
 import re
 import logging
+import time
 from typing import Optional
+
+from backend.app.utils.gemini import get_gemini_client
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # Configuration
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 CONFIDENCE_MODEL = os.getenv("CONFIDENCE_MODEL", "models/gemini-2.5-flash")
 DEFAULT_FALLBACK_SCORE = 0.5
 MAX_QUESTION_LEN = 500
 MAX_ANSWER_LEN = 2000
+CONFIDENCE_QUOTA_COOLDOWN_SECONDS = int(
+    os.getenv("CONFIDENCE_QUOTA_COOLDOWN_SECONDS", "120")
+)
+CONFIDENCE_COOLDOWN_UNTIL = 0.0
 
 # Initialize client safely
 client = None
 try:
-    if GEMINI_API_KEY:
-        from google import genai  # type: ignore
-
-        client = genai.Client(api_key=GEMINI_API_KEY)
-    else:
-        logger.warning("GEMINI_API_KEY not set; confidence scoring will use fallback.")
+    client = get_gemini_client()
+    if client is None:
+        logger.warning("Gemini API key not set; confidence scoring will use fallback.")
 except Exception as e:
     logger.exception("Failed to initialize Gemini client for confidence_scorer: %s", e)
     client = None
@@ -167,6 +170,18 @@ def _parse_numeric_from_response(response) -> Optional[float]:
     return None
 
 
+def _confidence_quota_cooldown_seconds(error: Exception) -> Optional[int]:
+    text = str(error)
+    if "RESOURCE_EXHAUSTED" not in text and "Quota exceeded" not in text and "429" not in text:
+        return None
+    match = re.search(r"retry in ([0-9]+(?:\.[0-9]+)?)s", text, re.IGNORECASE)
+    if not match:
+        match = re.search(r"retryDelay': '([0-9]+)s'", text)
+    if match:
+        return int(float(match.group(1)))
+    return CONFIDENCE_QUOTA_COOLDOWN_SECONDS
+
+
 def score_confidence(
     question: str, answer: str, context: Optional[str] = None
 ) -> float:
@@ -208,31 +223,15 @@ def score_confidence(
             "Gemini client unavailable in score_confidence; returning fallback score."
         )
         return DEFAULT_FALLBACK_SCORE
+    global CONFIDENCE_COOLDOWN_UNTIL
+    if time.time() < CONFIDENCE_COOLDOWN_UNTIL:
+        logger.debug("Confidence scorer cooldown active; returning fallback score.")
+        return DEFAULT_FALLBACK_SCORE
 
     try:
-        # Try common call shapes; stop when numeric extracted
-        responses_to_try = []
-
-        try:
-            # Preferred method
-            resp = client.models.generate_content(
-                model=CONFIDENCE_MODEL, contents=prompt
-            )
-            responses_to_try.append(resp)
-        except Exception as e:
-            logger.debug("generate_content failed: %s", e)
-
-        try:
-            resp = client.generate(model=CONFIDENCE_MODEL, prompt=prompt)
-            responses_to_try.append(resp)
-        except Exception as e:
-            logger.debug("client.generate failed: %s", e)
-
-        try:
-            resp = client.responses.create(model=CONFIDENCE_MODEL, input=prompt)
-            responses_to_try.append(resp)
-        except Exception as e:
-            logger.debug("responses.create failed: %s", e)
+        responses_to_try = [
+            client.models.generate_content(model=CONFIDENCE_MODEL, contents=prompt)
+        ]
 
         # Try to parse numeric from attempted responses
         for resp in responses_to_try:
@@ -258,5 +257,16 @@ def score_confidence(
         return DEFAULT_FALLBACK_SCORE
 
     except Exception as e:
+        cooldown = _confidence_quota_cooldown_seconds(e)
+        if cooldown is not None:
+            CONFIDENCE_COOLDOWN_UNTIL = time.time() + max(
+                CONFIDENCE_QUOTA_COOLDOWN_SECONDS,
+                cooldown,
+            )
+            logger.warning(
+                "Confidence scorer quota exhausted; cooldown active for %ss",
+                max(CONFIDENCE_QUOTA_COOLDOWN_SECONDS, cooldown),
+            )
+            return DEFAULT_FALLBACK_SCORE
         logger.exception("Exception while scoring confidence: %s", e)
         return DEFAULT_FALLBACK_SCORE

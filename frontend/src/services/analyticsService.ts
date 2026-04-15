@@ -2,6 +2,7 @@ import { apiClient } from '../utils/apiClient';
 import type {
   AdminAverageStudyHoursMetrics,
   AdminDashboardMetrics,
+  AdminResearchDashboardMetrics,
   LearnerAnalyticsDashboard,
 } from '../types/analytics';
 
@@ -25,6 +26,12 @@ export const analyticsService = {
     return (await apiClient.get(
       '/analytics/admin/average-study-hours',
     )) as AdminAverageStudyHoursMetrics;
+  },
+
+  async getAdminResearchDashboard(days = 30): Promise<AdminResearchDashboardMetrics> {
+    return (await apiClient.get(
+      `/analytics/admin/research-dashboard?days=${encodeURIComponent(String(days))}`,
+    )) as AdminResearchDashboardMetrics;
   },
 
   formatPercent(value: number): string {

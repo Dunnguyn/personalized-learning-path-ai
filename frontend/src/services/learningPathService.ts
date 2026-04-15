@@ -6,11 +6,13 @@ import type {
   LearningPathDeleteResponse,
   LearningPathHistory,
   LearningPathSubjectId,
+  LessonLocksResponse,
   LessonProgressApiResponse,
   LessonStudyTimeResponse,
-  LessonQuestionBank,
+  LessonQuestions,
   LessonAnsweredQuestion,
   LessonAttemptStatistics,
+  AdaptiveQuizNextResponse,
   LessonQuestionGenerationResponse,
   LessonQuestionType,
   LessonRecommendedChunks,
@@ -23,10 +25,13 @@ import {
   normalizeLearningPath,
   normalizeLearningPathDeleteResponse,
   normalizeLessonProgressResponse,
+  normalizeLessonLocksResponse,
   normalizeLessonStudyTimeResponse,
-  normalizeLessonQuestionBank,
+  normalizeLessonQuestions,
   normalizeLessonQuestionGenerationResponse,
+  normalizeAdaptiveQuizNextResponse,
   normalizeLessonRecommendedChunks,
+  normalizeLessonAttemptStatistics,
   normalizeStudySummary,
   type ApiRecord,
 } from './parsers/learningPathParser';
@@ -41,12 +46,17 @@ export type {
   LearningPathHistory,
   LearningPathLesson,
   LearningPathSubjectId,
+  LessonLockInfo,
+  LessonLocksResponse,
   LessonProgressApiResponse,
   LessonStudyTimeResponse,
   LessonQuestion,
   LessonAnsweredQuestion,
   LessonAttemptStatistics,
-  LessonQuestionBank,
+  AdaptiveQuizGenerationRequest,
+  AdaptiveQuizNextActionPlan,
+  AdaptiveQuizNextResponse,
+  LessonQuestions,
   LessonQuestionGenerationResponse,
   LessonQuestionType,
   LessonRecommendedChunks,
@@ -63,11 +73,15 @@ export const learningPathService = {
     goal: string;
     level: LearningLevel;
   }): Promise<LearningPath> {
-    const response = await apiClient.post('/learning-paths/generate', {
-      subject_id: data.subject_id,
-      goal: data.goal,
-      level: data.level,
-    });
+    const response = await apiClient.post(
+      '/learning-paths/generate',
+      {
+        subject_id: data.subject_id,
+        goal: data.goal,
+        level: data.level,
+      },
+      { timeoutMs: null },
+    );
     return normalizeLearningPath(response);
   },
 
@@ -114,6 +128,11 @@ export const learningPathService = {
     });
   },
 
+  async getLessonLocks(pathId: string): Promise<LessonLocksResponse> {
+    const response = await apiClient.get(`/learning-paths/${pathId}/lesson-locks`);
+    return normalizeLessonLocksResponse(response);
+  },
+
   async recordLessonStudyTime(data: {
     path_id: string;
     lesson_id: string;
@@ -128,23 +147,14 @@ export const learningPathService = {
     return normalizeStudySummary(response);
   },
 
-  async getLessonQuestions(lessonId: string): Promise<LessonQuestionBank> {
+  async getLessonQuestions(lessonId: string): Promise<LessonQuestions> {
     const response = await apiClient.get(`/lessons/${lessonId}/questions`);
-    return normalizeLessonQuestionBank(response);
+    return normalizeLessonQuestions(response);
   },
 
   async getLessonAttemptStatistics(lessonId: string): Promise<LessonAttemptStatistics> {
-    const response = asRecord(await apiClient.get(`/lessons/${lessonId}/statistics`));
-    return {
-      total_attempts: Number(response.total_attempts ?? 0),
-      passed_attempts: Number(response.passed_attempts ?? 0),
-      best_confidence: response.best_confidence == null ? null : Number(response.best_confidence),
-      avg_confidence: response.avg_confidence == null ? null : Number(response.avg_confidence),
-      latest_confidence:
-        response.latest_confidence == null ? null : Number(response.latest_confidence),
-      improvement: response.improvement == null ? null : Number(response.improvement),
-      success_rate: Number(response.success_rate ?? 0),
-    };
+    const response = await apiClient.get(`/exercise_attempts/lessons/${lessonId}/statistics`);
+    return normalizeLessonAttemptStatistics(response, lessonId);
   },
 
   async generateLessonQuestions(
@@ -159,7 +169,7 @@ export const learningPathService = {
     },
   ): Promise<LessonQuestionGenerationResponse> {
     const response = await apiClient.post(`/lessons/${lessonId}/generate-questions`, {
-      target_count: payload?.target_count ?? 4,
+      ...(payload?.target_count != null ? { target_count: payload.target_count } : {}),
       question_types: payload?.question_types ?? ['multiple_choice', 'short_answer'],
       difficulty: payload?.difficulty ?? 'beginner',
       bloom_levels: payload?.bloom_levels ?? ['remember', 'understand', 'apply'],
@@ -168,6 +178,43 @@ export const learningPathService = {
     });
 
     return normalizeLessonQuestionGenerationResponse(response, lessonId);
+  },
+
+  async getNextAdaptiveQuiz(
+    lessonId: string,
+    payload: {
+      path_id?: string;
+      target_count?: number;
+    },
+  ): Promise<AdaptiveQuizNextResponse> {
+    const response = await apiClient.post(`/lessons/${lessonId}/adaptive-quiz/next`, {
+      path_id: payload.path_id,
+      ...(payload.target_count != null ? { target_count: payload.target_count } : {}),
+    });
+    return normalizeAdaptiveQuizNextResponse(response, lessonId);
+  },
+
+  async debugLessonQuestionGeneration(
+    lessonId: string,
+    payload?: {
+      target_count?: number;
+      question_types?: LessonQuestionType[];
+      difficulty?: LearningLevel;
+      bloom_levels?: BloomLevel[];
+      allow_llm?: boolean;
+      metadata?: Record<string, unknown>;
+    },
+  ): Promise<ApiRecord> {
+    return asRecord(
+      await apiClient.post(`/lessons/${lessonId}/question-generation-debug`, {
+        target_count: payload?.target_count ?? 4,
+        question_types: payload?.question_types ?? ['multiple_choice', 'short_answer'],
+        difficulty: payload?.difficulty ?? 'beginner',
+        bloom_levels: payload?.bloom_levels ?? ['remember', 'understand'],
+        allow_llm: payload?.allow_llm ?? true,
+        metadata: payload?.metadata ?? {},
+      }),
+    );
   },
 
   async getLessonRecommendedChunks(lessonId: string): Promise<LessonRecommendedChunks> {
@@ -207,6 +254,22 @@ export const learningPathService = {
     return asRecord(await apiClient.get(`/concepts/${conceptId}`));
   },
 
+  async getAdminPrerequisiteGraph(subjectId?: string): Promise<ApiRecord> {
+    const query = subjectId ? `?subject_id=${encodeURIComponent(subjectId)}` : '';
+    return asRecord(await apiClient.get(`/concepts/admin-graph/prerequisite-graph${query}`));
+  },
+
+  async updateConceptPrerequisites(
+    conceptId: string,
+    prerequisites: string[],
+  ): Promise<ApiRecord> {
+    return asRecord(
+      await apiClient.put(`/concepts/${encodeURIComponent(conceptId)}/prerequisites`, {
+        prerequisites,
+      }),
+    );
+  },
+
   async getUserProgress(userId?: string): Promise<ApiRecord> {
     const endpoint = userId ? `/progress/summary?user_id=${userId}` : '/progress/summary';
     return asRecord(await apiClient.get(endpoint));
@@ -230,7 +293,12 @@ export const learningPathService = {
   async getConceptResources(conceptId: number): Promise<ApiRecord[]> {
     try {
       const response = asRecord(await apiClient.get(`/resources?concept_id=${conceptId}`));
-      return Array.isArray(response.resources) ? response.resources.map(asRecord) : [];
+      const items = Array.isArray(response.resources)
+        ? response.resources
+        : Array.isArray(response.results)
+          ? response.results
+          : [];
+      return items.map(asRecord);
     } catch (error) {
       console.error('Error fetching concept resources:', error);
       return [];

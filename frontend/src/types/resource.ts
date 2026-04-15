@@ -51,3 +51,50 @@ export interface IngestionJobStatus {
   error?: string | null;
   resource_status?: string | null;
 }
+
+export interface ResourceCurationItem {
+  resource_id: string;
+  title: string;
+  topic: string;
+  source: string;
+  type: string;
+  status: string;
+  chunks_count: number;
+  quality_score: number;
+  quality_label: string;
+  quality_breakdown: Record<string, number | string>;
+  curated_concept_ids: string[];
+  admin_notes: string;
+  hidden_from_recommendation: boolean;
+  duplicate_key?: string | null;
+  duplicate_count: number;
+  problem_flags: string[];
+  updated_at?: string;
+}
+
+export interface ResourceCurationSnapshot {
+  items: ResourceCurationItem[];
+  status_counts: Record<string, number>;
+  duplicate_groups: Array<{
+    duplicate_key: string;
+    resource_ids: string[];
+    duplicate_count: number;
+  }>;
+  low_quality_count: number;
+  total_items: number;
+}
+
+export interface IngestionHealthSnapshot {
+  resource_status_counts: Record<string, number>;
+  chunk_totals: {
+    total: number;
+    with_embeddings: number;
+    without_embeddings: number;
+    by_backend: Record<string, number>;
+  };
+  embedding: Record<string, unknown>;
+  vector_store: {
+    available: boolean;
+  };
+  recent_jobs: Array<Record<string, unknown>>;
+}

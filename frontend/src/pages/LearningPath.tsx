@@ -1,13 +1,44 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-
+import { activityIcon, learningJourneyIcon } from '../assets';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import PageHero from '../components/ui/PageHero';
 import { useAuth } from '../contexts/AuthContext';
 import { learningPathService } from '../services/learningPathService';
 import type { LearningLevel, LearningPath, LearningPathSubjectId } from '../types/learningPath';
 import { SUBJECTS } from '../utils/subjects';
 
 const CARD_THEMES = ['pastel-pink', 'pastel-yellow', 'pastel-purple', 'pastel-mint'] as const;
+const GENERATION_STAGES = [
+  'Đang phân tích mục tiêu học tập',
+  'Đang dựng cấu trúc chương và bài học',
+  'Đang sắp xếp thứ tự ưu tiên',
+  'Đang hoàn tất lộ trình cá nhân hóa',
+] as const;
+
+const LEVEL_LABELS: Record<LearningLevel, string> = {
+  beginner: 'Bước đầu',
+  intermediate: 'Trung bình',
+  advanced: 'Nâng cao',
+};
+
+const getLevelLabel = (level?: string) =>
+  level && level in LEVEL_LABELS
+    ? LEVEL_LABELS[level as LearningLevel]
+    : level || 'Chưa xác định';
+
+const getChapterStatus = (lessons: Array<{ status?: string }>) => {
+  if (!lessons.length) {
+    return 'Chưa bắt đầu';
+  }
+  if (lessons.every((lesson) => lesson.status === 'complete')) {
+    return 'Hoàn thành';
+  }
+  if (lessons.some((lesson) => lesson.status === 'in_progress')) {
+    return 'Đang học';
+  }
+  return 'Chưa bắt đầu';
+};
 
 export default function LearningPath() {
   const { user } = useAuth();
@@ -19,6 +50,8 @@ export default function LearningPath() {
   const [notice, setNotice] = useState<string | null>(null);
   const [showCreatePath, setShowCreatePath] = useState(false);
   const [generatingPath, setGeneratingPath] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState(0);
+  const [generationStage, setGenerationStage] = useState<string>(GENERATION_STAGES[0]);
   const [learningPaths, setLearningPaths] = useState<LearningPath[]>([]);
   const [hoveredPathId, setHoveredPathId] = useState<string | null>(null);
   const [pendingDeletePath, setPendingDeletePath] = useState<LearningPath | null>(null);
@@ -50,6 +83,32 @@ export default function LearningPath() {
 
     return () => window.clearTimeout(timeoutId);
   }, [notice]);
+
+  useEffect(() => {
+    if (!generatingPath) {
+      setGenerationProgress(0);
+      setGenerationStage(GENERATION_STAGES[0]);
+      return;
+    }
+
+    setGenerationProgress(10);
+    setGenerationStage(GENERATION_STAGES[0]);
+
+    let currentProgress = 10;
+    let stageIndex = 0;
+
+    const intervalId = window.setInterval(() => {
+      currentProgress = Math.min(currentProgress + Math.max(2, Math.round((96 - currentProgress) / 6)), 96);
+      stageIndex = Math.min(
+        GENERATION_STAGES.length - 1,
+        Math.floor((currentProgress - 10) / 24),
+      );
+      setGenerationProgress(currentProgress);
+      setGenerationStage(GENERATION_STAGES[stageIndex]);
+    }, 700);
+
+    return () => window.clearInterval(intervalId);
+  }, [generatingPath]);
 
   const buildGoal = (subjectId: string, goalDetail: string) => {
     const subject = SUBJECTS.find((item) => item.id === subjectId);
@@ -139,6 +198,8 @@ export default function LearningPath() {
 
     try {
       setGeneratingPath(true);
+      setGenerationProgress(10);
+      setGenerationStage(GENERATION_STAGES[0]);
       setError(null);
       setNotice(null);
 
@@ -149,6 +210,8 @@ export default function LearningPath() {
       });
 
       setLearningPaths((previous) => [result, ...previous]);
+      setGenerationProgress(100);
+      setGenerationStage('Hoàn tất lộ trình học tập');
       setHoveredPathId(result.path_id);
       setShowCreatePath(false);
       setPathForm({
@@ -204,9 +267,10 @@ export default function LearningPath() {
     }
   };
 
-  const activePath = useMemo(() => {
-    return learningPaths.find((path) => path.path_id === hoveredPathId) ?? learningPaths[0] ?? null;
-  }, [hoveredPathId, learningPaths]);
+  const activePath = useMemo(
+    () => learningPaths.find((path) => path.path_id === hoveredPathId) ?? learningPaths[0] ?? null,
+    [hoveredPathId, learningPaths],
+  );
 
   const stats = useMemo(() => {
     let total = 0;
@@ -234,24 +298,87 @@ export default function LearningPath() {
     };
   }, [learningPaths]);
 
-  const getChapterStatus = (lessons: Array<{ status?: string }>) => {
-    if (!lessons.length) {
-      return 'Chưa bắt đầu';
-    }
-    if (lessons.every((lesson) => lesson.status === 'complete')) {
-      return 'Hoàn thành';
-    }
-    if (lessons.some((lesson) => lesson.status === 'in_progress')) {
-      return 'Đang học';
-    }
-    return 'Chưa bắt đầu';
-  };
-
   return (
     <DashboardLayout>
-      <div className="page-shell pb-6">
-        <p className="page-kicker">Lộ trình học tập</p>
-        <h1 className="page-title">Lộ trình học tập</h1>
+      <div className="page-shell desktop-1440-learning-path pb-6">
+        <PageHero
+          className="mb-6 learning-path-hero-minimal"
+          descriptionClassName="hidden"
+          kicker="Learning tracks"
+          title="Quản lý lộ trình học theo mục tiêu thay vì tự ghép từng bước rời rạc."
+          description="Trang này gom toàn bộ track đang hoạt động, tiến độ hiện tại và chi tiết chương để bạn chuyển nhịp nhanh hơn, đặc biệt khi đang học song song nhiều môn."
+          actions={
+            <>
+              <button
+                type="button"
+                onClick={() => setShowCreatePath((value) => !value)}
+                className="theme-button"
+              >
+                {showCreatePath ? 'Thu gọn biểu mẫu' : 'Tạo lộ trình mới'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void fetchLearningPaths()}
+                disabled={loading}
+                className="theme-button-secondary disabled:opacity-50"
+              >
+                {loading ? 'Đang tải...' : 'Làm mới'}
+              </button>
+            </>
+          }
+          metrics={[
+            {
+              label: 'Số lộ trình',
+              value: learningPaths.length,
+              detail:
+                learningPaths.length > 0
+                  ? 'Chọn một track để xem nhanh cấu trúc chương và trạng thái học.'
+                  : 'Chưa có track nào. Tạo track đầu tiên để bắt đầu.',
+            },
+            {
+              label: 'Tiến độ chung',
+              value: `${stats.progress}%`,
+              detail:
+                stats.total > 0
+                  ? `${stats.completed}/${stats.total} bài đã hoàn thành trên toàn bộ workspace.`
+                  : 'Chưa có bài học nào được ghi nhận.',
+            },
+            {
+              label: 'Đang học',
+              value: stats.inProgress,
+              detail: 'Các bài đang mở nên được hoàn tất trước để khuyến nghị tiếp theo chính xác hơn.',
+            },
+          ]}
+        >
+          <div className="hero-visual-grid md:grid-cols-2">
+            <article className="hero-visual-card">
+              <span className="hero-visual-icon">
+                <img src={learningJourneyIcon} alt="" className="h-7 w-7 object-contain" />
+              </span>
+              <div>
+                <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/55">
+                  Track map
+                </p>
+                <p className="mt-2 text-[16px] font-semibold text-[#17141a]">
+                  Chuyển nhanh giữa các kế hoạch học đang hoạt động mà không mất ngữ cảnh.
+                </p>
+              </div>
+            </article>
+            <article className="hero-visual-card">
+              <span className="hero-visual-icon">
+                <img src={activityIcon} alt="" className="h-7 w-7 object-contain" />
+              </span>
+              <div>
+                <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/55">
+                  Nhịp tiến độ
+                </p>
+                <p className="mt-2 text-[16px] font-semibold text-[#17141a]">
+                  Nhìn nhanh trạng thái bài học và tiến độ tổng để quyết định bước tiếp theo.
+                </p>
+              </div>
+            </article>
+          </div>
+        </PageHero>
 
         {error && (
           <div className="white-panel mb-6 border border-red-200 px-4 py-3 text-[14px] text-red-700">
@@ -272,24 +399,6 @@ export default function LearningPath() {
           </div>
         )}
 
-        <div className="mb-10 flex flex-wrap gap-4">
-          <button
-            type="button"
-            onClick={() => setShowCreatePath((value) => !value)}
-            className="theme-button"
-          >
-            + Tạo lộ trình mới
-          </button>
-          <button
-            type="button"
-            onClick={() => void fetchLearningPaths()}
-            disabled={loading}
-            className="theme-button-secondary disabled:opacity-50"
-          >
-            {loading ? 'Đang tải...' : 'Làm mới'}
-          </button>
-        </div>
-
         {loading && (
           <div className="flex min-h-[400px] items-center justify-center">
             <div className="text-center">
@@ -301,7 +410,13 @@ export default function LearningPath() {
 
         {showCreatePath && !loading && (
           <div className="soft-panel mb-10 p-8">
-            <h2 className="page-section-title mb-6 text-[26px]">Tạo lộ trình học tập mới</h2>
+            <div className="mb-6 flex flex-col gap-2">
+              <h2 className="page-section-title text-[26px]">Tạo lộ trình học tập mới</h2>
+              <p className="max-w-[72ch] text-[14px] leading-6 text-[#6a625d]">
+                Chọn môn học, thêm mục tiêu cụ thể nếu cần và để hệ thống dựng ra khung chương bài
+                phù hợp với trình độ hiện tại.
+              </p>
+            </div>
             <form onSubmit={handleGeneratePath} className="grid gap-5 md:grid-cols-2">
               <div>
                 <label className="mb-2 block text-[14px] font-medium text-[#514942]">Môn học</label>
@@ -331,7 +446,7 @@ export default function LearningPath() {
                   onChange={(event) =>
                     setPathForm((previous) => ({ ...previous, goalDetail: event.target.value }))
                   }
-                  placeholder="VD: backend, OOP, cấu trúc dữ liệu..."
+                  placeholder="Ví dụ: backend, OOP, cấu trúc dữ liệu..."
                   className="theme-input rounded-[18px]"
                 />
               </div>
@@ -353,6 +468,26 @@ export default function LearningPath() {
                   <option value="advanced">Nâng cao</option>
                 </select>
               </div>
+
+              {generatingPath && (
+                <div className="md:col-span-2">
+                  <div className="rounded-[22px] border border-[#ead7df] bg-white/80 px-5 py-4 shadow-[0_18px_40px_rgba(140,52,81,0.08)]">
+                    <div className="mb-2 flex items-center justify-between gap-4 text-[13px] font-medium text-[#8c3451]">
+                      <span>{generationStage}</span>
+                      <span>{generationProgress}%</span>
+                    </div>
+                    <div className="h-3 rounded-full bg-[#f6e7ee] p-[2px]">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-[#9b3a5a] via-[#c7688b] to-[#e6a8bb] transition-[width] duration-500 ease-out"
+                        style={{ width: `${generationProgress}%` }}
+                      />
+                    </div>
+                    <p className="mt-3 text-[13px] text-[#6a625d]">
+                      Hệ thống đang tạo lộ trình học tập. Yêu cầu này sẽ chờ tới khi hoàn tất.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <div className="flex gap-3 md:col-span-2">
                 <button
@@ -379,7 +514,7 @@ export default function LearningPath() {
 
         {!loading && (
           <>
-            <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="desktop-1440-learning-path-grid grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
               <div>
                 <div className="soft-panel p-[30px]">
                   <h2 className="mb-6 flex items-center gap-2 text-[18px] font-medium text-[#8c3451]">
@@ -389,12 +524,12 @@ export default function LearningPath() {
 
                   {learningPaths.length === 0 ? (
                     <div className="white-panel p-5 text-center text-[13px] text-[#5b544d]">
-                      Chưa có lộ trình. Hãy tạo lộ trình mới để hiển thị tại đây.
+                      Chưa có lộ trình nào. Hãy tạo lộ trình mới để hiển thị tại đây.
                     </div>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
                       {learningPaths.map((path, index) => (
-                        <div
+                        <article
                           key={path.path_id}
                           role="button"
                           tabIndex={0}
@@ -409,12 +544,12 @@ export default function LearningPath() {
                           }}
                           onMouseEnter={() => setHoveredPathId(path.path_id)}
                           onFocus={() => setHoveredPathId(path.path_id)}
-                          className={`pastel-card min-h-[116px] cursor-pointer p-[18px] text-left text-[#5f3040] transition-all duration-200 hover:-translate-y-0.5 ${
+                          className={`pastel-card min-h-[132px] cursor-pointer p-[18px] text-left text-[#5f3040] transition-all duration-200 hover:-translate-y-0.5 ${
                             CARD_THEMES[index % CARD_THEMES.length]
                           }`}
                         >
                           <div className="mb-3 flex items-start justify-between gap-3">
-                            <p className="text-[13px] font-medium">
+                            <p className="text-[14px] font-semibold leading-6">
                               {path.goal || 'Tên môn học - Mục tiêu'}
                             </p>
                             <button
@@ -429,13 +564,16 @@ export default function LearningPath() {
                               {deletingPathId === path.path_id ? 'Đang xóa...' : 'Xóa'}
                             </button>
                           </div>
-                          <p className="text-[11px] opacity-80">
-                            Cấp độ: <span className="font-medium">{path.level}</span> • Cập nhật:{' '}
-                            <span className="font-medium">
-                              {new Date(path.generated_at).toLocaleDateString('vi-VN')}
+
+                          <div className="flex flex-wrap gap-2">
+                            <span className="rounded-full bg-white/75 px-3 py-1 text-[11px] font-medium text-[#8c3451]">
+                              {getLevelLabel(path.level)}
                             </span>
-                          </p>
-                        </div>
+                            <span className="rounded-full bg-white/75 px-3 py-1 text-[11px] font-medium text-[#8c3451]">
+                              Cập nhật {new Date(path.generated_at).toLocaleDateString('vi-VN')}
+                            </span>
+                          </div>
+                        </article>
                       ))}
                     </div>
                   )}
@@ -453,6 +591,9 @@ export default function LearningPath() {
                       <div className="mb-4 border-b border-[#8c3451]/10 pb-3">
                         <p className="text-[14px] font-semibold text-[#8c3451]">
                           {activePath.goal}
+                        </p>
+                        <p className="mt-2 text-[13px] leading-6 text-[#6d6660]">
+                          {activePath.curriculum.length} chương đang sẵn sàng để học theo thứ tự.
                         </p>
                       </div>
 
@@ -483,7 +624,7 @@ export default function LearningPath() {
                     <div className="py-12 text-center">
                       <p className="text-[14px] text-[#6d6660]">
                         {learningPaths.length > 0
-                          ? 'Di chuột vào lộ trình để xem chi tiết'
+                          ? 'Rê chuột vào lộ trình để xem chi tiết'
                           : 'Chưa có thông tin chương học.'}
                       </p>
                     </div>
@@ -532,9 +673,8 @@ export default function LearningPath() {
               Bạn có chắc muốn xóa?
             </h3>
             <p className="mt-4 text-[15px] leading-7 text-[#5f5853]">
-              Lộ trình{' '}
-              <span className="font-semibold text-[#8c3451]">{pendingDeletePath.goal}</span> sẽ bị
-              xóa cùng các chương, bài học và câu hỏi được sinh riêng cho lộ trình này.
+              Lộ trình <span className="font-semibold text-[#8c3451]">{pendingDeletePath.goal}</span>{' '}
+              sẽ bị xóa cùng các chương, bài học và câu hỏi được sinh riêng cho lộ trình này.
             </p>
 
             <div className="mt-8 flex flex-wrap justify-end gap-3">

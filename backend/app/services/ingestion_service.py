@@ -15,22 +15,25 @@ from bson import ObjectId
 from fastapi import BackgroundTasks, UploadFile
 
 from backend.app.ai_module import (
-    EmbeddingService,
     YouTubeSummaryService,
     compute_content_hash,
     compute_file_hash,
     cosine_similarity,
 )
+from backend.app.ai_module.embedding import embedding_service
 from backend.app.repositories import (
     IngestionJobRepository,
     ResourceChunkRepository,
     ResourceRepository,
 )
 from backend.app.services.chunk_service import (
+    aggregate_chunk_profile,
     build_chunk_documents,
     clean_text,
+    semantic_chunk_text,
     split_into_chunks,
 )
+from backend.app.services.resource_quality_service import resource_quality_service
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +98,7 @@ class IngestionService:
         self.resource_repository = ResourceRepository()
         self.chunk_repository = ResourceChunkRepository()
         self.job_repository = IngestionJobRepository()
-        self.embedding_service = EmbeddingService()
+        self.embedding_service = embedding_service
         self.summary_service = YouTubeSummaryService()
 
         self.resource_repository.ensure_indexes()
@@ -375,12 +378,18 @@ class IngestionService:
 
     def _process_text_content(self, resource_id: str, content: str) -> Dict[str, Any]:
         resource = self._require_resource(resource_id)
-        chunks = split_into_chunks(content)
+        semantic_chunks = semantic_chunk_text(content)
+        chunks = [str(item.get("text") or "") for item in semantic_chunks if item.get("text")]
+        chunk_metadata = [dict(item.get("metadata") or {}) for item in semantic_chunks]
+        if not chunks:
+            chunks = split_into_chunks(content)
+            chunk_metadata = [{} for _ in chunks]
         return self._store_chunks(
             resource=resource,
             chunks=chunks,
             summary=self._summarize_content(content),
             metadata_updates=resource.get("metadata", {}),
+            per_chunk_metadata_overrides=chunk_metadata,
         )
 
     def _process_pdf_content(self, resource_id: str, file_path: str) -> Dict[str, Any]:
@@ -388,18 +397,28 @@ class IngestionService:
         pages, page_count = self.extract_pdf_pages(file_path)
         if not pages:
             raise IngestionError("No readable text extracted from PDF.")
-        chunk_pages = pages
         cleaned_text = "\n\n".join(page_text for _, page_text in pages)
-        page_chunks = [page_text for _, page_text in chunk_pages]
-        page_chunk_indexes = [page_number - 1 for page_number, _ in chunk_pages]
-        page_chunk_metadata = [
-            {"page_number": page_number} for page_number, _ in chunk_pages
-        ]
+        page_chunks: List[str] = []
+        page_chunk_metadata: List[Dict[str, Any]] = []
+        for page_number, page_text in pages:
+            semantic_chunks = semantic_chunk_text(page_text)
+            if not semantic_chunks:
+                semantic_chunks = [{"text": page_text, "metadata": {}}]
+            for index, item in enumerate(semantic_chunks):
+                page_chunks.append(str(item.get("text") or ""))
+                page_chunk_metadata.append(
+                    {
+                        **dict(item.get("metadata") or {}),
+                        "page_number": page_number,
+                        "page_chunk_index": index,
+                        "chunking_strategy": "semantic_page",
+                    }
+                )
         metadata = {
             **resource.get("metadata", {}),
             "pages": page_count,
-            "stored_pages": len(chunk_pages),
-            "chunking_strategy": "page",
+            "stored_pages": len(pages),
+            "chunking_strategy": "semantic_page",
             "content_hash": compute_content_hash(cleaned_text),
         }
         return self._store_chunks(
@@ -407,7 +426,6 @@ class IngestionService:
             chunks=page_chunks,
             summary=self._summarize_content(cleaned_text),
             metadata_updates=metadata,
-            chunk_indexes=page_chunk_indexes,
             per_chunk_metadata_overrides=page_chunk_metadata,
         )
 
@@ -441,10 +459,22 @@ class IngestionService:
             cleaned_text = clean_text(ai_summary["content"])
             content_kind = "ai_summary"
 
-        raw_chunks = split_into_chunks(cleaned_text)
+        semantic_chunks = semantic_chunk_text(cleaned_text)
+        raw_chunks = [
+            str(item.get("text") or "") for item in semantic_chunks if item.get("text")
+        ] or split_into_chunks(cleaned_text)
+        chunk_metadata = (
+            [dict(item.get("metadata") or {}) for item in semantic_chunks]
+            if semantic_chunks
+            else [{} for _ in raw_chunks]
+        )
         ranked_chunks = self._rank_chunks_by_topic(
             raw_chunks, topic=topic, limit=MAX_STORED_CHUNKS
         )
+        ranked_chunk_metadata = []
+        metadata_lookup = {chunk: item for chunk, item in zip(raw_chunks, chunk_metadata)}
+        for chunk in ranked_chunks:
+            ranked_chunk_metadata.append(dict(metadata_lookup.get(chunk) or {}))
         merged_metadata = {
             **resource.get("metadata", {}),
             **metadata,
@@ -464,6 +494,7 @@ class IngestionService:
                 "content_kind": content_kind,
                 "is_ai_generated": content_kind == "ai_summary",
             },
+            per_chunk_metadata_overrides=ranked_chunk_metadata,
         )
 
     def _store_chunks(
@@ -482,11 +513,13 @@ class IngestionService:
 
         embeddings = self.embedding_service.embed_texts(chunks)
         resource_id = resource["_id"]
+        embedding_backend = self.embedding_service.backend_status()
         base_chunk_metadata = {
             "topic": resource.get("topic"),
             "level": metadata_updates.get("level"),
             "source": resource.get("source"),
             "resource_type": resource.get("type"),
+            "embedding_backend": embedding_backend.get("backend"),
             **(chunk_metadata_overrides or {}),
         }
         documents = build_chunk_documents(
@@ -512,14 +545,41 @@ class IngestionService:
                         "resource_id": str(resource_id),
                         "chunk_index": document["chunk_index"],
                         "page_number": document["metadata"].get("page_number"),
+                        "instruction_role": str(
+                            document["metadata"].get("instruction_role") or ""
+                        ),
+                        "content_kind": str(
+                            document["metadata"].get("content_kind") or ""
+                        ),
                     },
                 }
             )
         self.embedding_service.vector_store.upsert_chunks(vector_records)
+        aggregated_chunk_metadata = aggregate_chunk_profile(documents)
+        resource_snapshot = {
+            **resource,
+            "content_summary": summary,
+            "chunks_count": inserted,
+            "metadata": {
+                **metadata_updates,
+                "chunk_profile": aggregated_chunk_metadata,
+                "covered_concepts": aggregated_chunk_metadata.get("covered_concepts", []),
+            },
+        }
+        quality_snapshot = resource_quality_service.get_resource_quality(resource_snapshot)
         return {
             "chunks_count": inserted,
             "content_summary": summary,
-            "metadata": metadata_updates,
+            "metadata": {
+                **metadata_updates,
+                "chunk_profile": aggregated_chunk_metadata,
+                "covered_concepts": aggregated_chunk_metadata.get("covered_concepts", []),
+                "primary_concepts": aggregated_chunk_metadata.get("top_concepts", []),
+                "resource_quality": quality_snapshot,
+                "embedding_backend": embedding_backend.get("backend"),
+                "embedding_provider": embedding_backend.get("provider"),
+                "embedding_dimension": embedding_backend.get("dimension"),
+            },
         }
 
     def _rank_chunks_by_topic(
@@ -537,6 +597,82 @@ class IngestionService:
             scored.append((score, chunk))
         scored.sort(key=lambda item: item[0], reverse=True)
         return [chunk for _, chunk in scored[:limit]]
+
+    def backfill_embeddings(self, *, limit: int = 200) -> Dict[str, Any]:
+        """Re-embed chunks created before the semantic stack was fully available."""
+        runtime = self.embedding_service.validate_runtime(strict=False)
+        active_backend = str(runtime.get("backend") or "")
+        if active_backend == "hash_fallback":
+            raise RuntimeError(
+                "Cannot backfill embeddings while the active backend is hash_fallback."
+            )
+
+        candidates = self.chunk_repository.find_embedding_backfill_candidates(limit=limit)
+        if not candidates:
+            return {
+                "processed": 0,
+                "updated_resources": 0,
+                "backend": active_backend,
+                "message": "No chunks require embedding backfill.",
+            }
+
+        texts = [str(item.get("content") or "") for item in candidates]
+        embeddings = self.embedding_service.embed_texts(texts)
+        touched_resource_ids = set()
+        vector_records: List[Dict[str, Any]] = []
+
+        for candidate, embedding in zip(candidates, embeddings):
+            chunk_id = candidate.get("_id")
+            resource_id = str(candidate.get("resource_id") or "")
+            chunk_index = int(candidate.get("chunk_index") or 0)
+            metadata = dict(candidate.get("metadata") or {})
+            metadata_updates = {
+                "embedding_backend": active_backend,
+                "embedding_provider": runtime.get("provider"),
+                "embedding_dimension": runtime.get("dimension"),
+            }
+            self.chunk_repository.update_embedding(
+                chunk_id,
+                embedding=embedding,
+                metadata_updates=metadata_updates,
+            )
+            vector_records.append(
+                {
+                    "id": f"{resource_id}:{chunk_index}",
+                    "embedding": embedding,
+                    "content": str(candidate.get("content") or ""),
+                    "metadata": {
+                        "topic": str(metadata.get("topic") or ""),
+                        "level": str(metadata.get("level") or ""),
+                        "resource_id": resource_id,
+                        "chunk_index": chunk_index,
+                        "page_number": metadata.get("page_number"),
+                        "instruction_role": str(metadata.get("instruction_role") or ""),
+                        "content_kind": str(metadata.get("content_kind") or ""),
+                    },
+                }
+            )
+            if resource_id:
+                touched_resource_ids.add(resource_id)
+
+        self.embedding_service.vector_store.upsert_chunks(vector_records)
+
+        for resource_id in touched_resource_ids:
+            self.resource_repository.update(
+                resource_id,
+                {
+                    "metadata.embedding_backend": active_backend,
+                    "metadata.embedding_provider": runtime.get("provider"),
+                    "metadata.embedding_dimension": runtime.get("dimension"),
+                },
+            )
+
+        return {
+            "processed": len(candidates),
+            "updated_resources": len(touched_resource_ids),
+            "backend": active_backend,
+            "message": f"Backfilled embeddings for {len(candidates)} chunks.",
+        }
 
     @staticmethod
     def _to_array(values: List[float]):

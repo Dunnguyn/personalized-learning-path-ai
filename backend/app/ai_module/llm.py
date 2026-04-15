@@ -7,9 +7,10 @@ import os
 import time
 from typing import Any, Dict, Optional
 
+from backend.app.utils.gemini import get_gemini_client
+
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash")
 SUMMARY_MAX_RETRIES = int(os.getenv("YOUTUBE_SUMMARY_MAX_RETRIES", "3"))
 
@@ -19,13 +20,10 @@ class YouTubeSummaryService:
 
     def __init__(self) -> None:
         self.client = None
-        if GEMINI_API_KEY:
-            try:
-                from google import genai
-
-                self.client = genai.Client(api_key=GEMINI_API_KEY)
-            except Exception as exc:  # pragma: no cover - optional dependency
-                logger.warning("Gemini summary client unavailable: %s", exc)
+        try:
+            self.client = get_gemini_client()
+        except Exception as exc:  # pragma: no cover - optional dependency
+            logger.warning("Gemini summary client unavailable: %s", exc)
 
     def generate_summary(
         self,

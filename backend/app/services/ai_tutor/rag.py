@@ -6,6 +6,8 @@ import time
 from datetime import datetime
 from functools import lru_cache
 
+from backend.app.utils.gemini import get_gemini_client
+
 logger = logging.getLogger(__name__)
 
 from backend.app.services.embedding_service import semantic_search
@@ -39,13 +41,9 @@ MIN_HIGH_QUALITY_RESOURCES = int(
 
 # Try to initialize Gemini client
 try:
-    from google import genai
-
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY not set")
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = get_gemini_client()
+    if client is None:
+        raise ValueError("Gemini API key not set")
     logger.info(f"✅ Gemini client initialized: model={PRIMARY_MODEL}")
 
 except Exception as e:
@@ -260,6 +258,7 @@ class RAGPipeline:
             "ai_answers": 0,
             "total_latency_ms": 0,
         }
+        self._last_generation_mode = "unknown"
 
     # =========================
     # 1. RETRIEVE
@@ -664,11 +663,13 @@ class RAGPipeline:
         if not (USE_LLM and client):
             logger.info("LLM unavailable — using knowledge base fallback")
             self.stats["fallback_uses"] += 1
+            self._last_generation_mode = "fallback"
             return self._generate_fallback_answer(prompt, resources)
 
         if time.time() < LLM_COOLDOWN_UNTIL:
             logger.info("LLM cooldown active — using knowledge base fallback")
             self.stats["fallback_uses"] += 1
+            self._last_generation_mode = "fallback"
             return self._generate_fallback_answer(prompt, resources)
 
         # Call LLM
@@ -676,11 +677,13 @@ class RAGPipeline:
 
         if answer:
             self.stats["successful_answers"] += 1
+            self._last_generation_mode = "llm"
             return answer
 
         # Fallback if LLM fails
         logger.warning("LLM generation failed — using knowledge base fallback")
         self.stats["fallback_uses"] += 1
+        self._last_generation_mode = "fallback"
         return self._generate_fallback_answer(prompt, resources)
 
     def _generate_fallback_answer(
@@ -1198,8 +1201,11 @@ Python nổi tiếng vì cú pháp đơn giản và làm việc lần đầu r�
 
                 # 5. Generate answer with AI (pass resources for fallback)
                 answer_text = self.generate(prompt, resources)
-                answer_method = "ai_generated"
-                self.stats["ai_answers"] += 1
+                if self._last_generation_mode == "fallback":
+                    answer_method = "retrieval_fallback"
+                else:
+                    answer_method = "ai_generated"
+                    self.stats["ai_answers"] += 1
 
             # 6. Return structured response
             elapsed_ms = (time.time() - start_time) * 1000

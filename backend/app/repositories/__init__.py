@@ -7,7 +7,8 @@ from .chunk_repository import ResourceChunkRepository
 from .ingestion_job_repository import IngestionJobRepository
 from .lesson_recommended_chunk_repository import LessonRecommendedChunkRepository
 from .lesson_repository import LessonRepository
-from .question_repository import QuestionBankRepository
+from .question_repository import LessonQuestionRepository
+from .question_semantic_memory_repository import QuestionSemanticMemoryRepository
 from .subject_repository import SubjectRepository
 from .event_log_repository import EventLogRepository
 from .analytics_repository import AnalyticsRepository
@@ -20,7 +21,7 @@ from .user_learning_state_repository import UserLearningStateRepository
 from .adaptive_event_repository import AdaptiveEventRepository
 from .learning_event_repository import LearningEventRepository
 from .learner_state_snapshot_repository import LearnerStateSnapshotRepository
-from .expected_learning_gain_repository import ExpectedLearningGainRepository
+from .adaptive_action_repository import AdaptiveActionRepository
 
 __all__ = [
     "ChapterRepository",
@@ -28,7 +29,8 @@ __all__ = [
     "LessonRecommendedChunkRepository",
     "LessonRepository",
     "LearningPathRepository",
-    "QuestionBankRepository",
+    "LessonQuestionRepository",
+    "QuestionSemanticMemoryRepository",
     "ResourceChunkRepository",
     "ResourceRepository",
     "SubjectRepository",
@@ -43,5 +45,5 @@ __all__ = [
     "AdaptiveEventRepository",
     "LearningEventRepository",
     "LearnerStateSnapshotRepository",
-    "ExpectedLearningGainRepository",
+    "AdaptiveActionRepository",
 ]

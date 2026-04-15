@@ -32,6 +32,7 @@ from bson import ObjectId
 from backend.app.database.mongo import get_db
 from backend.app.api.schemas import UserResponse, UserRoleEnum
 from backend.app.services.event_logging_service import event_logging_service
+from backend.app.services.learner_profile_service import learner_profile_service
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -394,6 +395,7 @@ def signup(payload: SignupRequest):
         # Insert into database
         result = db.users.insert_one(new_user)
         user_id = str(result.inserted_id)
+        learner_profile_service.initialize_profile(user_id)
 
         # Create JWT token
         access_token = create_access_token(data={"sub": user_id})

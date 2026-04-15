@@ -1,5 +1,5 @@
 import { Suspense, lazy } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 
 const Login = lazy(() => import('./components/auth/Login'));
@@ -19,8 +19,10 @@ function App() {
       <Router>
         <Suspense
           fallback={
-            <div className="flex min-h-screen items-center justify-center bg-[#fff8fb] px-4 text-center text-[15px] font-medium text-[#8c3451]">
-              Đang tải giao diện...
+            <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#fcf4ec_0%,#f3e5d5_100%)] px-4 text-center">
+              <div className="rounded-[28px] border border-white/70 bg-white/80 px-8 py-6 text-[15px] font-semibold text-[#8c3451] shadow-[0_24px_56px_rgba(92,62,46,0.12)] backdrop-blur-md">
+                Loading workspace...
+              </div>
             </div>
           }
         >
@@ -36,8 +38,6 @@ function App() {
             <Route path="/ai-tutor" element={<AITutor />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/debug-token" element={<DebugToken />} />
-
-            {/* Add more routes here as you develop */}
           </Routes>
         </Suspense>
       </Router>

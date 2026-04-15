@@ -1,7 +1,10 @@
 import { apiClient } from '@/utils/apiClient';
 import type {
+  IngestionHealthSnapshot,
   IngestionJobStatus,
   Resource,
+  ResourceCurationItem,
+  ResourceCurationSnapshot,
   SearchResponse,
   UploadResponse,
 } from '../types/resource';
@@ -315,5 +318,49 @@ export const resourceService = {
       console.error(`Error fetching resource ${resourceId}:`, error);
       return null;
     }
+  },
+
+  async getAdminCurationDashboard(params?: {
+    limit?: number;
+    status?: string;
+    qualityBucket?: 'low' | 'medium' | 'high';
+  }): Promise<ResourceCurationSnapshot> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set('limit', String(params.limit));
+    if (params?.status) search.set('status', params.status);
+    if (params?.qualityBucket) search.set('quality_bucket', params.qualityBucket);
+    const query = search.toString();
+    const response = (await apiClient.get(
+      query ? `/resources/admin/curation?${query}` : '/resources/admin/curation',
+    )) as ResourceCurationSnapshot;
+    return {
+      items: Array.isArray(response?.items) ? response.items : [],
+      status_counts:
+        response && typeof response.status_counts === 'object' && response.status_counts
+          ? response.status_counts
+          : {},
+      duplicate_groups: Array.isArray(response?.duplicate_groups) ? response.duplicate_groups : [],
+      low_quality_count: Number(response?.low_quality_count || 0),
+      total_items: Number(response?.total_items || 0),
+    };
+  },
+
+  async updateResourceCuration(
+    resourceId: string,
+    payload: {
+      curated_concept_ids?: string[];
+      quality_label?: string;
+      admin_notes?: string;
+      hidden_from_recommendation?: boolean;
+    },
+  ): Promise<ResourceCurationItem> {
+    return (await apiClient.patch(
+      `/resources/admin/${encodeURIComponent(resourceId)}/curation`,
+      payload,
+    )) as ResourceCurationItem;
+  },
+
+  async getIngestionHealth(): Promise<IngestionHealthSnapshot> {
+    return (await apiClient.get('/resources/admin/ingestion-health')) as IngestionHealthSnapshot;
   },
 };

@@ -1,298 +1,91 @@
 # Personalized Learning Path AI
 
-AI-powered learning platform for generating personalized study paths, tracking learner progress, and supporting question answering with retrieval-augmented generation (RAG).
+Nen tang hoc tap ca nhan hoa su dung AI de sinh lo trinh hoc, quan ly lesson runtime, truy hoi hoc lieu theo ngu canh, va de xuat hanh dong hoc tiep theo dua tren learner state.
 
-## Overview
+He thong nay duoc to chuc theo huong `backend orchestration`: backend khong chi cung cap CRUD ma con dieu phoi learning path generation, ingestion pipeline, semantic retrieval, quiz/progress, adaptive loop, AI tutor, va analytics.
 
-This repository contains:
+## Tong quan he thong
 
-- `backend/`: FastAPI application for auth, curriculum, learning paths, progress tracking, analytics, recommendations, and AI tutor workflows
-- `frontend/`: React + TypeScript + Vite client for the learner-facing experience
-- MongoDB as the primary application database
-- Chroma as the local vector store used by retrieval features
+San pham xoay quanh 4 vong lap chinh:
 
-```text
-frontend (React + Vite)
-    |
-    | HTTP / REST
-    v
-backend (FastAPI)
-    |
-    +-- app/api
-    +-- app/services
-    +-- app/repositories
-    +-- app/ai_module
-    +-- app/database
-    |
-    +-- MongoDB
-    `-- Chroma
-```
+- `Generate path`: sinh learning path theo `subject + goal + level`, dong thoi khoi tao concept graph, chapter, lesson, va knowledge-tracing state.
+- `Learn lesson`: hoc theo lesson, ghi study time, cap nhat confidence/completion, mo khoa lesson tiep theo khi dat dieu kien.
+- `Retrieve resources`: ingest text/PDF/YouTube thanh chunks co embedding de search, recommend, va phuc vu AI tutor.
+- `Adapt next step`: thu thap learning events, tinh learner snapshot, giai thich trang thai hoc, va de xuat next step/next action.
 
-## Key Features
-
-- Personalized learning path generation by subject, goal, and level
-- Lesson progress tracking with confidence, study-time, and adaptive quiz support
-- Resource ingestion from text, PDF, and YouTube
-- AI tutor endpoints backed by retrieval and Gemini-based generation
-- Recommendation, knowledge tracing, intervention, analytics, and evaluation modules
-
-## Tech Stack
-
-Backend:
-
-- FastAPI
-- Uvicorn
-- MongoDB (`pymongo`)
-- JWT auth (`python-jose`)
-- Passlib with Argon2
-- Google Gemini API
-- Chroma
-
-Frontend:
-
-- React 18
-- TypeScript
-- Vite
-- Tailwind CSS
-- React Router
-
-## Project Structure
+## Kien truc tong the
 
 ```text
-.
-+-- backend/
-|   +-- app/
-|   |   +-- ai_module/
-|   |   +-- api/
-|   |   +-- database/
-|   |   +-- repositories/
-|   |   +-- services/
-|   |   `-- utils/
-|   +-- tests/
-|   +-- uploads/
-|   `-- main.py
-|
-+-- frontend/
-|   +-- public/
-|   +-- src/
-|   |   +-- components/
-|   |   +-- contexts/
-|   |   +-- pages/
-|   |   +-- services/
-|   |   +-- types/
-|   |   `-- utils/
-|   +-- .env.example
-|   `-- package.json
-|
-+-- docker-compose.yml
-+-- DOCKER.md
-+-- requirements.txt
-`-- README.md
+Frontend (React + Vite + TypeScript)
+  -> REST API /api/*
+Backend (FastAPI)
+  -> API routers
+  -> Service orchestration layer
+  -> Repository layer
+  -> AI module (LLM, embeddings, retrieval)
+Data layer
+  -> MongoDB
+  -> backend/uploads (PDF/assets)
+  -> Redis (optional support/cache layer)
 ```
 
-## Requirements
+Mot so dac diem kien truc quan trong:
 
-- Python 3.11+
-- Node.js 20+ recommended
-- npm 9+
-- MongoDB local or MongoDB Atlas
+- `backend/main.py` la entrypoint duy nhat, mount toan bo router duoi prefix `/api`.
+- Service layer la boundary nghiep vu chinh, gom cac domain nhu `unified_learning_path_service`, `adaptive_learning_loop_service`, `hybrid_recommendation_service`, `learner_profile_service`, `ai_tutor`.
+- Repository layer dong vai tro truy cap collection MongoDB va tach persistence khoi orchestration logic.
+- AI stack duoc chia thanh embedding, retrieval, prompt-building, question generation, va tutoring thay vi nhung truc tiep vao router.
+- Startup co `fail fast` cho env bat buoc, readiness check xac thuc ca database va AI embedding runtime.
 
-Optional:
+## Cac domain cot loi
 
-- Docker + Docker Compose
-- Redis
+### 1. Auth va learner profile
 
-## Quick Start
+- JWT auth qua `/api/auth/*`.
+- Ho so hoc vien duoc quan ly qua `/api/learner-profile/me`.
+- Luong diagnostic duoc expose qua `/api/diagnostic/*` de bootstrap muc do/khoang trong kien thuc.
 
-### 1. Backend setup
+### 2. Learning path va lesson runtime
 
-Create a virtual environment if you do not already have one:
+- `POST /api/learning-paths/generate` sinh learning path theo `subject_id`, `goal`, `level`.
+- `GET /api/learning-paths/history` va cac endpoint detail/summary phuc vu man hinh lich su va chi tiet lo trinh.
+- `POST /api/learning-paths/lesson-progress` cap nhat completion, confidence, quiz outcome, dong thoi kich hoat event/adaptive hooks.
+- Lesson runtime duoc chia qua cac API `/api/chapters/*`, `/api/lessons/*`, `/api/progress/*`, `/api/kt/*`.
 
-```bash
-python -m venv .venv
-```
+### 3. Resource ingestion, chunking, search, recommendation
 
-Activate it on Windows:
+- Admin co the ingest hoc lieu text/PDF/YouTube qua `/api/resources/*`.
+- Noi dung duoc tach chunk, gan embedding, luu de semantic search va lesson recommendation.
+- Hybrid recommendation layer ket hop quality, relevance, event signals, va lesson scope.
+- Admin co snapshot cho curation va ingestion health de debug du lieu.
 
-```bash
-.\.venv\Scripts\activate
-```
+### 4. Adaptive learning loop
 
-Install dependencies:
+- Event hoc tap duoc ghi qua `/api/adaptive/events`.
+- Learner state snapshot duoc tinh/lay qua `/api/adaptive/state/*` va `/api/adaptive/recompute-state/*`.
+- He thong tra ve `next-step`, `next-action`, va explanation cho tung lesson/path.
+- Path refinement va intervention duoc expose qua cac endpoint refinement rieng.
 
-```bash
-pip install -r requirements.txt
-```
+### 5. AI tutor va hoi dap co ngu canh
 
-Create the backend env file from the project root:
+- `POST /api/ask/` la entrypoint chinh cho AI tutor.
+- Pipeline hoi dap bao gom retrieval, concept detection, answer generation, progress update, va adaptive recommendation.
+- Ask history, concept-related endpoint, va feedback hooks ton tai de phuc vu tutor loop dai han.
 
-```bash
-copy .env.example .env
-```
+### 6. Analytics va admin observability
 
-Run the API from the repository root:
+- Learner analytics va admin analytics duoc expose qua `/api/analytics/*`.
+- API middleware tu dong log `api_called` / `api_failed`.
+- Co health/debug endpoint cho AI stack:
+  - `GET /api/health`
+  - `GET /api/ready`
+  - `GET /api/health/ai`
+  - `GET /api/debug/ai`
+  - `POST /api/debug/ai/backfill?limit=...` (admin)
 
-```bash
-python -m uvicorn backend.main:app --reload 
-```
+## Giao dien frontend hien co
 
-Useful URLs:
-
-- Swagger UI: `http://localhost:8000/api/docs`
-- OpenAPI JSON: `http://localhost:8000/api/openapi.json`
-- Health check: `http://localhost:8000/api/health`
-- Readiness check: `http://localhost:8000/api/ready`
-
-Note:
-
-- `GET /docs` and `GET /openapi.json` redirect to the `/api/*` versions.
-
-### 2. Frontend setup
-
-Move into the frontend app:
-
-```bash
-cd frontend
-```
-
-Create the frontend env file:
-
-```bash
-copy .env.example .env
-```
-
-Install dependencies and start Vite:
-
-```bash
-npm install
-npm run dev
-```
-
-Frontend URL:
-
-- `http://localhost:5173`
-
-## Environment Variables
-
-### Backend `.env` at repository root
-
-Minimum backend configuration:
-
-```env
-MONGODB_URI=mongodb://localhost:27017/learning_path_ai
-DB_NAME=learning_path_ai
-SECRET_KEY=your-super-secret-key-minimum-32-characters-long
-```
-
-Recommended for AI features:
-
-```env
-GEMINI_API_KEY=your-gemini-api-key
-RAG_MODEL=models/gemini-2.5-flash
-```
-
-Common optional backend variables:
-
-```env
-ACCESS_TOKEN_EXPIRE_MINUTES=60
-ADMIN_EMAILS=admin@example.com
-CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000
-UPLOAD_DIR=./backend/uploads
-CHROMA_PATH=backend/.runtime/chroma
-CHROMA_COLLECTION=learning_resource_chunks
-```
-
-Notes:
-
-- The backend accepts both `MONGODB_URI` and `MONGO_URI`, with `MONGODB_URI` preferred.
-- `SECRET_KEY` must not use the default placeholder value.
-- `GEMINI_API_KEY` is optional for startup, but required for Gemini-backed generation flows.
-- The backend loads env in this order: project `.env`, then `backend/.env` if present.
-
-### Frontend `frontend/.env`
-
-```env
-VITE_API_URL=http://localhost:8000
-VITE_API_BASE_PATH=/api
-VITE_APP_NAME=Personalized Learning Path
-```
-
-Notes:
-
-- Vite reads frontend env files from the `frontend/` directory, not from the repository root.
-- The frontend API client defaults to `http://localhost:8000/api` if these vars are omitted.
-
-## Running with Docker
-
-Start the full stack:
-
-```bash
-docker compose up --build
-```
-
-Start the stack with Mongo Express:
-
-```bash
-docker compose --profile dev up --build
-```
-
-Default ports:
-
-- Backend: `8000`
-- Frontend: `5173`
-- MongoDB: `27017`
-- Redis: `6379`
-- Mongo Express: `8081` with `--profile dev`
-
-For more container details, see `DOCKER.md`.
-
-## Development Commands
-
-Backend:
-
-```bash
-python -m compileall backend
-python -c "from backend.main import validate_env; validate_env(); print('env ok')"
-pytest backend/tests -q
-```
-
-Frontend:
-
-```bash
-cd frontend
-npm run dev
-npm run build
-npm run preview
-npm run type-check
-npm run lint
-npm run format
-```
-
-## API Overview
-
-All business endpoints are mounted under `/api`.
-
-Main route groups:
-
-- `/api/auth/*`: signup, login, logout
-- `/api/users/*`: current user and profile updates
-- `/api/subjects/*`, `/api/chapters/*`, `/api/lessons/*`: curriculum data
-- `/api/learning-paths/*`: path generation, history, lesson progress, study time
-- `/api/resources/*`: resource CRUD, import, search, ingestion jobs
-- `/api/ask/*`: AI tutor and assessment flows
-- `/api/progress/*`: progress summaries and concept confidence
-- `/api/recommendations/*`: recommendation retrieval, debug, feedback, interaction events
-- `/api/kt/*`, `/api/path/*`, `/api/interventions/*`, `/api/feedback`: adaptive learning loop
-- `/api/analytics/*`, `/api/evaluation/*`: telemetry and experiment workflows
-- `/api/concepts/*`: concept lookup
-
-Use Swagger for the latest request and response schemas:
-
-- `http://localhost:8000/api/docs`
-
-## Frontend Routes
-
-The current frontend includes these primary routes:
+Frontend hien tai la learner app build bang React 18 + Vite, gom cac route chinh:
 
 - `/login`
 - `/signup`
@@ -305,9 +98,267 @@ The current frontend includes these primary routes:
 - `/settings`
 - `/debug-token`
 
-## Notes
+Man hinh frontend tiep can backend thong qua `frontend/src/services/*` va cac parser/type rieng cho dashboard, learning path, resources, adaptive, analytics, auth.
 
-- MongoDB is required for backend readiness checks to pass.
-- Chroma data should stay in a runtime directory and not be committed.
-- Redis is optional in local development unless you explicitly depend on it.
-- The repository currently includes backend tests under `backend/tests/`.
+## Tech stack
+
+### Backend
+
+- Python + FastAPI + Uvicorn
+- MongoDB (`pymongo`)
+- Auth: `python-jose`, `passlib[argon2]`
+- Validation/schema: `pydantic`
+- AI/LLM: Google Gemini (`google-genai`)
+- Retrieval/ranking: `numpy`, `scikit-learn`, `rank-bm25`
+- Ingestion: `pypdf`, `PyMuPDF`, `pytube`, `youtube-transcript-api`
+- Embedding fallback: `sentence-transformers` hoac `hash_fallback` tuy theo env/runtime
+
+### Frontend
+
+- React 18 + TypeScript + Vite
+- React Router
+- Tailwind CSS
+- React Markdown + `remark-gfm`
+- React Flow
+
+### Runtime / ha tang
+
+- MongoDB la dependency bat buoc
+- Redis co trong `docker-compose.yml`, hien o vai tro support layer
+- Docker + Docker Compose cho local full-stack runtime
+
+## Cau truc thu muc
+
+```text
+.
++-- backend/
+|   +-- main.py
+|   +-- app/
+|   |   +-- api/
+|   |   +-- ai_module/
+|   |   +-- services/
+|   |   +-- repositories/
+|   |   +-- database/
+|   |   `-- utils/
+|   +-- uploads/
+|   `-- pyproject.toml
++-- frontend/
+|   +-- src/
+|   |   +-- components/
+|   |   +-- contexts/
+|   |   +-- pages/
+|   |   +-- services/
+|   |   +-- types/
+|   |   `-- utils/
+|   `-- package.json
++-- docs/
++-- docker-compose.yml
++-- Dockerfile
++-- requirements.txt
+`-- README.md
+```
+
+## Luong nghiep vu chinh
+
+### A. Tao learning path
+
+1. Learner gui `POST /api/learning-paths/generate`.
+2. Backend lay personalization context tu learner profile.
+3. Unified learning path service sinh chapter, lesson, concept graph.
+4. Knowledge tracing bootstrap state cho path vua tao.
+5. Event `learning_path_generated` duoc ghi vao analytics/event layer.
+
+### B. Hoc lesson va cap nhat tien do
+
+1. Frontend lay lesson detail va recommended chunks.
+2. Learner hoc tai lieu, doc PDF/resource, hoac lam cau hoi.
+3. Frontend gui `lesson-progress`, `study-time`, hoac adaptive event.
+4. Backend cap nhat confidence/completion, log event, va recompute learner state neu can.
+5. Lesson tiep theo duoc mo khoa dua tren completion rule va prerequisite.
+
+### C. Ingest hoc lieu
+
+1. Admin them text/PDF/YouTube resource.
+2. Backend tao ingestion job nen.
+3. Noi dung duoc tach chunk, gan metadata, tao embedding, va luu vao kho semantic retrieval.
+4. Resource chunks sau do duoc tai su dung cho search, lesson recommendation, va AI tutor.
+
+### D. Adaptive learning
+
+1. He thong nhan event hoc tap tu lesson/resource/quiz/recommendation.
+2. Adaptive loop tong hop event thanh learner snapshot.
+3. Decision service tinh next step, next action, intervention, hoac explanation.
+4. Frontend co the hien thi de xuat hoc tiep theo dua tren snapshot moi nhat.
+
+### E. AI tutor
+
+1. Learner hoi qua `POST /api/ask/`.
+2. Backend retrieval context lien quan tu resource chunks.
+3. Neu can, LLM sinh cau tra loi dua tren ngu canh va learner state.
+4. He thong co the cap nhat progress, concept detection, va ask history sau moi lan hoi dap.
+
+## Chay local
+
+### 1. Yeu cau
+
+- Python 3.11+ khuyen nghi
+- Node.js 18+ khuyen nghi
+- MongoDB dang chay o local hoac accessible qua `MONGODB_URI`
+
+### 2. Backend
+
+```bash
+python -m venv .venv
+```
+
+Windows PowerShell:
+
+```bash
+.\.venv\Scripts\activate
+```
+
+Cai dependency:
+
+```bash
+pip install -r requirements.txt
+```
+
+Tao `.env` tu `.env.example`. Cac bien toi thieu can co:
+
+```env
+MONGODB_URI=mongodb://localhost:27017/learning_path_ai
+DB_NAME=learning_path_ai
+SECRET_KEY=your-super-secret-key-minimum-32-characters-long
+```
+
+Gemini la optional, nhung can key neu muon dung day du duong LLM/Gemini.
+Ban co the dung 1 key hoac nhieu key:
+
+```env
+# Mot key
+GEMINI_API_KEY=your-primary-key
+
+# Hoac nhieu key de app tu doi sang key tiep theo khi key hien tai het quota
+GEMINI_API_KEYS=key_1,key_2,key_3
+
+# Hoac danh so thu tu neu muon de doc hon
+GEMINI_API_KEY_1=key_1
+GEMINI_API_KEY_2=key_2
+GEMINI_API_KEY_3=key_3
+```
+
+Chay backend:
+
+```bash
+python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 3. Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Tao `frontend/.env` tu `frontend/.env.example`:
+
+```env
+VITE_API_URL=http://localhost:8000
+VITE_API_BASE_PATH=/api
+VITE_APP_NAME=Personalized Learning Path
+```
+
+### 4. Dia chi mac dinh
+
+- Frontend: `http://localhost:5173`
+- Backend API: `http://localhost:8000`
+- Swagger UI: `http://localhost:8000/api/docs`
+
+## Chay bang Docker
+
+Chay full stack:
+
+```bash
+docker compose up --build
+```
+
+Chay kem Mongo Express:
+
+```bash
+docker compose --profile dev up --build
+```
+
+Port mac dinh:
+
+- Backend: `8000`
+- Frontend: `5173`
+- MongoDB: `27017`
+- Redis: `6379`
+- Mongo Express: `8081` (chi khi bat profile `dev`)
+
+## Bien moi truong quan trong
+
+### Backend bat buoc
+
+- `MONGODB_URI` hoac `MONGO_URI`
+- `DB_NAME`
+- `SECRET_KEY`
+
+### Backend thuong dung
+
+- `GEMINI_API_KEY`
+- `GEMINI_API_KEYS`
+- `GEMINI_API_KEY_1..N`
+- `GEMINI_API_KEY_COOLDOWN_SECONDS`
+- `GEMINI_API_KEY_RETRY_DELAY_SECONDS`
+- `RAG_MODEL`
+- `EMBEDDING_PROVIDER`
+- `SENTENCE_TRANSFORMER_MODEL`
+- `GEMINI_EMBEDDING_MODEL`
+- `CORS_ORIGINS`
+- `UPLOAD_DIR`
+- `ENVIRONMENT`
+- `BACKEND_HOST`
+- `BACKEND_PORT`
+- `EMBEDDING_BACKFILL_ON_STARTUP`
+- `EMBEDDING_BACKFILL_LIMIT`
+
+### Frontend
+
+- `VITE_API_URL`
+- `VITE_API_BASE_PATH`
+- `VITE_APP_NAME`
+
+Chi tiet day du xem `.env.example` va `frontend/.env.example`.
+
+## Lenh dev huu ich
+
+### Backend
+
+```bash
+python -m compileall backend
+python -c "from backend.main import validate_env; validate_env(); print('env ok')"
+```
+
+### Frontend
+
+```bash
+cd frontend
+npm run type-check
+npm run lint
+npm run build
+```
+
+Luu y: trong worktree hien tai khong thay `backend/tests/`, vi vay README nay khong khai bao mot backend pytest suite cu the.
+
+## Tai lieu lien quan
+
+- `DOCKER.md`: huong dan runtime va container chi tiet hon
+- `backend/ARCHITECTURE_SOURCE_OF_TRUTH_VI.md`: boundary/domain source of truth
+- `SYSTEM_ANALYSIS_VI.md`, `SYSTEM_ANALYSIS_VII.md`, `SYSTEM_UC_ACTIVITY_ERD_VI.md`: tai lieu phan tich, use case, ERD, va direction nang cap
+- `docs/plantuml/*`: use case, activity, va ERD diagram
+
+## Trang thai hien tai cua codebase
+
+Codebase dang o giai doan hop nhat giua legacy flow va boundary moi. README nay mo ta boundary dang duoc su dung o `backend/main.py` va cac router/service hien co, uu tien phan da expose ra API thay vi cac implementation cu chua don xong.

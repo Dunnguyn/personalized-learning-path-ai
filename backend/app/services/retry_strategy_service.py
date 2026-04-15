@@ -10,23 +10,25 @@ class RetryStrategyService:
 
     def select_retry_strategy(self, retry_count: int) -> str:
         if retry_count <= 1:
-            return "same_question"
-        if retry_count == 2:
             return "paraphrase_question"
-        if retry_count == 3:
+        if retry_count == 2:
             return "simplify_question"
+        if retry_count == 3:
+            return "explain_then_question"
         return "explain_then_question"
 
     @staticmethod
     def apply_generation_hints(strategy: str, *, difficulty: str) -> Dict[str, object]:
-        strategy = str(strategy or "same_question")
+        strategy = str(strategy or "paraphrase_question")
+        if strategy == "same_question":
+            strategy = "paraphrase_question"
         adjusted_difficulty = difficulty
         if strategy == "simplify_question":
             adjusted_difficulty = "beginner"
 
         return {
             "retry_strategy": strategy,
-            "reuse_previous_question": strategy == "same_question",
+            "reuse_previous_question": False,
             "paraphrase_question": strategy == "paraphrase_question",
             "add_explanation_before_question": strategy == "explain_then_question",
             "recommended_difficulty": adjusted_difficulty,

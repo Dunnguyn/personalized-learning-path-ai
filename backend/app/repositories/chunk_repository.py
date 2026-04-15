@@ -65,6 +65,78 @@ class ResourceChunkRepository:
         object_ids = [self._to_object_id(item) for item in resource_ids]
         return list(self.collection.find({"resource_id": {"$in": object_ids}}))
 
+    def count_total(self) -> int:
+        return self.collection.count_documents({})
+
+    def count_with_embeddings(self) -> int:
+        return self.collection.count_documents(
+            {"embedding": {"$exists": True, "$type": "array", "$ne": []}}
+        )
+
+    def count_without_embeddings(self) -> int:
+        return self.collection.count_documents(
+            {
+                "$or": [
+                    {"embedding": {"$exists": False}},
+                    {"embedding": []},
+                ]
+            }
+        )
+
+    def count_by_embedding_backend(self) -> Dict[str, int]:
+        pipeline = [
+            {
+                "$group": {
+                    "_id": {"$ifNull": ["$metadata.embedding_backend", "missing"]},
+                    "count": {"$sum": 1},
+                }
+            }
+        ]
+        return {
+            str(item.get("_id") or "missing"): int(item.get("count") or 0)
+            for item in self.collection.aggregate(pipeline)
+        }
+
+    def find_embedding_backfill_candidates(self, *, limit: int = 200) -> List[Dict[str, Any]]:
+        query: Dict[str, Any] = {
+            "$or": [
+                {"embedding": {"$exists": False}},
+                {"embedding": []},
+                {"metadata.embedding_backend": "hash_fallback"},
+                {"metadata.embedding_backend": {"$exists": False}},
+            ]
+        }
+        return list(
+            self.collection.find(
+                query,
+                {
+                    "_id": 1,
+                    "resource_id": 1,
+                    "chunk_index": 1,
+                    "content": 1,
+                    "metadata": 1,
+                },
+            ).limit(limit)
+        )
+
+    def update_embedding(
+        self,
+        chunk_id: str | ObjectId,
+        *,
+        embedding: List[float],
+        metadata_updates: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        updates: Dict[str, Any] = {
+            "embedding": list(embedding),
+            "updated_at": datetime.utcnow(),
+        }
+        for key, value in (metadata_updates or {}).items():
+            updates[f"metadata.{key}"] = value
+        self.collection.update_one(
+            {"_id": self._to_object_id(chunk_id)},
+            {"$set": updates},
+        )
+
     def candidate_chunks(
         self,
         *,

@@ -1,4 +1,4 @@
-"""API routes for lesson structure, recommended chunks, and question bank."""
+"""API routes for lesson structure, recommended chunks, and lesson questions."""
 
 from __future__ import annotations
 
@@ -12,14 +12,18 @@ from backend.app.api.schemas import (
     AdaptiveQuizNextRequest,
     AdaptiveQuizNextResponse,
     LessonCreate,
+    LessonAttemptStatisticsResponse,
     LessonListResponse,
     LessonNodeResponse,
-    LessonQuestionBankResponse,
+    LessonQuestionsResponse,
+    LessonQuestionGenerationDebugResponse,
     LessonQuestionGenerationRequest,
     LessonQuestionGenerationResponse,
     LessonRecommendedChunksRequest,
     LessonRecommendedChunksResponse,
 )
+from backend.app.database.mongo import get_db
+from backend.app.repositories.exercise_attempt_repository import ExerciseAttemptRepository
 from backend.app.services.adaptive_learning_service import adaptive_learning_service
 from backend.app.services.lesson_chunk_service import lesson_chunk_service
 from backend.app.services.lesson_service import lesson_structure_service
@@ -36,6 +40,7 @@ from backend.app.services.adaptive_learning_loop_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/lessons", tags=["Lessons"])
+exercise_attempt_repo = ExerciseAttemptRepository(get_db())
 
 
 @router.get("/", response_model=LessonListResponse, status_code=status.HTTP_200_OK)
@@ -157,7 +162,7 @@ def recommend_chunks_for_lesson(
             enable_diversity_reranking=payload.enable_diversity_reranking,
             diversity_lambda=payload.diversity_lambda,
             resource_ids=payload.resource_ids,
-            metadata=payload.metadata,
+            metadata=payload.metadata.model_dump(exclude_none=True),
         )
         recommendation_metadata = result.get("metadata", {}) or {}
         rerank_metadata = recommendation_metadata.get("diversity_reranking", {}) or {}
@@ -267,7 +272,7 @@ def generate_questions_for_lesson(
             mastery=payload.mastery,
             success_rate=payload.success_rate,
             overwrite=payload.overwrite,
-            metadata=payload.metadata,
+            metadata=payload.metadata.model_dump(exclude_none=True),
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -281,22 +286,80 @@ def generate_questions_for_lesson(
         )
 
 
-@router.get(
-    "/{lesson_id}/questions",
-    response_model=LessonQuestionBankResponse,
+@router.post(
+    "/{lesson_id}/question-generation-debug",
+    response_model=LessonQuestionGenerationDebugResponse,
     status_code=status.HTTP_200_OK,
 )
-def get_question_bank_for_lesson(lesson_id: str):
-    """Return the lesson-scoped question bank."""
+def debug_question_generation_for_lesson(
+    lesson_id: str,
+    payload: LessonQuestionGenerationRequest,
+    current_user=Depends(require_admin_user),
+):
+    """Return a preflight debug report for lesson question generation."""
+    del current_user
+    try:
+        return lesson_question_generation_service.inspect_generation_debug(
+            lesson_id=lesson_id,
+            target_count=payload.target_count,
+            question_types=[item.value for item in payload.question_types],
+            difficulty=payload.difficulty.value,
+            bloom_levels=[item.value for item in payload.bloom_levels],
+            allow_llm=payload.allow_llm,
+            mastery=payload.mastery,
+            success_rate=payload.success_rate,
+            metadata=payload.metadata.model_dump(exclude_none=True),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to inspect lesson question generation debug: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not inspect lesson question generation debug.",
+        )
+
+
+@router.get(
+    "/{lesson_id}/questions",
+    response_model=LessonQuestionsResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_questions_for_lesson(lesson_id: str):
+    """Return the lesson-scoped question set."""
     try:
         return lesson_question_generation_service.get_questions_for_lesson(lesson_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:
-        logger.exception("Failed to load lesson question bank: %s", exc)
+        logger.exception("Failed to load lesson questions: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not load lesson question bank.",
+            detail="Could not load lesson questions.",
+        )
+
+
+@router.get(
+    "/{lesson_id}/statistics",
+    response_model=LessonAttemptStatisticsResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_lesson_attempt_statistics_legacy(
+    lesson_id: str, current_user=Depends(get_current_user)
+):
+    """Legacy compatibility route for lesson statistics; prefer /exercise_attempts/..."""
+    user_id = str(current_user.get("_id", ""))
+    try:
+        stats = exercise_attempt_repo.get_attempt_statistics(
+            user_id=user_id,
+            lesson_id=lesson_id,
+        )
+        return LessonAttemptStatisticsResponse(lesson_id=lesson_id, **(stats or {}))
+    except Exception as exc:
+        logger.exception("Failed to load lesson statistics: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load lesson statistics.",
         )
 
 
@@ -316,12 +379,45 @@ def get_next_adaptive_quiz(
         config = adaptive_learning_service.build_next_quiz_request(
             user_id=user_id,
             lesson_id=lesson_id,
+            path_id=payload.path_id,
             target_count=payload.target_count,
         )
+        generation_metadata = {
+            **(
+                config.get("metadata", {})
+                if isinstance(config.get("metadata"), dict)
+                else {}
+            ),
+            "adaptive_quiz": True,
+            "path_id": payload.path_id,
+            "target_chunk_ids": config.get("target_chunk_ids", []),
+            "target_concepts": config.get("target_concepts", []),
+            "retry_strategy": config.get("retry_strategy", "paraphrase_question"),
+            "adaptive_explanation": config.get("explanation"),
+            "prefer_template": bool(
+                config.get("generation_strategy", {}).get("prefer_template", True)
+            ),
+            "generation_strategy": {
+                **(
+                    config.get("generation_strategy", {})
+                    if isinstance(config.get("generation_strategy"), dict)
+                    else {}
+                ),
+                "previous_questions": (
+                    config.get("metadata", {}).get("previous_questions", [])
+                    if isinstance(config.get("metadata"), dict)
+                    else []
+                ),
+            },
+            "generation_reason": "adaptive_quiz_next",
+        }
         generated = lesson_question_generation_service.generate_questions_for_lesson(
             lesson_id=lesson_id,
             target_count=int(config.get("target_count", payload.target_count)),
-            question_types=["multiple_choice", "short_answer", "true_false"],
+            question_types=list(
+                config.get("question_types")
+                or ["multiple_choice"]
+            ),
             difficulty=str(config.get("recommended_difficulty") or "beginner"),
             bloom_levels=list(
                 config.get("recommended_bloom_levels")
@@ -333,18 +429,7 @@ def get_next_adaptive_quiz(
             mastery=None,
             success_rate=None,
             overwrite=True,
-            metadata={
-                "adaptive_quiz": True,
-                "path_id": payload.path_id,
-                "target_chunk_ids": config.get("target_chunk_ids", []),
-                "target_concepts": config.get("target_concepts", []),
-                "retry_strategy": config.get("retry_strategy", "same_question"),
-                "adaptive_explanation": config.get("explanation"),
-                "prefer_template": bool(
-                    config.get("generation_strategy", {}).get("prefer_template", True)
-                ),
-                "generation_strategy": config.get("generation_strategy", {}),
-            },
+            metadata=generation_metadata,
         )
         return AdaptiveQuizNextResponse(
             lesson_id=lesson_id,
@@ -356,8 +441,15 @@ def get_next_adaptive_quiz(
                 ),
                 "target_chunk_ids": config.get("target_chunk_ids", []),
                 "target_concepts": config.get("target_concepts", []),
+                "question_types": config.get("question_types", []),
+                "policy_version": config.get("policy_version"),
+                "policy_bucket": config.get("policy_bucket"),
+                "why_this_quiz": config.get("why_this_quiz") or config.get("explanation"),
             },
-            generation_request=config,
+            generation_request={
+                **config,
+                "metadata": generation_metadata,
+            },
             generated=generated,
         )
     except ValueError as exc:

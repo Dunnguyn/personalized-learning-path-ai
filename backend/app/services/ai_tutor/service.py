@@ -9,7 +9,7 @@ from backend.app.services.ai_tutor.rag import RAGPipeline
 from backend.app.services.progress_tracking.progress import (
     update_progress_with_confidence,
 )
-from backend.app.services.learning_path.service import generate_learning_path
+from backend.app.services.unified_learning_path_service import learning_path_service
 from backend.app.services.embedding_service import embed_text, cosine_similarity
 from backend.app.services.progress_tracking.confidence_scorer import score_confidence
 from backend.app.services.adaptive_engine import (
@@ -48,6 +48,7 @@ class ConceptDetector:
     def __init__(self):
         self.keywords_map = self._build_keyword_map()
         self._concept_cache = {}
+        self._has_concepts_cache: bool | None = None
 
     def _build_keyword_map(self) -> Dict[str, List[str]]:
         """
@@ -199,7 +200,7 @@ class ConceptDetector:
             )
 
             if not easiest:
-                logger.warning("No concepts found in database")
+                logger.info("Concept detection skipped: no concepts found in database")
                 return None
 
             logger.warning(f"Using fallback concept: {easiest['concept_name']}")
@@ -232,6 +233,9 @@ class ConceptDetector:
 
         if not question or not question.strip():
             return None
+        if not self._has_any_concepts():
+            logger.info("Concept detection unavailable: concept catalog is empty")
+            return None
 
         # Strategy 1: Semantic
         result = self.detect_semantic(question)
@@ -248,8 +252,18 @@ class ConceptDetector:
         if result:
             return result
 
-        logger.warning(f"Could not detect concept for: '{question[:100]}'")
+        logger.info(f"Could not detect concept for: '{question[:100]}'")
         return None
+
+    def _has_any_concepts(self) -> bool:
+        if self._has_concepts_cache is not None:
+            return self._has_concepts_cache
+        try:
+            self._has_concepts_cache = bool(db.concepts.find_one({}, {"concept_id": 1}))
+        except Exception as exc:
+            logger.warning("Could not inspect concept catalog: %s", exc)
+            self._has_concepts_cache = False
+        return self._has_concepts_cache
 
 
 # Initialize detector
@@ -275,6 +289,7 @@ class AITutorService:
         question: str,
         goal: str,
         level: str,
+        subject_id: Optional[str] = None,
         completed: Optional[List[str]] = None,
         retry_count: int = 0,
     ) -> Dict:
@@ -357,7 +372,11 @@ class AITutorService:
 
             # ===== 6. LEARNING PATH =====
             learning_path = self._generate_adaptive_path(
-                user_id=user_id, goal=goal, level=level, learning_mode=learning_mode
+                user_id=user_id,
+                goal=goal,
+                level=level,
+                subject_id=subject_id,
+                learning_mode=learning_mode,
             )
 
             # ===== 7. RESPONSE =====
@@ -399,6 +418,7 @@ class AITutorService:
                     question=question,
                     goal=goal,
                     level=level,
+                    subject_id=subject_id,
                     completed=completed,
                     retry_count=retry_count + 1,
                 )
@@ -418,282 +438,6 @@ class AITutorService:
                 "adaptive_info": None,
                 "progress_updated": False,
             }
-
-    def generate_assessment_questions(
-        self,
-        lesson_title: str,
-        concept: str,
-        difficulty: str,
-        question_type: str,
-        chapter_content: str,
-        num_questions: int,
-    ) -> List[Dict[str, str]]:
-        """
-        Generate assessment questions grounded strictly in the provided learning material.
-        """
-        return self._generate_rule_based_assessment(
-            lesson_title=lesson_title,
-            concept=concept,
-            difficulty=difficulty,
-            question_type=question_type,
-            chapter_content=chapter_content,
-            num_questions=num_questions,
-        )
-
-    def _generate_rule_based_assessment(
-        self,
-        lesson_title: str,
-        concept: str,
-        difficulty: str,
-        question_type: str,
-        chapter_content: str,
-        num_questions: int,
-    ) -> List[Dict[str, str]]:
-        excerpts = self._extract_assessment_excerpts(chapter_content, concept)
-        lesson_label = lesson_title.strip() if lesson_title else concept
-        normalized_type = (question_type or "short_answer").strip()
-        results: List[Dict[str, str]] = []
-        used_questions = set()
-
-        for index in range(num_questions):
-            excerpt = excerpts[index % len(excerpts)]
-            answer = self._build_assessment_answer(
-                question_type=normalized_type,
-                excerpt=excerpt,
-                concept=concept,
-                question_index=index,
-            )
-            options = self._build_assessment_options(
-                question_type=normalized_type,
-                concept=concept,
-                excerpt=excerpt,
-                answer=answer,
-            )
-            question = self._build_grounded_question(
-                lesson_title=lesson_label,
-                concept=concept,
-                difficulty=difficulty,
-                question_type=normalized_type,
-                excerpt=excerpt,
-                answer=answer,
-            )
-
-            if question.lower() in used_questions:
-                question = f"{question} (Cau {index + 1})"
-            used_questions.add(question.lower())
-
-            results.append(
-                {
-                    "question": question,
-                    "answer": answer,
-                    "explanation": self._build_explanation(concept, excerpt),
-                    "difficulty": difficulty,
-                    "question_type": normalized_type,
-                    "concept": concept,
-                    "source_excerpt": excerpt,
-                    "options": options,
-                }
-            )
-
-        return results
-
-        lines = [line.strip() for line in chapter_content.splitlines()]
-        candidates = []
-
-        for line in lines:
-            if len(line) < 25:
-                continue
-            if line.startswith("#"):
-                continue
-            if line.startswith("```"):
-                continue
-            candidates.append(line)
-
-        if not candidates:
-            candidates = [
-                (
-                    chapter_content.strip()[:250]
-                    if chapter_content.strip()
-                    else f"Nội dung liên quan đến {concept}."
-                )
-            ]
-
-        results: List[Dict[str, str]] = []
-        used = set()
-
-        for i in range(num_questions):
-            source = candidates[i % len(candidates)]
-            source = re.sub(r"\s+", " ", source).strip()
-            short_source = source[:220] + ("..." if len(source) > 220 else "")
-            keyword = " ".join(source.split()[:8]).strip()
-
-            if difficulty == "easy":
-                question = (
-                    f"Theo nội dung chương, phát biểu nào mô tả đúng nhất về {concept}?"
-                )
-            elif difficulty == "medium":
-                question = f"Dựa vào chương học, hãy giải thích ý '{keyword}' trong bối cảnh {concept}."
-            else:
-                question = f"Dựa trên chương học, hãy phân tích vai trò của ý '{keyword}' đối với {concept}."
-
-            # Keep questions unique when templates repeat
-            if question in used:
-                question = f"{question} (Câu {i + 1})"
-            used.add(question)
-
-            results.append(
-                {
-                    "question": question,
-                    "answer": short_source,
-                    "explanation": "Giải thích dựa trực tiếp trên nội dung chương học đã cung cấp, không thêm thông tin ngoài tài liệu.",
-                    "difficulty": difficulty,
-                    "concept": concept,
-                }
-            )
-
-        return results
-
-    def _extract_assessment_excerpts(
-        self, chapter_content: str, concept: str
-    ) -> List[str]:
-        normalized = re.sub(r"\s+", " ", chapter_content or "").strip()
-        if not normalized:
-            return [f"Tai lieu chi nhac den {concept}."]
-
-        segments = re.split(r"(?<=[\.\!\?\:])\s+|\n+", chapter_content)
-        cleaned: List[str] = []
-
-        for segment in segments:
-            text = re.sub(r"\s+", " ", segment).strip(" -\t\r\n")
-            if len(text) < 30:
-                continue
-            if text.startswith("#") or text.startswith("```"):
-                continue
-            cleaned.append(text)
-
-        if not cleaned:
-            cleaned = [normalized[:260] + ("..." if len(normalized) > 260 else "")]
-
-        concept_lower = concept.lower().strip()
-        prioritized = [
-            item for item in cleaned if concept_lower and concept_lower in item.lower()
-        ]
-        fallback = [item for item in cleaned if item not in prioritized]
-        ordered = prioritized + fallback
-
-        unique: List[str] = []
-        seen = set()
-        for item in ordered:
-            key = item.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(item[:280] + ("..." if len(item) > 280 else ""))
-        return unique or [f"Tai lieu chi nhac den {concept}."]
-
-    def _build_grounded_question(
-        self,
-        *,
-        lesson_title: str,
-        concept: str,
-        difficulty: str,
-        question_type: str,
-        excerpt: str,
-        answer: str,
-    ) -> str:
-        keyword = " ".join(excerpt.split()[:10]).strip(" ,.;:")
-        normalized_type = (question_type or "").lower()
-        if normalized_type == "true_false":
-            statement = self._build_true_false_statement(
-                concept=concept,
-                excerpt=excerpt,
-                answer=answer,
-            )
-            return f"Danh gia dung hay sai cho nhan dinh sau ve {concept}: {statement}"
-        if difficulty == "easy":
-            return f"Trong bai hoc '{lesson_title}', doan trich nao cho biet thong tin chinh ve {concept}?"
-        if difficulty == "medium":
-            return f"Dua tren doan trich cua bai '{lesson_title}', hay neu y nghia cua '{keyword}' trong concept {concept}."
-        if "multiple" in normalized_type:
-            return f"Tu doan trich cua bai '{lesson_title}', nhan dinh nao phu hop nhat voi concept {concept}?"
-        return f"Dua tren doan trich cua bai '{lesson_title}', hay phan tich ngan vai tro cua '{keyword}' doi voi concept {concept}."
-
-    @staticmethod
-    def _build_short_answer(excerpt: str) -> str:
-        text = excerpt.strip()
-        if len(text) <= 160:
-            return text
-        cutoff = text[:160].rsplit(" ", 1)[0].strip()
-        return f"{cutoff}..."
-
-    @staticmethod
-    def _build_explanation(concept: str, excerpt: str) -> str:
-        keyword = " ".join(excerpt.split()[:8]).strip(" ,.;:")
-        return (
-            f"Cau tra loi bam truc tiep vao doan trich neu ve {concept}: '{keyword}'."
-        )
-
-    def _build_assessment_answer(
-        self,
-        *,
-        question_type: str,
-        excerpt: str,
-        concept: str,
-        question_index: int,
-    ) -> str:
-        normalized_type = (question_type or "").lower()
-        if normalized_type == "true_false":
-            if question_index % 2 == 0:
-                return "Dung"
-            keyword = " ".join(excerpt.split()[:8]).strip(" ,.;:")
-            return f"{concept} khong lien quan den '{keyword}'"
-        return self._build_short_answer(excerpt)
-
-    def _build_assessment_options(
-        self,
-        *,
-        question_type: str,
-        concept: str,
-        excerpt: str,
-        answer: str,
-    ) -> List[str]:
-        normalized_type = (question_type or "").lower()
-        if normalized_type == "true_false":
-            return ["Dung", "Sai"]
-        if "multiple" not in normalized_type:
-            return []
-
-        keyword = " ".join(excerpt.split()[:8]).strip(" ,.;:")
-        distractors = [
-            f"{concept} chi la phan bo sung, khong gan voi '{keyword}'.",
-            f"Doan trich cho rang can bo qua '{keyword}' khi hoc {concept}.",
-            f"{concept} duoc nhac den nhung khong co vai tro cu the trong noi dung nay.",
-        ]
-
-        unique_options: List[str] = []
-        seen = set()
-        for item in [answer, *distractors]:
-            cleaned = re.sub(r"\s+", " ", str(item or "")).strip()
-            if not cleaned:
-                continue
-            key = cleaned.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            unique_options.append(cleaned)
-
-        return unique_options[:4]
-
-    def _build_true_false_statement(
-        self, *, concept: str, excerpt: str, answer: str
-    ) -> str:
-        normalized_answer = re.sub(r"\s+", " ", answer or "").strip().lower()
-        if normalized_answer == "dung":
-            statement = self._build_short_answer(excerpt)
-        else:
-            keyword = " ".join(excerpt.split()[:8]).strip(" ,.;:")
-            statement = f"{concept} khong lien quan den '{keyword}' trong bai hoc nay."
-        return re.sub(r"\s+", " ", statement).strip()
 
     def _get_rag_answer(
         self, question: str, goal: str, level: str, completed: List[str]
@@ -746,15 +490,22 @@ class AITutorService:
             return False, 0.0, 0
 
     def _generate_adaptive_path(
-        self, user_id: int, goal: str, level: str, learning_mode: str
+        self,
+        user_id: int,
+        goal: str,
+        level: str,
+        subject_id: Optional[str],
+        learning_mode: str,
     ) -> List[Dict]:
         """Generate learning path adapted to learning mode"""
         try:
-            path_result = generate_learning_path(
-                user_id=user_id, goal=goal, level=level
+            recommended_path = learning_path_service.recommend_next_concepts(
+                user_id=str(user_id),
+                goal=goal,
+                level=level,
+                subject_id=subject_id,
+                limit=15,
             )
-
-            recommended_path = path_result.get("recommended_path", [])
 
             # Apply adaptive filtering by learning mode
             if learning_mode:
@@ -792,6 +543,7 @@ def ask_ai_service(
     question: str,
     goal: str,
     level: str,
+    subject_id: Optional[str] = None,
     completed: Optional[List[str]] = None,
 ) -> Dict:
     """
@@ -799,7 +551,12 @@ def ask_ai_service(
     (Backward compatible with old API)
     """
     return ai_tutor_service.ask_ai(
-        user_id=user_id, question=question, goal=goal, level=level, completed=completed
+        user_id=user_id,
+        question=question,
+        goal=goal,
+        level=level,
+        subject_id=subject_id,
+        completed=completed,
     )
 
 
@@ -838,16 +595,24 @@ def detect_concepts_batch(questions: List[str]) -> List[Optional[Dict]]:
 # OPTIONAL: CONCEPT RECOMMENDATION (without full QA)
 # =========================
 def recommend_next_concepts(
-    user_id: int, goal: str, level: str, limit: int = 5
+    user_id: int,
+    goal: str,
+    level: str,
+    limit: int = 5,
+    subject_id: Optional[str] = None,
 ) -> Dict:
     """
     Recommend next concepts to study without answering a question.
     Useful for browsing/exploring.
     """
     try:
-        path = generate_learning_path(user_id=user_id, goal=goal, level=level)
-
-        recommended = path.get("recommended_path", [])[:limit]
+        recommended = learning_path_service.recommend_next_concepts(
+            user_id=str(user_id),
+            goal=goal,
+            level=level,
+            subject_id=subject_id,
+            limit=limit,
+        )
 
         logger.info(
             f"Next concepts recommended: user={user_id}, count={len(recommended)}"

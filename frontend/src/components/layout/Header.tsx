@@ -1,45 +1,43 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { searchIcon } from '../../assets';
 import { useAuth } from '../../contexts/AuthContext';
 
-const getRouteLabel = (pathname: string) => {
+const getRouteMeta = (pathname: string) => {
   if (pathname.startsWith('/learning-path/')) {
-    return 'learning-path/detail';
+    return {
+      hint: 'Tìm lesson, quiz hoặc chủ đề trong lộ trình này...',
+    };
   }
   if (pathname === '/learning-path') {
-    return 'learning-path';
+    return {
+      hint: 'Tìm lộ trình, bài học hoặc mục tiêu học tập...',
+    };
   }
   if (pathname === '/resources') {
-    return 'resources';
+    return {
+      hint: 'Tìm video, PDF hoặc tài liệu phù hợp...',
+    };
   }
   if (pathname === '/ai-tutor') {
-    return 'ai-tutor';
+    return {
+      hint: 'Hỏi AI Tutor về bài học hiện tại...',
+    };
   }
   if (pathname === '/settings') {
-    return 'settings';
+    return {
+      hint: 'Tìm tùy chọn cá nhân hóa...',
+    };
   }
   if (pathname === '/dashboard') {
-    return 'dashboard';
+    return {
+      hint: 'Tìm bài học, tài liệu hoặc chủ đề cần tiếp tục...',
+    };
   }
-  if (pathname === '/signup') {
-    return 'signup';
-  }
-  if (pathname === '/signup-step2') {
-    return 'signup/setup';
-  }
-  if (pathname === '/debug-token') {
-    return 'debug-token';
-  }
-  return 'home';
+  return {
+    hint: 'Tìm trong không gian học tập...',
+  };
 };
-
-function BrowserIcon({ children }: { children: ReactNode }) {
-  return (
-    <span className="pointer-events-none inline-flex h-4 w-4 items-center justify-center">
-      {children}
-    </span>
-  );
-}
 
 export default function Header() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -49,21 +47,37 @@ export default function Header() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const isAdmin = user?.role === 'admin';
-  const currentRouteLabel = useMemo(() => getRouteLabel(location.pathname), [location.pathname]);
-  const currentAddressParts = useMemo(() => {
-    const querySuffix = location.search ? location.search.replace(/^\?/, '?') : '';
-    return {
-      domain: 'your.education',
-      path: `/${currentRouteLabel}${querySuffix}`,
+  const routeMeta = useMemo(() => getRouteMeta(location.pathname), [location.pathname]);
+  const displayName = user?.name?.trim() || 'Người học';
+  const avatarInitial = displayName.charAt(0).toUpperCase();
+  const routePath = location.pathname || '/dashboard';
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTypingField =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable;
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+
+      if (event.key === '/' && !isTypingField) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      }
     };
-  }, [currentRouteLabel, location.search]);
 
-  const userInitial = useMemo(() => {
-    const name = (user?.name || 'Tester').trim();
-    return name.charAt(0).toUpperCase();
-  }, [user?.name]);
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, []);
 
   const handleSearch = (event: FormEvent) => {
     event.preventDefault();
@@ -72,17 +86,6 @@ export default function Header() {
       return;
     }
     navigate(`/resources?q=${encodeURIComponent(query)}`);
-  };
-
-  const handleRequestLogout = () => {
-    setIsLogoutModalOpen(true);
-  };
-
-  const handleCancelLogout = () => {
-    if (isLoggingOut) {
-      return;
-    }
-    setIsLogoutModalOpen(false);
   };
 
   const handleConfirmLogout = async () => {
@@ -98,180 +101,122 @@ export default function Header() {
 
   return (
     <>
-      <header className="app-toolbar gap-4 px-5 py-4 lg:px-6">
-        <div className={`flex items-center ${isAdmin ? 'min-w-[72px]' : 'min-w-[132px]'} gap-4`}>
-          <div className="flex items-center gap-2">
-            <span className="window-dot bg-[#ff6d5f]" />
-            <span className="window-dot bg-[#ffbe2f]" />
-            <span className="window-dot bg-[#28c840]" />
+      <header className="app-toolbar px-4 py-4 md:px-5 lg:px-6">
+        <div className="flex w-full flex-col gap-3 xl:flex-row xl:items-center xl:gap-6">
+          <div className="hidden shrink-0 items-center gap-3 xl:flex">
+            <span className="window-dot bg-[#fb7e6a]" />
+            <span className="window-dot bg-[#f7c64f]" />
+            <span className="window-dot bg-[#57c95b]" />
           </div>
 
-          {!isAdmin ? (
-            <div className="hidden items-center gap-2 md:flex">
-              <button
-                type="button"
-                onClick={() => window.history.back()}
-                className="flex h-9 w-9 items-center justify-center rounded-full border border-[#ebdbe2] bg-white/78 text-[#6f5b63] shadow-[0_8px_18px_rgba(137,78,99,0.06)] transition hover:-translate-y-0.5 hover:bg-white"
-                aria-label="Quay lại"
-              >
-                <BrowserIcon>
-                  <svg
-                    viewBox="0 0 16 16"
-                    className="h-4 w-4"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M9.75 3.5L5.25 8l4.5 4.5" />
-                  </svg>
-                </BrowserIcon>
-              </button>
-              <button
-                type="button"
-                onClick={() => window.history.forward()}
-                className="flex h-9 w-9 items-center justify-center rounded-full border border-[#ebdbe2] bg-white/78 text-[#6f5b63] shadow-[0_8px_18px_rgba(137,78,99,0.06)] transition hover:-translate-y-0.5 hover:bg-white"
-                aria-label="Tiến tới"
-              >
-                <BrowserIcon>
-                  <svg
-                    viewBox="0 0 16 16"
-                    className="h-4 w-4"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M6.25 3.5L10.75 8l-4.5 4.5" />
-                  </svg>
-                </BrowserIcon>
-              </button>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="flex flex-1 items-center justify-center">
-          <form
-            onSubmit={handleSearch}
-            className={`flex w-full justify-center ${isAdmin ? 'max-w-[760px]' : 'max-w-[980px]'}`}
-          >
-            <div className="browser-pill flex h-[56px] w-full items-center gap-3 rounded-[28px] border border-[#ead9e1] bg-white/84 px-4 shadow-[0_14px_28px_rgba(137,78,99,0.08)]">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f8e5ed] text-[#8c3451]">
+          <form onSubmit={handleSearch} className="min-w-0 flex-1">
+            <div
+              className={`browser-pill mx-auto flex h-[46px] w-full max-w-[700px] items-center gap-2.5 rounded-full border px-3 pr-2 transition ${
+                isSearchFocused
+                  ? 'border-[#d694af] ring-4 ring-[#a94872]/10'
+                  : 'border-[#efd9e3]'
+              }`}
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[#efd9e3] bg-[#fff7fa] text-[#b45b81]">
                 <svg
-                  viewBox="0 0 20 20"
-                  className="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5"
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="1.8"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 >
-                  <rect x="5.5" y="8" width="9" height="6.5" rx="1.75" />
-                  <path d="M7.5 8V6.9a2.5 2.5 0 0 1 5 0V8" />
+                  <path d="M8.5 10V7.75a3.5 3.5 0 1 1 7 0V10" />
+                  <rect x="6.5" y="10" width="11" height="9" rx="2.5" />
+                  <path d="M12 13.5v2.5" />
                 </svg>
               </span>
 
-              <div className="min-w-0 flex-1">
-                <div className="relative">
-                  {!searchQuery && !isSearchFocused ? (
-                    <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden text-[14px]">
-                      <span className="truncate font-semibold text-[#241f24]">
-                        {currentAddressParts.domain}
-                      </span>
-                      <span className="truncate text-[#8a7880]">{currentAddressParts.path}</span>
-                    </div>
-                  ) : null}
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
-                    onFocus={() => setIsSearchFocused(true)}
-                    onBlur={() => setIsSearchFocused(false)}
-                    placeholder={isSearchFocused ? 'Tìm lesson, resource, topic' : ''}
-                    className={`w-full bg-transparent text-[14px] outline-none placeholder:text-[#8a7880] ${
-                      !searchQuery && !isSearchFocused
-                        ? 'text-transparent caret-[#8c3451]'
-                        : 'text-[#17151a]'
-                    }`}
-                    aria-label="Tìm resource"
-                  />
-                </div>
+              <div className="relative min-w-0 flex-1">
+                <input
+                  ref={searchInputRef}
+                  id="global-search"
+                  name="globalSearch"
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  onFocus={() => setIsSearchFocused(true)}
+                  onBlur={() => setIsSearchFocused(false)}
+                  placeholder={isSearchFocused ? routeMeta.hint : ''}
+                  className={`w-full bg-transparent text-[13px] font-medium outline-none placeholder:text-[#a19098] ${
+                    isSearchFocused || searchQuery ? 'text-[#2b2328]' : 'text-transparent'
+                  }`}
+                  aria-label="Tìm tài nguyên"
+                />
+
+                {!isSearchFocused && !searchQuery ? (
+                  <div className="pointer-events-none absolute inset-0 flex items-center gap-2 overflow-hidden text-[13px]">
+                    <span className="truncate font-semibold text-[#2b2328]">your.education</span>
+                    <span className="shrink-0 text-[#c2aeb7]">{routePath}</span>
+                  </div>
+                ) : null}
               </div>
 
               <button
                 type="submit"
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-[#8c3451]/10 text-[#8c3451] transition-colors hover:bg-[#8c3451]/15"
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#efd9e3] bg-[rgba(169,72,114,0.08)] transition hover:-translate-y-0.5 hover:bg-[rgba(169,72,114,0.14)]"
                 aria-label="Tìm kiếm"
               >
-                <BrowserIcon>
-                  <svg
-                    viewBox="0 0 16 16"
-                    className="h-4 w-4"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  >
-                    <circle cx="7" cy="7" r="3.75" />
-                    <path d="M10.25 10.25L13 13" />
-                  </svg>
-                </BrowserIcon>
+                <img src={searchIcon} alt="" className="h-4 w-4 object-contain" />
               </button>
             </div>
           </form>
-        </div>
 
-        <div
-          className={`flex items-center justify-end gap-3 text-[#17151a] ${isAdmin ? 'min-w-[220px]' : 'min-w-[188px]'}`}
-        >
-          <button
-            type="button"
-            onClick={handleRequestLogout}
-            className="inline-flex h-10 items-center justify-center rounded-full border border-[#ebdbe2] bg-white/82 px-4 text-[12px] font-semibold text-[#8c3451] shadow-[0_8px_18px_rgba(137,78,99,0.08)] transition hover:-translate-y-0.5 hover:bg-white"
-            aria-label="Đăng xuất"
-          >
-            Đăng xuất
-          </button>
+          <div className="flex shrink-0 items-center justify-end gap-2 self-end xl:self-auto">
+            <button
+              type="button"
+              onClick={() => setIsLogoutModalOpen(true)}
+              className="inline-flex h-10 items-center justify-center rounded-full border border-[#efd9e3] bg-white/88 px-5 text-[12px] font-semibold text-[#a94872] shadow-[0_8px_18px_rgba(125,76,99,0.08)] transition hover:-translate-y-0.5 hover:bg-white"
+              aria-label="Đăng xuất"
+            >
+              Đăng xuất
+            </button>
 
-          <div className="hidden items-center gap-3 rounded-full border border-[#ebdbe2] bg-white/82 px-3 py-2 shadow-[0_8px_18px_rgba(137,78,99,0.08)] lg:flex">
-            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#8c3451] text-[13px] font-semibold text-white">
-              {userInitial}
-            </span>
-            <div className="min-w-0">
-              <p className="max-w-[120px] truncate text-[13px] font-semibold text-[#2b2328]">
-                {isAdmin ? 'Xin chào!' : user?.name || 'Tester'}
-              </p>
-              <p className="text-[11px] text-[#8a7880]">{user?.name || 'Đã đăng nhập'}</p>
+            <div className="flex min-w-[148px] items-center gap-3 rounded-full border border-[#efd9e3] bg-white/88 px-2 py-1.5 shadow-[0_10px_20px_rgba(125,76,99,0.08)]">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#9c365d] text-[16px] font-semibold text-white">
+                {avatarInitial}
+              </span>
+              <div className="min-w-0 pr-1">
+                <p className="text-[11px] font-medium text-[#9a8a92]">Xin chào!</p>
+                <p className="truncate text-[13px] font-semibold text-[#2b2328]">{displayName}</p>
+              </div>
             </div>
           </div>
         </div>
       </header>
 
       {isLogoutModalOpen && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[#2f1d24]/35 px-4">
-          <div className="w-full max-w-[420px] rounded-[24px] border border-[#f0d7e0] bg-white p-6 shadow-[0_24px_56px_rgba(68,29,46,0.25)]">
-            <h3 className="text-[22px] font-semibold tracking-[-0.02em] text-[#20161b]">
-              Đăng xuất?
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[#2f1d24]/35 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-[440px] rounded-[28px] border border-[#f0d7e0] bg-white p-6 shadow-[0_24px_56px_rgba(68,29,46,0.25)]">
+            <p className="page-kicker mb-2">Kết thúc phiên</p>
+            <h3 className="text-[28px] font-semibold tracking-[-0.03em] text-[#20161b]">
+              Đăng xuất ngay?
             </h3>
-            <p className="mt-2 text-[14px] leading-6 text-[#6d5d65]">
-              Bạn sẽ cần đăng nhập lại để tiếp tục sử dụng hệ thống học tập.
+            <p className="mt-3 text-[14px] leading-7 text-[#6d5d65]">
+              Phiên làm việc hiện tại sẽ được đóng và bạn cần đăng nhập lại để tiếp tục sử dụng hệ
+              thống.
             </p>
-            <div className="mt-6 flex justify-end gap-3">
+            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               <button
                 type="button"
-                onClick={handleCancelLogout}
+                onClick={() => setIsLogoutModalOpen(false)}
                 disabled={isLoggingOut}
-                className="rounded-full border border-[#ebdbe2] bg-white px-5 py-2 text-[13px] font-semibold text-[#6d5d65] transition hover:bg-[#fff7fb] disabled:cursor-not-allowed disabled:opacity-60"
+                className="theme-button-secondary disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Hủy
+                Ở lại
               </button>
               <button
                 type="button"
                 onClick={handleConfirmLogout}
                 disabled={isLoggingOut}
-                className="rounded-full bg-[#8c3451] px-5 py-2 text-[13px] font-semibold text-white shadow-[0_10px_24px_rgba(140,52,81,0.25)] transition hover:bg-[#7a2d46] disabled:cursor-not-allowed disabled:opacity-60"
+                className="theme-button disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isLoggingOut ? 'Đang đăng xuất...' : 'Đăng xuất'}
               </button>

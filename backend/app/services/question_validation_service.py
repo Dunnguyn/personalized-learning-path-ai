@@ -41,6 +41,7 @@ class QuestionValidationService:
                     dict(item),
                     allowed_chunk_set,
                     chunk_text_by_id,
+                    {},
                     default_difficulty,
                     default_bloom_levels,
                 )

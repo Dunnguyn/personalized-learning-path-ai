@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import bunnyLogo from '../../assets/Elegant Sub-Logo Designs for Beauty Brands.jpg';
+import AuthShell from './AuthShell';
 import illustrationLearning from '../../assets/tải xuống (1).jpg';
 import { useAuth } from '../../contexts/AuthContext';
 import { authService } from '../../services/authService';
@@ -15,8 +15,8 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleLogin = async (event: React.FormEvent) => {
+    event.preventDefault();
     setLoading(true);
     setError('');
 
@@ -31,6 +31,7 @@ export default function Login() {
         name: data.name,
         role: data.role,
       };
+
       try {
         user = await authService.getCurrentUser();
       } catch (profileError) {
@@ -44,6 +45,7 @@ export default function Login() {
         name: user.name,
         level: user.level || 'beginner',
         role: user.role || data.role,
+        learning_goal: user.learning_goal,
       });
 
       if (rememberMe) {
@@ -61,93 +63,78 @@ export default function Login() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#fbe7ef_0%,#f6d7e4_100%)] p-6">
-      <div className="relative flex min-h-[800px] w-full max-w-[1253px] overflow-hidden rounded-[36px] border border-white/70 bg-[#fff9fd]/95 shadow-[0_28px_80px_rgba(114,62,83,0.16)]">
-        <div className="flex w-[682px] flex-col items-center justify-center bg-[linear-gradient(180deg,#fff7fb_0%,#fce7f0_100%)] p-12">
-          <div className="mb-8 h-[100px] w-[100px] overflow-hidden rounded-full">
-            <img alt="Logo" className="h-full w-full object-cover" src={bunnyLogo} />
-          </div>
-
-          <div className="mb-6 text-center">
-            <h1 className="text-[35px] font-semibold leading-tight text-[#832e44]">
-              <div>Xin chào,</div>
-              <div>Mừng bạn quay trở lại!</div>
-            </h1>
-          </div>
-
-          <p className="mb-12 text-center text-[15px] text-[#832e44]">
-            Đăng nhập để tiếp tục hành trình học tập cá nhân hóa
-          </p>
-
-          <form onSubmit={handleLogin} className="w-[396px] space-y-6">
-            <div className="relative">
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Email"
-                className="h-[35px] w-full rounded-[12px] border-none bg-white px-4 text-[13px] text-[#832e44] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] placeholder-[#e4b6d0] focus:outline-none focus:ring-2 focus:ring-[#832e44]"
-                required
-              />
-            </div>
-
-            <div className="relative">
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Mật khẩu"
-                className="h-[35px] w-full rounded-[12px] border-none bg-white px-4 text-[13px] text-[#832e44] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] placeholder-[#e4b6d0] focus:outline-none focus:ring-2 focus:ring-[#832e44]"
-                required
-              />
-            </div>
-
-            <div className="flex items-center justify-between text-[10px]">
-              <label className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="h-2 w-2 border border-[#832e44]"
-                />
-                <span className="text-[#832e44]">Ghi nhớ đăng nhập</span>
-              </label>
-              <button type="button" className="text-[#832e44] hover:underline">
-                Quên mật khẩu?
-              </button>
-            </div>
-
-            {error && <div className="text-center text-[12px] text-red-500">{error}</div>}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="mx-auto block h-[38px] w-full rounded-[14px] bg-[#5b1724] text-[13px] font-semibold text-[#f7d5e0] transition-colors duration-200 hover:bg-[#6d1f2e]"
-            >
-              {loading ? 'Đang xử lý...' : 'Đăng nhập'}
-            </button>
-          </form>
-
-          <p className="mt-8 text-center text-[10px] text-[#832e44]">
-            <span>Chưa có tài khoản? </span>
-            <button
-              onClick={() => navigate('/signup')}
-              className="cursor-pointer font-bold hover:underline"
-            >
-              Đăng ký
-            </button>
-          </p>
-        </div>
-
-        <div className="relative h-full w-[571px] overflow-hidden">
-          <img
-            alt="Learning illustration"
-            className="h-full w-full object-cover"
-            src={illustrationLearning}
+    <AuthShell
+      title="Quay lại nhịp học đang dang dở."
+      description="Đăng nhập để tiếp tục lộ trình cá nhân hóa, xem tài nguyên phù hợp và hỏi AI Tutor trong đúng ngữ cảnh học tập hiện tại."
+      mediaAlt="Minh họa học tập"
+      mediaSrc={illustrationLearning}
+      sideLabel="Điểm nổi bật"
+      sideTitle="Một nơi để theo dõi cả tiến độ lẫn quyết định học tiếp theo."
+      sideCopy="Từ dashboard đến AI Tutor, mọi gợi ý đều bám theo mục tiêu và mức độ hiện tại của bạn thay vì đưa ra nội dung chung chung."
+      showSideContent={false}
+      footer={
+        <p>
+          Chưa có tài khoản?{' '}
+          <button onClick={() => navigate('/signup')} className="font-semibold text-[#8c3451] hover:underline">
+            Tạo tài khoản mới
+          </button>
+        </p>
+      }
+    >
+      <form onSubmit={handleLogin} className="space-y-5">
+        <div>
+          <label className="auth-label">Email</label>
+          <input
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="you@example.com"
+            className="auth-input"
+            required
           />
-          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(140,52,81,0.08)_0%,rgba(255,255,255,0)_45%,rgba(140,52,81,0.14)_100%)]" />
         </div>
-      </div>
-    </div>
+
+        <div>
+          <label className="auth-label">Mật khẩu</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="Nhập mật khẩu của bạn"
+            className="auth-input"
+            required
+          />
+        </div>
+
+        <div className="flex flex-col gap-3 text-[13px] text-[#6d655f] sm:flex-row sm:items-center sm:justify-between">
+          <label className="flex cursor-pointer items-center gap-3">
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(event) => setRememberMe(event.target.checked)}
+              className="h-4 w-4 rounded border-[#cdb6bf] text-[#8c3451] focus:ring-[#8c3451]"
+            />
+            <span>Ghi nhớ email cho lần đăng nhập tiếp theo</span>
+          </label>
+          <button type="button" className="text-left font-medium text-[#8c3451] hover:underline sm:text-right">
+            Quên mật khẩu?
+          </button>
+        </div>
+
+        {error ? (
+          <div className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">
+            {error}
+          </div>
+        ) : null}
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="theme-button min-h-[54px] w-full justify-center text-[15px] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? 'Đang xử lý...' : 'Đăng nhập'}
+        </button>
+      </form>
+    </AuthShell>
   );
 }

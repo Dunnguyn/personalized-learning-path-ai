@@ -65,15 +65,21 @@ export interface RecommendedResourceItem {
   topic: string;
   url?: string | null;
   reason: string;
-  reason_tags: string[];
+  why_selected: string[];
+  supports_concepts: string[];
+  fit_level?: string | null;
   relevance_score: number;
-  recommendation_mode?: string;
   estimated_time?: number | null;
   primary_concepts: string[];
   quality_score?: number | null;
   expected_learning_gain?: number | null;
-  score_breakdown?: Record<string, number> | null;
+  retrieval_signals?: Record<string, unknown> | null;
   rank_position?: number | null;
+  chunk_match_score?: number | null;
+  chunk_coverage_score?: number | null;
+  matched_chunk_preview?: string | null;
+  matched_chunk_terms: string[];
+  supporting_chunk_count?: number | null;
 }
 
 export interface PersonalizedRecommendationResponse {

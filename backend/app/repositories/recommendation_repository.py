@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import math
+import re
 from typing import Any, Dict, Iterable, List, Tuple
 
 from bson import ObjectId
@@ -17,6 +18,7 @@ class RecommendationRepository:
     def __init__(self) -> None:
         self.db = get_db()
         self.resources = self.db.resources
+        self.lessons = self.db.lessons
         self.progress = self.db.progress
         self.concepts = self.db.concepts
         self.event_logs = self.db.event_logs
@@ -103,9 +105,45 @@ class RecommendationRepository:
         )
 
     def find_goal_concepts(self, goal: str, limit: int = 50) -> List[Dict[str, Any]]:
+        projection = {"concept_id": 1, "concept_name": 1, "difficulty": 1, "topic": 1}
+        normalized_goal = str(goal or "").strip()
+        if not normalized_goal:
+            return []
+
+        direct_matches = list(
+            self.concepts.find(
+                {"topic": {"$regex": re.escape(normalized_goal), "$options": "i"}},
+                projection,
+            )
+            .sort("difficulty", 1)
+            .limit(limit)
+        )
+        if direct_matches:
+            return direct_matches
+
+        tokens = [token for token in re.findall(r"\w+", normalized_goal) if len(token) >= 3]
+        if not tokens:
+            return []
+
+        token_clauses = []
+        for token in tokens[:6]:
+            escaped = re.escape(token)
+            token_clauses.extend(
+                [
+                    {"topic": {"$regex": escaped, "$options": "i"}},
+                    {"concept_name": {"$regex": escaped, "$options": "i"}},
+                ]
+            )
+        return list(
+            self.concepts.find({"$or": token_clauses}, projection)
+            .sort("difficulty", 1)
+            .limit(limit)
+        )
+
+    def list_default_concepts(self, limit: int = 50) -> List[Dict[str, Any]]:
         return list(
             self.concepts.find(
-                {"topic": {"$regex": goal, "$options": "i"}},
+                {},
                 {"concept_id": 1, "concept_name": 1, "difficulty": 1, "topic": 1},
             )
             .sort("difficulty", 1)
@@ -161,6 +199,206 @@ class RecommendationRepository:
                     break
 
         return docs
+
+    def find_resources_for_goal(
+        self,
+        *,
+        goal: str,
+        preferred_levels: List[str],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        normalized_goal = str(goal or "").strip()
+        if not normalized_goal:
+            return []
+
+        tokens = [token for token in re.findall(r"\w+", normalized_goal) if len(token) >= 3]
+        level_query = {
+            "$or": [
+                {"level": {"$in": preferred_levels}},
+                {"metadata.level": {"$in": preferred_levels}},
+            ]
+        }
+
+        docs: List[Dict[str, Any]] = []
+        if tokens:
+            token_clauses = []
+            for token in tokens[:6]:
+                escaped = re.escape(token)
+                token_clauses.extend(
+                    [
+                        {"title": {"$regex": escaped, "$options": "i"}},
+                        {"topic": {"$regex": escaped, "$options": "i"}},
+                        {"metadata.summary": {"$regex": escaped, "$options": "i"}},
+                    ]
+                )
+            docs = list(
+                self.resources.find({"$and": [{"$or": token_clauses}, level_query]}).limit(
+                    max(limit, 1)
+                )
+            )
+
+        if len(docs) < limit:
+            seen_ids = {str(item.get("_id")) for item in docs}
+            fallback_docs = list(self.resources.find(level_query).limit(limit * 2))
+            for item in fallback_docs:
+                key = str(item.get("_id"))
+                if key in seen_ids:
+                    continue
+                docs.append(item)
+                seen_ids.add(key)
+                if len(docs) >= limit:
+                    break
+
+        return docs
+
+    def find_resources_by_ids(
+        self,
+        *,
+        resource_ids: List[str],
+        preferred_levels: List[str],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        normalized_ids = [str(item).strip() for item in resource_ids if str(item).strip()]
+        if not normalized_ids:
+            return []
+
+        object_ids = [
+            oid for oid in (self._to_object_id(item) for item in normalized_ids) if oid is not None
+        ]
+        level_query = {
+            "$or": [
+                {"level": {"$in": preferred_levels}},
+                {"metadata.level": {"$in": preferred_levels}},
+            ]
+        }
+        id_query = {
+            "$or": [
+                {"_id": {"$in": object_ids}} if object_ids else {"_id": {"$exists": False}},
+                {"resource_id": {"$in": normalized_ids}},
+            ]
+        }
+
+        docs = list(
+            self.resources.find({"$and": [id_query, level_query]}).limit(max(limit, 1))
+        )
+        if len(docs) < limit:
+            seen_ids = {str(item.get("_id")) for item in docs}
+            fallback_docs = list(self.resources.find(id_query).limit(limit * 2))
+            for item in fallback_docs:
+                key = str(item.get("_id"))
+                if key in seen_ids:
+                    continue
+                docs.append(item)
+                seen_ids.add(key)
+                if len(docs) >= limit:
+                    break
+        return docs
+
+    def get_recently_completed_resources(
+        self,
+        user_id: str | int,
+        *,
+        days: int = 45,
+        limit: int = 50,
+    ) -> List[str]:
+        since = datetime.now(timezone.utc) - timedelta(days=max(days, 1))
+        rows = list(
+            self.event_logs.find(
+                {
+                    "user_id": {"$in": self._user_variants(user_id)},
+                    "timestamp": {"$gte": since},
+                    "event_type": "resource_completed",
+                    "resource_id": {"$exists": True, "$ne": None},
+                },
+                {"resource_id": 1},
+            )
+            .sort("timestamp", -1)
+            .limit(max(limit, 1))
+        )
+        completed: List[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            resource_key = str(row.get("resource_id"))
+            if not resource_key or resource_key in seen:
+                continue
+            seen.add(resource_key)
+            completed.append(resource_key)
+        return completed
+
+    def get_recent_lesson_context(self, user_id: str | int) -> Dict[str, Any]:
+        rows = list(
+            self.event_logs.find(
+                {
+                    "user_id": {"$in": self._user_variants(user_id)},
+                    "event_type": {
+                        "$in": [
+                            "lesson_opened",
+                            "lesson_completed",
+                            "quiz_submitted",
+                            "recommendation_shown",
+                        ]
+                    },
+                    "lesson_id": {"$exists": True, "$ne": None},
+                },
+                {"lesson_id": 1, "timestamp": 1},
+            )
+            .sort("timestamp", -1)
+            .limit(20)
+        )
+        lesson_ids = [
+            self._to_object_id(row.get("lesson_id"))
+            for row in rows
+            if self._to_object_id(row.get("lesson_id")) is not None
+        ]
+        if not lesson_ids:
+            return {}
+
+        lesson_docs = list(
+            self.lessons.find(
+                {"_id": {"$in": lesson_ids}},
+                {
+                    "title": 1,
+                    "summary": 1,
+                    "topic": 1,
+                    "level": 1,
+                    "keywords": 1,
+                    "learning_objectives": 1,
+                    "resource_ids": 1,
+                },
+            )
+        )
+        lesson_map = {str(item.get("_id")): item for item in lesson_docs}
+
+        recommendation_docs = list(
+            self.lesson_recommended_chunks.find(
+                {"lesson_id": {"$in": lesson_ids}},
+                {"lesson_id": 1, "resource_ids": 1},
+            )
+        )
+        recommendation_map = {
+            str(item.get("lesson_id")): [str(value) for value in item.get("resource_ids", []) if value is not None]
+            for item in recommendation_docs
+        }
+
+        for row in rows:
+            lesson_key = str(self._to_object_id(row.get("lesson_id")) or "")
+            lesson = lesson_map.get(lesson_key)
+            if not lesson:
+                continue
+            return {
+                "lesson_id": lesson_key,
+                "title": str(lesson.get("title") or ""),
+                "summary": str(lesson.get("summary") or ""),
+                "topic": str(lesson.get("topic") or ""),
+                "level": str(lesson.get("level") or ""),
+                "keywords": [str(item) for item in lesson.get("keywords", []) if str(item).strip()],
+                "learning_objectives": [
+                    str(item) for item in lesson.get("learning_objectives", []) if str(item).strip()
+                ],
+                "resource_ids": recommendation_map.get(lesson_key)
+                or [str(item) for item in lesson.get("resource_ids", []) if item is not None],
+            }
+        return {}
 
     @staticmethod
     def get_resource_key(resource: Dict[str, Any]) -> str:

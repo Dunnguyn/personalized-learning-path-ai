@@ -7,9 +7,8 @@
     "skipLibCheck": true,
 
     /* Path Mapping - enables @/ imports */
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     },
 
     /* Bundler mode */
@@ -25,6 +24,7 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "allowSyntheticDefaultImports": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsconfig.tsbuildinfo",
 
     /* Linting */
     "noUnusedLocals": true,

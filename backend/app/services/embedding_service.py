@@ -8,18 +8,18 @@ from typing import Any, Dict, List, Optional
 from bson import ObjectId
 
 from backend.app.ai_module import (
-    EmbeddingService,
     SemanticRetrievalService,
     cosine_similarity,
 )
+from backend.app.ai_module.embedding import embedding_service as _embedding_service
 from backend.app.repositories import ResourceChunkRepository, ResourceRepository
 from backend.app.services.chunk_service import (
     build_chunk_documents,
     clean_text,
+    derive_chunk_metadata,
     split_into_chunks,
 )
 
-_embedding_service = EmbeddingService()
 # Backward-compatible public alias used by existing service imports.
 embedding_service = _embedding_service
 _retrieval_service = SemanticRetrievalService()
@@ -97,6 +97,8 @@ def store_resource(
                 "level": str(document["metadata"].get("level") or ""),
                 "resource_id": str(resource["_id"]),
                 "chunk_index": document["chunk_index"],
+                "instruction_role": str(document["metadata"].get("instruction_role") or ""),
+                "content_kind": str(document["metadata"].get("content_kind") or ""),
             },
         }
         for document in documents
@@ -120,15 +122,21 @@ def store_embedding_only(
     metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Store only a chunk document for an existing resource."""
-    embedding = _embedding_service.embed_text(content)
+    normalized_content = clean_text(content)
+    embedding = _embedding_service.embed_text(normalized_content)
+    derived_metadata = derive_chunk_metadata(
+        normalized_content,
+        base_metadata={"topic": topic, "level": level, **(metadata or {})},
+    )
     document = {
         "resource_id": ObjectId(parent_resource_id),
         "chunk_index": chunk_index,
-        "content": clean_text(content),
+        "content": normalized_content,
         "embedding": embedding,
         "metadata": {
             "topic": topic,
             "level": level,
+            **derived_metadata,
             **(metadata or {}),
         },
         "created_at": datetime.utcnow(),
@@ -145,6 +153,8 @@ def store_embedding_only(
                     "level": level,
                     "resource_id": parent_resource_id,
                     "chunk_index": chunk_index,
+                    "instruction_role": str(document["metadata"].get("instruction_role") or ""),
+                    "content_kind": str(document["metadata"].get("content_kind") or ""),
                 },
             }
         ]

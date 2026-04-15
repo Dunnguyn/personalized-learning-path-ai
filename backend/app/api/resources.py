@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
     File,
     Form,
@@ -36,18 +37,87 @@ from backend.app.services.resource_service import (
     add_resource_service,
     delete_resource_service,
     get_ingestion_job_status_service,
+    get_ingestion_health_service,
     get_pdf_file_path,
+    get_admin_resource_curation_service,
     get_resource_by_id_service,
     get_resources_service,
     import_pdf_service,
     import_resources_service,
     import_youtube_service,
     search_resources_service,
+    update_resource_curation_service,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/resources", tags=["Learning Resources"])
+
+
+@router.get("/admin/curation", summary="Admin resource curation snapshot")
+def get_admin_resource_curation(
+    limit: int = Query(20, ge=1, le=100),
+    resource_status: Optional[str] = Query(None, alias="status"),
+    quality_bucket: Optional[str] = Query(None, pattern="^(low|medium|high)?$"),
+    current_user=Depends(require_admin_user),
+):
+    """Return quality/duplicate/concept mapping data for admin curation."""
+    del current_user
+    try:
+        return get_admin_resource_curation_service(
+            limit=limit,
+            status=resource_status,
+            quality_bucket=quality_bucket,
+        )
+    except Exception as exc:
+        logger.exception("Failed to load admin curation snapshot: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load resource curation snapshot.",
+        )
+
+
+@router.patch("/admin/{resource_id}/curation", summary="Update resource curation metadata")
+def update_resource_curation(
+    resource_id: str,
+    payload: dict = Body(...),
+    current_user=Depends(require_admin_user),
+):
+    """Allow admin to update concept mapping, quality label, and visibility notes."""
+    del current_user
+    try:
+        return update_resource_curation_service(
+            resource_id,
+            curated_concept_ids=payload.get("curated_concept_ids"),
+            quality_label=payload.get("quality_label"),
+            admin_notes=payload.get("admin_notes"),
+            hidden_from_recommendation=payload.get("hidden_from_recommendation"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to update resource curation for %s: %s", resource_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not update resource curation metadata.",
+        )
+
+
+@router.get("/admin/ingestion-health", summary="Admin ingestion health snapshot")
+def get_admin_ingestion_health(
+    recent_job_limit: int = Query(10, ge=1, le=50),
+    current_user=Depends(require_admin_user),
+):
+    """Return ingestion/resource health grouped for admin debugging."""
+    del current_user
+    try:
+        return get_ingestion_health_service(recent_job_limit=recent_job_limit)
+    except Exception as exc:
+        logger.exception("Failed to load ingestion health: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load ingestion health.",
+        )
 
 
 @router.get("/", summary="List resources")

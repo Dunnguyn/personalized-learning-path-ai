@@ -1,4 +1,4 @@
-// ==========================================
+﻿// ==========================================
 // TYPES
 // ==========================================
 export interface ApiError {
@@ -14,6 +14,10 @@ export interface ApiResponse<T = unknown> {
 
 type ApiClientError = Error & {
   status?: number;
+};
+
+type ApiRequestOptions = RequestInit & {
+  timeoutMs?: number | null;
 };
 
 // ==========================================
@@ -122,10 +126,11 @@ class ApiClient {
 
   async request(
     endpoint: string,
-    options: RequestInit = {},
+    options: ApiRequestOptions = {},
     retries: number = 0,
   ): Promise<unknown> {
     const url = `${this.baseUrl}${this.basePath}${endpoint}`;
+    const { timeoutMs, ...requestOptions } = options;
 
     const headersObj: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -133,12 +138,12 @@ class ApiClient {
     };
 
     let config: RequestInit = {
-      ...options,
+      ...requestOptions,
       headers: {
         ...headersObj,
-        ...(options.headers instanceof Headers
-          ? Object.fromEntries(options.headers)
-          : (options.headers as Record<string, string>)),
+        ...(requestOptions.headers instanceof Headers
+          ? Object.fromEntries(requestOptions.headers)
+          : (requestOptions.headers as Record<string, string>)),
       },
     };
 
@@ -146,17 +151,24 @@ class ApiClient {
     config = await this.applyRequestInterceptors(config);
 
     try {
-      // Create timeout promise
-      const timeoutPromise = new Promise<Response>((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`Yêu cầu đã hết thời gian chờ sau ${this.timeout}ms`)),
-          this.timeout,
-        ),
-      );
-
-      // Race between fetch and timeout
       const fetchPromise = fetch(url, config);
-      const response = await Promise.race([fetchPromise, timeoutPromise]);
+      const response =
+        timeoutMs === null
+          ? await fetchPromise
+          : await Promise.race([
+              fetchPromise,
+              new Promise<Response>((_, reject) =>
+                setTimeout(
+                  () =>
+                    reject(
+                      new Error(
+                        `Yêu cầu đã hết thời gian chờ sau ${typeof timeoutMs === 'number' ? timeoutMs : this.timeout}ms`,
+                      ),
+                    ),
+                  typeof timeoutMs === 'number' ? timeoutMs : this.timeout,
+                ),
+              ),
+            ]);
 
       // Apply response interceptors
       const finalResponse = await this.applyResponseInterceptors(response);
@@ -164,7 +176,7 @@ class ApiClient {
       if (!finalResponse.ok) {
         const error = await finalResponse.json().catch(() => ({}));
         const message =
-          error.detail || error.message || `Yêu cầu thất bại: ${finalResponse.statusText}`;
+          error.detail || error.message || `YÃªu cáº§u tháº¥t báº¡i: ${finalResponse.statusText}`;
 
         const apiError: ApiClientError = new Error(message);
         apiError.status = finalResponse.status;
@@ -190,33 +202,36 @@ class ApiClient {
     }
   }
 
-  get(endpoint: string) {
-    return this.request(endpoint, { method: 'GET' });
+  get(endpoint: string, options: ApiRequestOptions = {}) {
+    return this.request(endpoint, { ...options, method: 'GET' });
   }
 
-  post(endpoint: string, data?: unknown) {
+  post(endpoint: string, data?: unknown, options: ApiRequestOptions = {}) {
     return this.request(endpoint, {
+      ...options,
       method: 'POST',
       body: data ? JSON.stringify(data) : undefined,
     });
   }
 
-  put(endpoint: string, data?: unknown) {
+  put(endpoint: string, data?: unknown, options: ApiRequestOptions = {}) {
     return this.request(endpoint, {
+      ...options,
       method: 'PUT',
       body: data ? JSON.stringify(data) : undefined,
     });
   }
 
-  patch(endpoint: string, data?: unknown) {
+  patch(endpoint: string, data?: unknown, options: ApiRequestOptions = {}) {
     return this.request(endpoint, {
+      ...options,
       method: 'PATCH',
       body: data ? JSON.stringify(data) : undefined,
     });
   }
 
-  delete(endpoint: string) {
-    return this.request(endpoint, { method: 'DELETE' });
+  delete(endpoint: string, options: ApiRequestOptions = {}) {
+    return this.request(endpoint, { ...options, method: 'DELETE' });
   }
 }
 
@@ -225,3 +240,4 @@ class ApiClient {
 // ==========================================
 
 export const apiClient = new ApiClient(API_BASE_URL, API_BASE_PATH);
+

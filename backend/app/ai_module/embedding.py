@@ -12,12 +12,23 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import numpy as np
 
+from backend.app.utils.gemini import get_gemini_client
+
 logger = logging.getLogger(__name__)
 
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 EMBEDDING_CACHE_SIZE = int(os.getenv("EMBEDDING_CACHE_SIZE", "2048"))
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 USE_EXTERNAL_EMBEDDING = os.getenv("USE_EXTERNAL_EMBEDDING", "false").lower() == "true"
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "auto").strip().lower()
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
+EMBEDDING_STRICT_MODE = os.getenv("EMBEDDING_STRICT_MODE", "").strip().lower()
+SENTENCE_TRANSFORMER_MODEL = os.getenv(
+    "SENTENCE_TRANSFORMER_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+).strip()
+GEMINI_EMBEDDING_MODEL = os.getenv(
+    "GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"
+).strip()
 CHROMA_PATH = os.getenv("CHROMA_PATH", "backend/.runtime/chroma")
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "learning_resource_chunks")
 
@@ -54,6 +65,13 @@ def compute_file_hash(file_path: str | Path, chunk_size: int = 1024 * 1024) -> s
                 break
             digest.update(block)
     return digest.hexdigest()
+
+
+def resolve_gemini_embedding_model_name(model_name: str) -> str:
+    normalized = str(model_name or "").strip()
+    if normalized in {"models/text-embedding-004", "text-embedding-004"}:
+        return "gemini-embedding-001"
+    return normalized or "gemini-embedding-001"
 
 
 class _LRUEmbeddingCache:
@@ -160,6 +178,10 @@ class EmbeddingService:
     def __init__(self) -> None:
         self.cache = _LRUEmbeddingCache(EMBEDDING_CACHE_SIZE)
         self.vector_store = ChromaVectorStore()
+        self._sentence_transformer = None
+        self._gemini_client = None
+        self.active_backend = "hash_fallback"
+        self._last_validation_error: Optional[str] = None
 
     def _fallback_embedding(self, text: str) -> List[float]:
         digest = hashlib.md5(text.encode("utf-8")).hexdigest()
@@ -168,8 +190,147 @@ class EmbeddingService:
         vector = normalize(rng.rand(EMBEDDING_DIM).astype(float))
         return [float(item) for item in vector.tolist()]
 
+    def _load_sentence_transformer(self):
+        if self._sentence_transformer is not None:
+            return self._sentence_transformer
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            self._sentence_transformer = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
+        except Exception as exc:  # pragma: no cover - optional dependency
+            logger.warning("SentenceTransformer backend unavailable: %s", exc)
+            self._sentence_transformer = False
+        return self._sentence_transformer if self._sentence_transformer is not False else None
+
+    def _load_gemini_client(self):
+        if self._gemini_client is not None:
+            return self._gemini_client
+        try:
+            client = get_gemini_client()
+            if client is None:
+                self._gemini_client = False
+                return None
+            self._gemini_client = client
+        except Exception as exc:  # pragma: no cover - optional dependency
+            logger.warning("Gemini embedding backend unavailable: %s", exc)
+            self._gemini_client = False
+        return self._gemini_client if self._gemini_client is not False else None
+
+    def _provider_candidates(self) -> List[str]:
+        provider = EMBEDDING_PROVIDER or "auto"
+        if provider == "hash":
+            return ["hash"]
+        if provider in {"sentence-transformers", "sentence_transformers"}:
+            return ["sentence_transformers", "hash"]
+        if provider == "gemini":
+            return ["gemini", "hash"]
+        if provider in {"auto", ""}:
+            return ["sentence_transformers", "gemini", "hash"]
+        if USE_EXTERNAL_EMBEDDING:
+            return ["sentence_transformers", "gemini", "hash"]
+        return ["sentence_transformers", "gemini", "hash"]
+
+    @staticmethod
+    def is_strict_mode_enabled() -> bool:
+        if EMBEDDING_STRICT_MODE in {"1", "true", "yes", "on"}:
+            return True
+        if EMBEDDING_STRICT_MODE in {"0", "false", "no", "off"}:
+            return False
+        return ENVIRONMENT in {"production", "demo"}
+
+    def _embed_with_sentence_transformers(self, texts: List[str]) -> List[List[float]]:
+        model = self._load_sentence_transformer()
+        if model is None:
+            raise RuntimeError("sentence_transformers backend is not available")
+        vectors = model.encode(
+            texts,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+        )
+        self.active_backend = "sentence_transformers"
+        return [[float(item) for item in vector.tolist()] for vector in vectors]
+
+    def _embed_with_gemini(self, texts: List[str]) -> List[List[float]]:
+        client = self._load_gemini_client()
+        if client is None:
+            raise RuntimeError("gemini backend is not available")
+        response = client.models.embed_content(
+            model=resolve_gemini_embedding_model_name(GEMINI_EMBEDDING_MODEL),
+            contents=texts,
+        )
+        embeddings = getattr(response, "embeddings", None) or []
+        if len(embeddings) != len(texts):
+            raise RuntimeError("gemini embedding response shape mismatch")
+        vectors: List[List[float]] = []
+        for item in embeddings:
+            values = getattr(item, "values", None) or []
+            vectors.append([float(value) for value in values])
+        self.active_backend = "gemini"
+        return vectors
+
     def _embed_with_provider(self, texts: List[str]) -> List[List[float]]:
-        raise NotImplementedError("External embedding provider is not configured.")
+        errors: List[str] = []
+        for provider in self._provider_candidates():
+            if provider == "sentence_transformers":
+                try:
+                    return self._embed_with_sentence_transformers(texts)
+                except Exception as exc:
+                    errors.append(f"sentence_transformers={exc}")
+                    continue
+            if provider == "gemini":
+                try:
+                    return self._embed_with_gemini(texts)
+                except Exception as exc:
+                    errors.append(f"gemini={exc}")
+                    continue
+            if provider == "hash":
+                self.active_backend = "hash_fallback"
+                return [self._fallback_embedding(text) for text in texts]
+        raise RuntimeError("; ".join(errors) or "No embedding provider available.")
+
+    def backend_status(self) -> Dict[str, Any]:
+        provider_candidates = self._provider_candidates()
+        configured_provider = EMBEDDING_PROVIDER or (
+            "external" if USE_EXTERNAL_EMBEDDING else "hash"
+        )
+        return {
+            "provider": configured_provider,
+            "backend": self.active_backend,
+            "environment": ENVIRONMENT,
+            "strict_mode": self.is_strict_mode_enabled(),
+            "hash_fallback_allowed": not self.is_strict_mode_enabled(),
+            "dimension": EMBEDDING_DIM,
+            "sentence_transformer_model": SENTENCE_TRANSFORMER_MODEL,
+            "gemini_embedding_model": GEMINI_EMBEDDING_MODEL,
+            "candidate_order": provider_candidates,
+            "vector_store_available": self.vector_store.available,
+            "last_validation_error": self._last_validation_error,
+        }
+
+    def warmup(self) -> Dict[str, Any]:
+        """Resolve the active embedding backend with a cheap warmup request."""
+        self.embed_text("embedding warmup check")
+        return self.backend_status()
+
+    def validate_runtime(self, *, strict: Optional[bool] = None) -> Dict[str, Any]:
+        """Validate embedding runtime and optionally hard-fail outside dev."""
+        status = self.warmup()
+        strict_mode = self.is_strict_mode_enabled() if strict is None else strict
+        backend = str(status.get("backend") or "")
+        if backend == "hash_fallback":
+            message = (
+                "Embedding backend resolved to hash_fallback. "
+                "Set EMBEDDING_PROVIDER=sentence_transformers or gemini for demo/production."
+            )
+            self._last_validation_error = message
+            status["last_validation_error"] = message
+            if strict_mode:
+                raise RuntimeError(message)
+            logger.warning(message)
+        else:
+            self._last_validation_error = None
+            status["last_validation_error"] = None
+        return status
 
     def embed_texts(self, texts: Iterable[str]) -> List[List[float]]:
         """Embed texts in batches and reuse cached vectors when possible."""
@@ -192,18 +353,14 @@ class EmbeddingService:
             for index in range(0, len(missing_items), EMBEDDING_BATCH_SIZE):
                 batch = missing_items[index : index + EMBEDDING_BATCH_SIZE]
                 batch_texts = [item[1] for item in batch]
-                if USE_EXTERNAL_EMBEDDING:
-                    try:
-                        vectors = self._embed_with_provider(batch_texts)
-                    except Exception as exc:
-                        logger.warning(
-                            "External embedding failed, using local fallback: %s",
-                            exc,
-                        )
-                        vectors = [
-                            self._fallback_embedding(text) for text in batch_texts
-                        ]
-                else:
+                try:
+                    vectors = self._embed_with_provider(batch_texts)
+                except Exception as exc:
+                    logger.warning(
+                        "Embedding provider failed, using local fallback: %s",
+                        exc,
+                    )
+                    self.active_backend = "hash_fallback"
                     vectors = [self._fallback_embedding(text) for text in batch_texts]
 
                 for (content_hash, _), vector in zip(batch, vectors):

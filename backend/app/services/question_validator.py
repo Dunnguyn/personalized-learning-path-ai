@@ -87,6 +87,7 @@ class LessonScopedQuestionValidator:
         raw_text: str,
         allowed_chunk_ids: Sequence[str],
         chunk_text_by_id: Dict[str, str],
+        chunk_metadata_by_id: Dict[str, Dict[str, Any]] | None = None,
         target_count: int,
         default_difficulty: str,
         default_bloom_levels: Sequence[str],
@@ -125,7 +126,12 @@ class LessonScopedQuestionValidator:
         for index, item in enumerate(raw_questions[:target_count]):
             try:
                 question = self._normalize_question(
-                    item, allowed_chunk_set, chunk_text_by_id
+                    item,
+                    allowed_chunk_set,
+                    chunk_text_by_id,
+                    chunk_metadata_by_id or {},
+                    default_difficulty=default_difficulty,
+                    default_bloom_levels=default_bloom_levels,
                 )
                 for chunk_id in question.chunk_ids:
                     source_excerpt = str(
@@ -160,6 +166,7 @@ class LessonScopedQuestionValidator:
         item: Dict[str, Any],
         allowed_chunk_ids: set[str],
         chunk_text_by_id: Dict[str, str],
+        chunk_metadata_by_id: Dict[str, Dict[str, Any]],
         default_difficulty: str = "beginner",
         default_bloom_levels: Sequence[str] = ("understand",),
     ) -> ValidatedLessonQuestion:
@@ -167,7 +174,7 @@ class LessonScopedQuestionValidator:
             str(item.get("question_type") or "").strip()
         )
         question = str(item.get("question") or "").strip()
-        correct_answer = str(item.get("correct_answer") or "").strip()
+        correct_answer = self._extract_correct_answer(item)
         question_type = self._infer_question_type(
             question_type=question_type, item=item, correct_answer=correct_answer
         )
@@ -196,6 +203,13 @@ class LessonScopedQuestionValidator:
                 self._normalize_chunk_ids(item.get("chunk_id"))
                 or self._normalize_chunk_ids(metadata.get("chunk_ids"))
                 or self._normalize_chunk_ids(metadata.get("chunk_id"))
+                or self._infer_chunk_ids(
+                    item=item,
+                    metadata=metadata,
+                    allowed_chunk_ids=allowed_chunk_ids,
+                    chunk_text_by_id=chunk_text_by_id,
+                    chunk_metadata_by_id=chunk_metadata_by_id,
+                )
             )
 
         if not question:
@@ -214,9 +228,11 @@ class LessonScopedQuestionValidator:
             raise ValueError("missing_chunk_ids")
         if any(chunk_id not in allowed_chunk_ids for chunk_id in chunk_ids):
             raise ValueError("chunk_outside_lesson_scope")
+        if len(chunk_ids) != 1:
+            raise ValueError("invalid_primary_chunk_count")
 
         if question_type == "multiple_choice":
-            if len(distractors) < 2:
+            if len(distractors) != 3:
                 raise ValueError("invalid_distractor_count")
             normalized_options = {
                 self._normalize_text(correct_answer),
@@ -240,6 +256,23 @@ class LessonScopedQuestionValidator:
                 metadata["source_excerpt"] = source_excerpt
         if not source_excerpt:
             raise ValueError("missing_source_excerpt")
+        question_focus = str(metadata.get("question_focus") or "").strip()
+        if not question_focus and chunk_ids:
+            question_focus = self._derive_question_focus(
+                chunk_id=chunk_ids[0],
+                chunk_metadata_by_id=chunk_metadata_by_id,
+                source_excerpt=source_excerpt,
+            )
+            if question_focus:
+                metadata["question_focus"] = question_focus
+        if not question_focus:
+            raise ValueError("missing_question_focus")
+        if not self._question_focus_matches_chunk(
+            question_focus=question_focus,
+            chunk_text=chunk_text_by_id.get(chunk_ids[0]) or "",
+            source_excerpt=source_excerpt,
+        ):
+            raise ValueError("question_focus_not_grounded")
         if not explanation:
             explanation = (
                 f"Câu hỏi được suy ra từ đoạn trích: {source_excerpt[:180]}".strip()
@@ -410,11 +443,126 @@ class LessonScopedQuestionValidator:
         normalized = self._normalize_text(cleaned)
         return self.true_false_aliases.get(normalized, cleaned)
 
+    def _extract_correct_answer(self, item: Dict[str, Any]) -> str:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        for key in (
+            "correct_answer",
+            "answer",
+            "correct_option",
+            "correct_choice",
+            "final_answer",
+            "solution",
+        ):
+            value = item.get(key)
+            if value is None and metadata:
+                value = metadata.get(key)
+            if str(value or "").strip():
+                return str(value).strip()
+        return ""
+
     def _normalize_chunk_ids(self, raw_value: Any) -> List[str]:
         if isinstance(raw_value, list):
             return [str(value).strip() for value in raw_value if str(value).strip()]
         if isinstance(raw_value, str) and raw_value.strip():
             return [raw_value.strip()]
+        return []
+
+    def _infer_chunk_ids(
+        self,
+        *,
+        item: Dict[str, Any],
+        metadata: Dict[str, Any],
+        allowed_chunk_ids: set[str],
+        chunk_text_by_id: Dict[str, str],
+        chunk_metadata_by_id: Dict[str, Dict[str, Any]],
+    ) -> List[str]:
+        if not allowed_chunk_ids:
+            return []
+
+        source_excerpt = str(
+            metadata.get("source_excerpt")
+            or item.get("source_excerpt")
+            or ""
+        ).strip()
+        question_focus = str(
+            metadata.get("question_focus")
+            or metadata.get("focus")
+            or item.get("question_focus")
+            or item.get("focus")
+            or ""
+        ).strip()
+        source_resource_id = str(
+            metadata.get("source_resource_id")
+            or item.get("source_resource_id")
+            or ""
+        ).strip()
+        source_resource_title = self._normalize_text(
+            str(
+                metadata.get("source_resource_title")
+                or item.get("source_resource_title")
+                or ""
+            ).strip()
+        )
+        source_chunk_index = str(
+            metadata.get("source_chunk_index")
+            or item.get("source_chunk_index")
+            or ""
+        ).strip()
+        source_page_number = str(
+            metadata.get("source_page_number")
+            or item.get("source_page_number")
+            or ""
+        ).strip()
+
+        scored: List[tuple[float, str]] = []
+        for chunk_id in allowed_chunk_ids:
+            chunk_text = str(chunk_text_by_id.get(chunk_id) or "")
+            chunk_metadata = chunk_metadata_by_id.get(chunk_id) or {}
+            score = 0.0
+            if source_excerpt and self._excerpt_matches_chunk(
+                source_excerpt=source_excerpt,
+                chunk_text=chunk_text,
+            ):
+                score += 5.0
+            if question_focus and self._question_focus_matches_chunk(
+                question_focus=question_focus,
+                chunk_text=chunk_text,
+                source_excerpt=source_excerpt,
+            ):
+                score += 2.5
+            if source_resource_id and source_resource_id == str(
+                chunk_metadata.get("resource_id") or ""
+            ).strip():
+                score += 2.0
+            resource_title = self._normalize_text(
+                str(chunk_metadata.get("resource_title") or "")
+            )
+            if source_resource_title and resource_title and (
+                source_resource_title in resource_title
+                or resource_title in source_resource_title
+            ):
+                score += 1.0
+            if source_chunk_index and source_chunk_index == str(
+                chunk_metadata.get("chunk_index") or ""
+            ).strip():
+                score += 0.75
+            if source_page_number and source_page_number == str(
+                chunk_metadata.get("page_number") or ""
+            ).strip():
+                score += 0.5
+            if score > 0:
+                scored.append((score, chunk_id))
+
+        if not scored:
+            return []
+
+        scored.sort(reverse=True)
+        best_score, best_chunk_id = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else 0.0
+        if best_score >= 5.0:
+            return [best_chunk_id]
+        if best_score >= 3.0 and best_score >= second_score + 1.0:
+            return [best_chunk_id]
         return []
 
     def _normalize_distractors(
@@ -513,3 +661,65 @@ class LessonScopedQuestionValidator:
             return normalized
         trimmed = normalized[:220].rsplit(" ", 1)[0].strip()
         return f"{trimmed}..."
+
+    def _derive_question_focus(
+        self,
+        *,
+        chunk_id: str,
+        chunk_metadata_by_id: Dict[str, Dict[str, Any]],
+        source_excerpt: str,
+    ) -> str:
+        chunk_metadata = chunk_metadata_by_id.get(chunk_id) or {}
+        covered_concepts = [
+            str(item).strip()
+            for item in (chunk_metadata.get("covered_concepts") or [])
+            if str(item).strip()
+        ]
+        if covered_concepts:
+            return covered_concepts[0]
+        excerpt = self._normalize_text(source_excerpt)
+        if not excerpt:
+            return ""
+        tokens = [
+            token
+            for token in re.findall(r"\b[a-z0-9_]+\b", excerpt)
+            if len(token) >= 4
+        ]
+        return tokens[0] if tokens else ""
+
+    def _question_focus_matches_chunk(
+        self,
+        *,
+        question_focus: str,
+        chunk_text: str,
+        source_excerpt: str,
+    ) -> bool:
+        normalized_focus = self._normalize_text(question_focus)
+        if not normalized_focus:
+            return False
+
+        combined_text = " ".join(
+            [
+                self._normalize_text(source_excerpt),
+                self._normalize_text(chunk_text),
+            ]
+        ).strip()
+        if not combined_text:
+            return False
+        if normalized_focus in combined_text:
+            return True
+
+        focus_tokens = [
+            token
+            for token in re.findall(r"\b[a-z0-9_]+\b", normalized_focus)
+            if len(token) >= 3
+        ]
+        if not focus_tokens:
+            return False
+        text_tokens = set(
+            token
+            for token in re.findall(r"\b[a-z0-9_]+\b", combined_text)
+            if len(token) >= 3
+        )
+        overlap = sum(1 for token in focus_tokens if token in text_tokens)
+        return overlap / max(len(focus_tokens), 1) >= 0.5

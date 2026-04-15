@@ -18,11 +18,12 @@ from backend.app.api.schemas import (
     LessonStudyTimeUpdate,
     StudySummaryResponse,
 )
-from backend.app.services.learning_path_service import learning_path_service
+from backend.app.services.unified_learning_path_service import learning_path_service
 from backend.app.services.event_logging_service import event_logging_service
 from backend.app.services.knowledge_tracing_service import knowledge_tracing_service
 from backend.app.services.feedback_service import feedback_service
 from backend.app.services.path_refinement_service import path_refinement_service
+from backend.app.services.learner_profile_service import learner_profile_service
 from backend.app.services.adaptive_learning_loop_service import (
     adaptive_learning_loop_service,
 )
@@ -42,28 +43,39 @@ def generate_learning_path(
 ):
     """Generate a subject-scoped learning path and freeze lesson chunk recommendations."""
     user_id = str(current_user.get("_id", ""))
+    subject_id = str(payload.subject_id or "").strip()
+    personalization = learner_profile_service.personalization_context(
+        user_id=user_id,
+        subject_id=subject_id,
+        goal=payload.goal,
+        level=payload.level.value if payload.level else None,
+    )
     try:
         result = learning_path_service.generate_learning_path(
-            subject_id=payload.subject_id.value,
-            goal=payload.goal,
-            level=payload.level.value,
+            subject_id=subject_id,
+            goal=payload.goal or personalization.get("goal", ""),
+            level=(
+                payload.level.value
+                if payload.level
+                else str(personalization.get("level") or "beginner")
+            ),
             user_id=user_id,
         )
         initialized_states = knowledge_tracing_service.bootstrap_from_generated_path(
             user_id=user_id,
             path_id=result.get("path_id", ""),
-            subject_id=payload.subject_id.value,
+            subject_id=subject_id,
             chapters=result.get("chapters", []),
         )
         event_logging_service.log_event(
             "learning_path_generated",
             user_id=user_id,
-            subject_id=payload.subject_id.value,
+            subject_id=subject_id,
             path_id=result.get("path_id"),
             success=True,
             metadata={
-                "level": payload.level.value,
-                "goal": payload.goal[:200],
+                "level": result["level"],
+                "goal": result["goal"][:200],
                 "kt_states_initialized": initialized_states,
             },
         )
@@ -71,9 +83,12 @@ def generate_learning_path(
             path_id=result["path_id"],
             subject_id=payload.subject_id,
             goal=result["goal"],
-            level=payload.level,
+            level=result["level"],
             generated_at=result.get("generated_at"),
             chapters=result["chapters"],
+            concept_graph=result.get("concept_graph", []),
+            concept_mastery=result.get("concept_mastery", {}),
+            mastery_threshold=result.get("mastery_threshold"),
             curriculum_source=result.get("curriculum_source", "fallback"),
             llm_status=result.get("llm_status"),
             message=result.get("message", ""),
@@ -145,10 +160,10 @@ def update_lesson_progress(
     Update lesson progress for a path owned by the current user.
 
     Rules:
-    - Confidence must be >= 75% to complete a lesson (auto-complete if confidence >= 75%)
-    - If confidence < 75%, completion is blocked; stay at in_progress
+    - Lesson completion is decided by mastery evaluation, not just raw accuracy/confidence
+    - Accuracy, Bloom pass, concept coverage, critical concepts, and confidence all contribute
     - Locked lessons cannot be completed (previous lesson must be completed first)
-    - To access next lesson, must complete current lesson (confidence >= 75%)
+    - To access next lesson, the current lesson must be truly completed
     """
     user_id = str(current_user.get("_id", ""))
     try:
@@ -418,6 +433,9 @@ def get_learning_path(path_id: str, current_user=Depends(get_current_user)):
             level=result["level"],
             generated_at=result.get("generated_at"),
             chapters=result["chapters"],
+            concept_graph=result.get("concept_graph", []),
+            concept_mastery=result.get("concept_mastery", {}),
+            mastery_threshold=result.get("mastery_threshold"),
             curriculum_source=result.get("curriculum_source", "fallback"),
             llm_status=result.get("llm_status"),
             message=result.get("message", ""),

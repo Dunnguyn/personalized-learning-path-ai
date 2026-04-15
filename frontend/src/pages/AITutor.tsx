@@ -1,16 +1,13 @@
-import { useState, useEffect, useRef } from 'react';
+﻿import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import PageHero from '../components/ui/PageHero';
+import StatusPanel from '../components/ui/StatusPanel';
 import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../utils/apiClient';
 import { SUBJECTS } from '../utils/subjects';
-import {
-  assessmentService,
-  type AssessmentQuestion,
-  type AssessmentDifficulty,
-} from '../services/assessmentService';
 import { learningPathService } from '../services';
 
 interface Message {
@@ -65,50 +62,7 @@ interface HistoryItem {
   timestamp: string;
 }
 
-interface AssessmentDraft {
-  lesson_title: string;
-  concept: string;
-  difficulty: AssessmentDifficulty;
-  question_type: string;
-  num_questions: number;
-  chapter_content: string;
-}
-
-const ASSESSMENT_QUESTION_TYPE_OPTIONS = [
-  { value: 'short_answer', label: 'Trả lời ngắn' },
-  { value: 'multiple_choice', label: 'Trắc nghiệm' },
-  { value: 'true_false', label: 'Đúng / Sai' },
-] as const;
-
-const ASSESSMENT_DIFFICULTY_LABELS: Record<AssessmentDifficulty, string> = {
-  easy: 'Dễ',
-  medium: 'Trung bình',
-  hard: 'Khó',
-};
-
-const getAssessmentQuestionTypeLabel = (value: string) =>
-  ASSESSMENT_QUESTION_TYPE_OPTIONS.find((option) => option.value === value)?.label || value;
-
-const ASSESSMENT_OPTION_LABELS = ['A', 'B', 'C', 'D', 'E', 'F'];
-
-const normalizeAssessmentOptionLabel = (value: string) => {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === 'dung' || normalized === 'true') {
-    return 'Đúng';
-  }
-  if (normalized === 'sai' || normalized === 'false') {
-    return 'Sai';
-  }
-  return value.trim();
-};
-
-const normalizeAssessmentAnswerValue = (value: string) =>
-  value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+type TutorMode = 'explain' | 'practice' | 'summarize';
 
 type StoredMessage = Omit<Message, 'timestamp'> & { timestamp: string };
 type MessagePayload = {
@@ -126,6 +80,55 @@ type ConceptApiRecord = {
 type ConceptProgressRecord = {
   mastery?: number;
   status?: string;
+};
+
+const LEVEL_META = {
+  beginner: {
+    label: 'Người mới',
+    description: 'Ưu tiên giải thích nền tảng, ví dụ ngắn và nhịp học chậm hơn.',
+  },
+  intermediate: {
+    label: 'Trung cấp',
+    description: 'Đi thẳng vào mối liên hệ giữa các khái niệm và cách áp dụng.',
+  },
+  advanced: {
+    label: 'Nâng cao',
+    description: 'Tập trung vào trade-off, tối ưu hóa và tình huống thực tế.',
+  },
+} as const;
+
+const SESSION_SETUP_NOTES = [
+  'Chọn đúng môn để AI bám vào ngữ cảnh lộ trình và tài nguyên liên quan.',
+  'Thêm mục tiêu chi tiết nếu bạn muốn câu trả lời tập trung hơn vào một nhánh kiến thức.',
+  'Có thể đổi phiên học bất cứ lúc nào mà không ảnh hưởng đến các màn khác.',
+] as const;
+
+const TUTOR_MODE_META: Record<
+  TutorMode,
+  { label: string; shortLabel: string; description: string; helper: string }
+> = {
+  explain: {
+    label: 'Giải thích',
+    shortLabel: 'Giải thích',
+    description:
+      'Ưu tiên trả lời có cấu trúc, giải thích khái niệm và nối lại với bối cảnh học hiện tại.',
+    helper:
+      'Phù hợp khi bạn cần hiểu rõ một khái niệm trước khi làm bài hoặc chuyển sang lesson tiếp theo.',
+  },
+  practice: {
+    label: 'Luyện tập',
+    shortLabel: 'Luyện tập',
+    description:
+      'Đẩy mạnh ví dụ, câu hỏi gợi mở và bước kiểm tra nhanh ngay trong cuộc hội thoại.',
+    helper:
+      'Dùng khi bạn muốn tự trả lời từng bước và nhận gợi ý thay vì đọc lời giải hoàn chỉnh.',
+  },
+  summarize: {
+    label: 'Tóm tắt',
+    shortLabel: 'Tóm tắt',
+    description: 'Rút gọn nội dung thành ý chính, checklist và thứ tự học tiếp theo.',
+    helper: 'Phù hợp cho lúc ôn tập nhanh, chuẩn bị quiz hoặc tổng kết trước khi chuyển chủ đề.',
+  },
 };
 
 const buildStorageKey = (userId: string, subjectKey: string, goalKey: string) => {
@@ -186,125 +189,16 @@ export default function AITutor() {
   const [subjectId, setSubjectId] = useState(SUBJECTS[0]?.id ?? '');
   const [goalDetail, setGoalDetail] = useState('');
   const [level, setLevel] = useState<'beginner' | 'intermediate' | 'advanced'>('beginner');
+  const [tutorMode, setTutorMode] = useState<TutorMode>('explain');
   const [showGoalInput, setShowGoalInput] = useState(!goal);
   const [currentConcept, setCurrentConcept] = useState<ConceptInfo | null>(null);
   const [conceptLoading, setConceptLoading] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [assessmentDraft, setAssessmentDraft] = useState<AssessmentDraft>({
-    lesson_title: '',
-    concept: '',
-    difficulty: 'easy',
-    question_type: 'short_answer',
-    num_questions: 5,
-    chapter_content: '',
-  });
-  const [assessmentLoading, setAssessmentLoading] = useState(false);
-  const [assessmentQuestions, setAssessmentQuestions] = useState<AssessmentQuestion[]>([]);
-  const [assessmentError, setAssessmentError] = useState<string | null>(null);
-  const [isAssessmentModalOpen, setIsAssessmentModalOpen] = useState(false);
-  const [activeAssessmentIndex, setActiveAssessmentIndex] = useState(0);
-  const [assessmentResponses, setAssessmentResponses] = useState<string[]>([]);
-  const [assessmentRevealed, setAssessmentRevealed] = useState<boolean[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const autoStartedRef = useRef(false);
-
-  const normalizedAssessmentDraft = {
-    lessonTitle: assessmentDraft.lesson_title.trim(),
-    concept: assessmentDraft.concept.trim(),
-    questionType: assessmentDraft.question_type.trim(),
-    chapterContent: assessmentDraft.chapter_content.trim(),
-    numQuestions: Number.isFinite(assessmentDraft.num_questions)
-      ? assessmentDraft.num_questions
-      : 0,
-  };
-
-  const assessmentValidationMessage = (() => {
-    if (!normalizedAssessmentDraft.concept) {
-      return 'Cần nhập khái niệm để tạo câu hỏi.';
-    }
-    if (!normalizedAssessmentDraft.questionType) {
-      return 'Cần chọn loại câu hỏi.';
-    }
-    if (
-      !normalizedAssessmentDraft.chapterContent ||
-      normalizedAssessmentDraft.chapterContent.length < 50
-    ) {
-      return 'Nội dung chương học cần ít nhất 50 ký tự.';
-    }
-    if (normalizedAssessmentDraft.numQuestions < 1 || normalizedAssessmentDraft.numQuestions > 20) {
-      return 'Số câu hỏi phải nằm trong khoảng từ 1 đến 20.';
-    }
-    return null;
-  })();
-
-  const canGenerateAssessment = !assessmentLoading && !assessmentValidationMessage;
-  const activeAssessmentQuestion = assessmentQuestions[activeAssessmentIndex] || null;
-  const activeAssessmentChoices = (activeAssessmentQuestion?.options || []).map(
-    normalizeAssessmentOptionLabel,
-  );
-  const activeAssessmentAnswer = activeAssessmentQuestion
-    ? normalizeAssessmentOptionLabel(activeAssessmentQuestion.answer)
-    : '';
-  const activeAssessmentResponse = assessmentResponses[activeAssessmentIndex] || '';
-  const isActiveAssessmentRevealed = Boolean(assessmentRevealed[activeAssessmentIndex]);
-  const isActiveAssessmentCorrect =
-    isActiveAssessmentRevealed &&
-    normalizeAssessmentAnswerValue(activeAssessmentResponse) ===
-      normalizeAssessmentAnswerValue(activeAssessmentAnswer);
-  const answeredAssessmentCount = assessmentRevealed.filter(Boolean).length;
-  const correctAssessmentCount = assessmentQuestions.reduce((count, question, index) => {
-    if (!assessmentRevealed[index]) {
-      return count;
-    }
-    const normalizedUserAnswer = normalizeAssessmentAnswerValue(assessmentResponses[index] || '');
-    const normalizedCorrectAnswer = normalizeAssessmentAnswerValue(
-      normalizeAssessmentOptionLabel(question.answer || ''),
-    );
-    return normalizedUserAnswer === normalizedCorrectAnswer ? count + 1 : count;
-  }, 0);
-  const incorrectAssessmentIndexes = assessmentQuestions.reduce<number[]>(
-    (indexes, question, index) => {
-      if (!assessmentRevealed[index]) {
-        return indexes;
-      }
-      const normalizedUserAnswer = normalizeAssessmentAnswerValue(assessmentResponses[index] || '');
-      const normalizedCorrectAnswer = normalizeAssessmentAnswerValue(
-        normalizeAssessmentOptionLabel(question.answer || ''),
-      );
-      if (normalizedUserAnswer !== normalizedCorrectAnswer) {
-        indexes.push(index);
-      }
-      return indexes;
-    },
-    [],
-  );
-  const incorrectAssessmentCount = incorrectAssessmentIndexes.length;
-  const allAssessmentAnswered =
-    assessmentQuestions.length > 0 && answeredAssessmentCount === assessmentQuestions.length;
-
-  useEffect(() => {
-    if (!isAssessmentModalOpen) {
-      return;
-    }
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setIsAssessmentModalOpen(false);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isAssessmentModalOpen]);
 
   const renderMessageContent = (text: string) => (
     <ReactMarkdown
@@ -610,6 +504,7 @@ export default function AITutor() {
 
       const data = (await apiClient.post('/ask/', {
         user_id: user.user_id,
+        subject_id: subjectId || undefined,
         question: userQuestion,
         goal: goal,
         level: level,
@@ -671,157 +566,6 @@ export default function AITutor() {
     }
   };
 
-  const handleGenerateAssessment = async () => {
-    if (!user) {
-      return;
-    }
-
-    setAssessmentError(null);
-    setAssessmentQuestions([]);
-    setIsAssessmentModalOpen(false);
-    setActiveAssessmentIndex(0);
-    setAssessmentResponses([]);
-    setAssessmentRevealed([]);
-
-    if (assessmentValidationMessage) {
-      setAssessmentError(assessmentValidationMessage);
-      return;
-    }
-
-    if (!assessmentDraft.concept.trim()) {
-      setAssessmentError('Vui lòng nhập concept');
-      return;
-    }
-
-    if (
-      !assessmentDraft.chapter_content.trim() ||
-      assessmentDraft.chapter_content.trim().length < 50
-    ) {
-      setAssessmentError('Nội dung chương học cần ít nhất 50 ký tự');
-      return;
-    }
-
-    if (assessmentDraft.num_questions < 1 || assessmentDraft.num_questions > 20) {
-      setAssessmentError('Số câu hỏi phải từ 1 đến 20');
-      return;
-    }
-
-    await runAssessmentGeneration({
-      user_id: user.user_id,
-      lesson_title: normalizedAssessmentDraft.lessonTitle || normalizedAssessmentDraft.concept,
-      concept: normalizedAssessmentDraft.concept,
-      difficulty: assessmentDraft.difficulty,
-      question_type: normalizedAssessmentDraft.questionType || 'short_answer',
-      num_questions: normalizedAssessmentDraft.numQuestions,
-      chapter_content: normalizedAssessmentDraft.chapterContent,
-      retrieved_context: normalizedAssessmentDraft.chapterContent,
-    });
-  };
-
-  const runAssessmentGeneration = async (
-    payload: Parameters<typeof assessmentService.generateQuestions>[0],
-  ) => {
-    setAssessmentLoading(true);
-
-    try {
-      const response = await assessmentService.generateQuestions(payload);
-
-      if (!response.success) {
-        throw new Error('Không thể tạo câu hỏi kiểm tra');
-      }
-
-      const generatedQuestions = response.questions || [];
-      if (!generatedQuestions.length) {
-        throw new Error('Chưa nhận được câu hỏi nào từ hệ thống');
-      }
-
-      setAssessmentQuestions(generatedQuestions);
-      setAssessmentResponses(new Array(generatedQuestions.length).fill(''));
-      setAssessmentRevealed(new Array(generatedQuestions.length).fill(false));
-      setActiveAssessmentIndex(0);
-      setIsAssessmentModalOpen(true);
-      return true;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Đã xảy ra lỗi khi tạo câu hỏi';
-      setAssessmentError(message);
-      return false;
-    } finally {
-      setAssessmentLoading(false);
-    }
-  };
-
-  const handleUpdateAssessmentResponse = (value: string) => {
-    setAssessmentResponses((prev) => {
-      const next = [...prev];
-      next[activeAssessmentIndex] = value;
-      return next;
-    });
-
-    setAssessmentRevealed((prev) => {
-      if (!prev[activeAssessmentIndex]) {
-        return prev;
-      }
-      const next = [...prev];
-      next[activeAssessmentIndex] = false;
-      return next;
-    });
-  };
-
-  const handleRevealAssessmentAnswer = () => {
-    if (!activeAssessmentResponse.trim()) {
-      return;
-    }
-
-    setAssessmentRevealed((prev) => {
-      const next = [...prev];
-      next[activeAssessmentIndex] = true;
-      return next;
-    });
-  };
-
-  const handleResetAssessmentSession = () => {
-    setAssessmentResponses(new Array(assessmentQuestions.length).fill(''));
-    setAssessmentRevealed(new Array(assessmentQuestions.length).fill(false));
-    setActiveAssessmentIndex(0);
-  };
-
-  const handleGenerateAssessmentFromMistakes = async () => {
-    if (!user || incorrectAssessmentCount === 0) {
-      return;
-    }
-
-    const incorrectQuestions = incorrectAssessmentIndexes
-      .map((index) => assessmentQuestions[index])
-      .filter(Boolean);
-    const retryConcept = Array.from(
-      new Set(
-        incorrectQuestions
-          .map((question) => question.concept?.trim())
-          .filter((value): value is string => Boolean(value)),
-      ),
-    ).join(', ');
-    const retryContext = incorrectQuestions
-      .map((question) => [question.source_excerpt, question.explanation].filter(Boolean).join('\n'))
-      .filter(Boolean)
-      .join('\n\n');
-
-    setAssessmentError(null);
-
-    await runAssessmentGeneration({
-      user_id: user.user_id,
-      lesson_title: normalizedAssessmentDraft.lessonTitle || 'Ôn tập lỗi sai',
-      concept: retryConcept || normalizedAssessmentDraft.concept,
-      difficulty: assessmentDraft.difficulty,
-      question_type: normalizedAssessmentDraft.questionType || 'short_answer',
-      num_questions: Math.min(
-        Math.max(incorrectQuestions.length, 1),
-        Math.max(normalizedAssessmentDraft.numQuestions, 1),
-      ),
-      chapter_content: retryContext || normalizedAssessmentDraft.chapterContent,
-      retrieved_context: retryContext || normalizedAssessmentDraft.chapterContent,
-    });
-  };
-
   const addMessage = (role: 'user' | 'assistant', content: string, data: MessagePayload) => {
     const newMessage: Message = {
       id: Math.random().toString(36).substr(2, 9),
@@ -838,84 +582,310 @@ export default function AITutor() {
     setMessages((prev) => [...prev, newMessage]);
   };
 
+  const currentSubject = SUBJECTS.find((subject) => subject.id === subjectId);
+  const currentLevelMeta = LEVEL_META[level];
+  const activeTutorMode = TUTOR_MODE_META[tutorMode];
+  const sessionQuestionCount = messages.filter((message) => message.role === 'user').length;
+  const latestSourceCount =
+    [...messages]
+      .reverse()
+      .find((message) => (message.answer?.sources?.length || 0) > 0)?.answer?.sources?.length || 0;
+  const historyPreview = history.slice(0, 3);
+  const activeGoalDetail = goalDetail.trim() || 'Chưa có mục tiêu chi tiết';
+  const aiReadyContext = [
+    {
+      label: 'Môn học',
+      value: currentSubject?.label || 'Chưa chọn',
+      detail: currentSubject?.goal || 'Chọn môn để AI bám đúng ngữ cảnh.',
+    },
+    {
+      label: 'Mục tiêu',
+      value: goal || activeGoalDetail,
+      detail: goal ? 'Đang được dùng cho phiên hiện tại.' : 'Sẽ được đưa vào phiên mới sau khi bắt đầu.',
+    },
+    {
+      label: 'Chế độ Tutor',
+      value: activeTutorMode.shortLabel,
+      detail: activeTutorMode.helper,
+    },
+  ];
+  const tutorModePrompts = {
+    explain: currentConcept
+      ? [
+          `Giải thích ${currentConcept.concept_name} theo cách đơn giản và nối với mục tiêu hiện tại.`,
+          `Vì sao ${currentConcept.concept_name} quan trọng trong lộ trình tôi đang học?`,
+        ]
+      : [
+          `Giải thích khái niệm chính của ${currentSubject?.label || 'môn học này'} theo cách dễ hiểu.`,
+          'Chia chủ đề này thành các ý chính và quan hệ giữa chúng.',
+        ],
+    practice: currentConcept
+      ? [
+          `Đặt cho tôi 3 câu hỏi luyện tập nhanh về ${currentConcept.concept_name}.`,
+          `Cho tôi một bài tập ngắn để tự kiểm tra ${currentConcept.concept_name}.`,
+        ]
+      : [
+          'Tạo cho tôi một bài luyện tập ngắn phù hợp với trình độ hiện tại.',
+          'Hỏi tôi từng bước để tôi tự giải thay vì đưa đáp án ngay.',
+        ],
+    summarize: goal
+      ? [
+          `Tóm tắt những gì quan trọng nhất để đạt mục tiêu "${goal}".`,
+          'Rút gọn buổi học này thành checklist ôn tập 5 ý.',
+        ]
+      : [
+          'Tóm tắt chủ đề này thành checklist ngắn để ôn tập.',
+          'Cho tôi thứ tự học tiếp theo dưới dạng 3 bước.',
+        ],
+  } as const;
+  const quickPromptSuggestions = Array.from(
+    new Set(
+      [
+        ...tutorModePrompts[tutorMode],
+        currentConcept
+          ? `Giải thích lại ${currentConcept.concept_name} bằng một ví dụ thật ngắn.`
+          : '',
+        currentConcept
+          ? `Cho tôi 3 lỗi thường gặp khi học ${currentConcept.concept_name}.`
+          : '',
+        goal ? `Tóm tắt giúp tôi những ý quan trọng nhất để đạt mục tiêu "${goal}".` : '',
+        'Từ phần đã trao đổi, tôi nên học tiếp theo thứ tự nào?',
+      ].filter(Boolean),
+    ),
+  );
+
+  const handleUsePrompt = (prompt: string) => {
+    setInput(prompt);
+    setError(null);
+    window.requestAnimationFrame(() => composerRef.current?.focus());
+  };
+
+  useEffect(() => {
+    if (!composerRef.current) {
+      return;
+    }
+
+    composerRef.current.style.height = '0px';
+    composerRef.current.style.height = `${Math.min(composerRef.current.scrollHeight, 180)}px`;
+  }, [input]);
+
   if (showGoalInput) {
     return (
       <DashboardLayout>
-        <div className="page-shell-narrow">
-          <p className="page-kicker">Trợ giảng AI</p>
-          <h1 className="page-title">Trợ giảng AI</h1>
+        <div className="page-shell desktop-1440-ai-tutor pb-6">
+          <PageHero
+            className="mb-6"
+            kicker="Thiết lập phiên học"
+            title="Khởi tạo một phiên chat đúng ngữ cảnh trước khi hỏi."
+            description=""
+            actions={
+              <>
+                <span className="demo-pill">{currentSubject?.label || 'Môn học hiện tại'}</span>
+                <span className="demo-pill">{currentLevelMeta.label}</span>
+                <span className="demo-pill">{activeTutorMode.shortLabel}</span>
+                <span className="demo-pill">Sẵn sàng chat theo mục tiêu</span>
+              </>
+            }
+            metrics={[
+              {
+                label: 'Môn học',
+                value: currentSubject?.label || 'Chưa chọn',
+                detail: currentSubject?.goal || 'Chọn môn để hệ thống lấy mục tiêu nền.',
+              },
+              {
+                label: 'Mục tiêu chi tiết',
+                value: goalDetail.trim() ? 'Đã cá nhân hóa' : 'Đang dùng mục tiêu mặc định',
+                detail: activeGoalDetail,
+              },
+              {
+                label: 'Mức độ hỗ trợ',
+                value: `${currentLevelMeta.label} • ${activeTutorMode.shortLabel}`,
+                detail: activeTutorMode.helper,
+              },
+            ]}
+          />
 
-          <div className="mb-[40px] flex items-center gap-2">
-            <div className="h-[28px] w-[3px] rounded-[5px] bg-[#8c3451]" />
-            <h2 className="page-section-title text-[18px]">Bắt đầu phiên học tập</h2>
-          </div>
-
-          <div className="soft-panel max-w-[720px] p-8">
-            <div className="mb-6">
-              <label className="mb-3 block text-[16px] font-medium text-[#514942]">
-                Mục tiêu học tập của bạn là gì?
-              </label>
-              <select
-                value={subjectId}
-                onChange={(e) => setSubjectId(e.target.value)}
-                className="theme-input rounded-[18px]"
-              >
-                {SUBJECTS.map((subject) => (
-                  <option key={subject.id} value={subject.id}>
-                    {subject.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="mb-6">
-              <label className="mb-3 block text-[16px] font-medium text-[#514942]">
-                Mục tiêu chi tiết (tùy chọn)
-              </label>
-              <input
-                type="text"
-                value={goalDetail}
-                onChange={(e) => setGoalDetail(e.target.value)}
-                placeholder="VD: backend, OOP, cấu trúc dữ liệu..."
-                className="theme-input rounded-[18px]"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleStartChat();
-                  }
-                }}
-              />
-            </div>
-
-            <div className="mb-6">
-              <label className="mb-3 block text-[16px] font-medium text-[#514942]">
-                Trình độ hiện tại
-              </label>
-              <select
-                value={level}
-                onChange={(e) =>
-                  setLevel(e.target.value as 'beginner' | 'intermediate' | 'advanced')
-                }
-                className="theme-input rounded-[18px]"
-              >
-                <option value="beginner">Người mới bắt đầu</option>
-                <option value="intermediate">Trung cấp</option>
-                <option value="advanced">Nâng cao</option>
-              </select>
-            </div>
-
-            {error && (
-              <div className="mb-4 p-3 bg-red-100 border border-red-300 text-red-800 rounded-[10px] text-[14px]">
-                {error}
+          <div className="grid gap-6">
+            <div className="white-panel p-6 sm:p-8">
+              <div className="mb-6 max-w-2xl">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#b07a8e]">
+                  Bắt đầu phiên học
+                </p>
+                <h2 className="mt-3 text-[26px] font-semibold tracking-[-0.04em] text-[#17141a] sm:text-[30px]">
+                  Thiết lập vài tín hiệu trước khi trao đổi
+                </h2>
+                <p className="mt-3 text-[13px] leading-5 text-[#6b615d]">Chọn môn, mode và bắt đầu.</p>
               </div>
-            )}
 
-            <button
-              onClick={handleStartChat}
-              className="theme-button w-full justify-center text-[16px]"
-            >
-              Bắt đầu
-            </button>
+              <div className="mb-6 rounded-[24px] border border-[#f0d7e0] bg-[#fff8fb] p-4">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="max-w-[520px]">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
+                      Chế độ Tutor
+                    </p>
+                    <h3 className="mt-2 text-[20px] font-semibold tracking-[-0.03em] text-[#17141a]">
+                      AI sẽ hỗ trợ theo cách nào?
+                    </h3>
+                    <p className="mt-2 text-[13px] leading-5 text-[#6f5260]">
+                      {activeTutorMode.description}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {(Object.keys(TUTOR_MODE_META) as TutorMode[]).map((mode) => {
+                      const isActive = mode === tutorMode;
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => setTutorMode(mode)}
+                          className={`rounded-full border px-4 py-2 text-[12px] font-semibold transition ${
+                            isActive
+                              ? 'border-[#8c3451] bg-[#8c3451] text-white shadow-[0_12px_24px_rgba(140,52,81,0.18)]'
+                              : 'border-[#ead6dd] bg-white text-[#6f5260] hover:bg-[#fff7fb]'
+                          }`}
+                        >
+                          {TUTOR_MODE_META[mode].label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <p className="mt-4 text-[12px] leading-5 text-[#7d666f]">{activeTutorMode.helper}</p>
+              </div>
+
+              {error ? (
+                <StatusPanel className="mb-6 px-4 py-3 shadow-none" tone="error" description={error} />
+              ) : null}
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Môn học</span>
+                  <select
+                    value={subjectId}
+                    onChange={(e) => setSubjectId(e.target.value)}
+                    className="theme-input rounded-[18px]"
+                  >
+                    {SUBJECTS.map((subject) => (
+                      <option key={subject.id} value={subject.id}>
+                        {subject.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Trình độ hiện tại</span>
+                  <select
+                    value={level}
+                    onChange={(e) =>
+                      setLevel(e.target.value as 'beginner' | 'intermediate' | 'advanced')
+                    }
+                    className="theme-input rounded-[18px]"
+                  >
+                    <option value="beginner">Người mới bắt đầu</option>
+                    <option value="intermediate">Trung cấp</option>
+                    <option value="advanced">Nâng cao</option>
+                  </select>
+                </label>
+
+                <label className="space-y-2 lg:col-span-2">
+                  <span className="text-[12px] font-medium text-[#6f5260]">Mục tiêu chi tiết</span>
+                  <input
+                    type="text"
+                    value={goalDetail}
+                    onChange={(e) => setGoalDetail(e.target.value)}
+                    placeholder="Ví dụ: backend, OOP, cấu trúc dữ liệu, React hooks..."
+                    className="theme-input rounded-[18px]"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleStartChat();
+                      }
+                    }}
+                  />
+                </label>
+              </div>
+
+              <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                <button
+                  onClick={handleStartChat}
+                  className="theme-button w-full justify-center text-[15px] sm:w-auto"
+                >
+                  Bắt đầu phiên chat
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGoalDetail('')}
+                  className="theme-button-secondary w-full justify-center text-[15px] sm:w-auto"
+                >
+                  Xóa mục tiêu chi tiết
+                </button>
+              </div>
+
+              <div className="mt-6 rounded-[24px] border border-[#ead6dd] bg-white/80 p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
+                      Gợi ý nhanh
+                    </p>
+                    <p className="mt-2 text-[12px] leading-5 text-[#6f5260]">Chạm để bắt đầu nhanh.</p>
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {quickPromptSuggestions.slice(0, 4).map((prompt) => (
+                    <button
+                      key={`setup-${prompt}`}
+                      type="button"
+                      onClick={() => handleUsePrompt(prompt)}
+                      className="rounded-full border border-[#ead6dd] bg-[#fff8fb] px-4 py-2 text-[12px] font-medium text-[#7a4d5d] transition hover:-translate-y-0.5 hover:border-[#d1aabb] hover:bg-white"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="hidden flex-col gap-4 xl:sticky xl:top-4 xl:self-start">
+              <div className="soft-panel p-6">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#b07a8e]">
+                  Ngữ cảnh AI đã nắm
+                </p>
+                <h3 className="mt-3 text-[24px] font-semibold tracking-[-0.04em] text-[#17141a]">
+                  {currentSubject?.label || 'Phiên học mới'}
+                </h3>
+                <div className="mt-5 grid gap-3">
+                  {aiReadyContext.map((item) => (
+                    <div
+                      key={item.label}
+                      className="rounded-[18px] border border-white/80 bg-white/80 px-4 py-3"
+                    >
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-[#8c3451]/55">
+                        {item.label}
+                      </p>
+                      <p className="mt-2 text-[14px] font-semibold text-[#231d22]">{item.value}</p>
+                      <p className="mt-1 text-[12px] leading-5 text-[#7d666f]">{item.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="white-panel p-6">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#b07a8e]">
+                  Ghi chú nhanh
+                </p>
+                <div className="mt-4 space-y-3">
+                  {SESSION_SETUP_NOTES.map((note) => (
+                    <div
+                      key={note}
+                      className="rounded-[18px] border border-[#f0d7e0] bg-[#fff8fb] px-4 py-3 text-[13px] leading-6 text-[#6f5260]"
+                    >
+                      {note}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </DashboardLayout>
@@ -924,103 +894,311 @@ export default function AITutor() {
 
   return (
     <DashboardLayout>
-      <div className="page-shell flex min-h-[calc(100vh-140px)] flex-col pb-6">
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="page-kicker mb-2">Trợ giảng AI</p>
-            <h1 className="page-title mb-0">Trợ giảng AI</h1>
+      <div className="page-shell max-w-[1560px] flex min-h-[calc(100vh-140px)] flex-col pb-6">
+          <PageHero
+            className="mb-6"
+            kicker="Trợ giảng AI"
+            title="Một workspace hỏi đáp giữ mạch học tập theo phiên."
+            description=""
+          actions={
+            <>
+              <span className="demo-pill">{currentSubject?.label || 'Môn học hiện tại'}</span>
+              <span className="demo-pill">{currentLevelMeta.label}</span>
+              <span className="demo-pill">{activeTutorMode.shortLabel}</span>
+              <span className="demo-pill">{sessionQuestionCount} câu hỏi trong phiên</span>
+              <button
+                type="button"
+                onClick={() => setShowHistory(!showHistory)}
+                className="theme-button-secondary px-4 py-2 text-[12px]"
+              >
+                {showHistory ? 'Ẩn lịch sử' : `Lịch sử (${history.length})`}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGoalInput(true);
+                  setMessages([]);
+                  setGoal('');
+                }}
+                className="theme-button px-4 py-2 text-[12px]"
+              >
+                Phiên mới
+              </button>
+            </>
+          }
+          metrics={[
+            {
+              label: 'Mục tiêu hiện tại',
+              value: goal ? 'Đã thiết lập' : 'Chưa có mục tiêu',
+              detail: goal || 'Thiết lập mục tiêu để AI trả lời sát hơn.',
+            },
+            {
+              label: 'Lịch sử gần đây',
+              value: `${history.length} mục`,
+              detail:
+                historyPreview[0]?.question || 'Chưa có lịch sử câu hỏi cho môn học hiện tại.',
+            },
+            {
+              label: 'Khái niệm đang theo dõi',
+              value: currentConcept?.concept_name || 'Chưa có',
+              detail: currentConcept
+                ? `Độ thành thạo ${Math.round(currentConcept.mastery * 100)}%`
+                : 'Khái niệm sẽ xuất hiện khi câu hỏi được nhận diện theo ngữ cảnh.',
+            },
+          ]}
+        />
+
+        <div className="mb-6 hidden gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="rounded-[24px] border border-[#ead6dd] bg-[#fff8fb] px-5 py-4">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="max-w-[760px]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
+                  Ngữ cảnh AI đã nắm
+                </p>
+                <h2 className="mt-2 text-[22px] font-semibold tracking-[-0.03em] text-[#18141a]">
+                  Phiên này đang hiểu bạn theo tín hiệu nào
+                </h2>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  {aiReadyContext.map((item) => (
+                    <div key={`session-${item.label}`} className="rounded-[18px] border border-white/80 bg-white/80 px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-[#8c3451]/55">
+                        {item.label}
+                      </p>
+                      <p className="mt-2 text-[14px] font-semibold text-[#231d22]">{item.value}</p>
+                      <p className="mt-1 text-[12px] leading-5 text-[#7d666f]">{item.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-[18px] border border-white/80 bg-white/80 px-4 py-4 lg:max-w-[320px]">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-[#8c3451]/55">
+                  Chế độ Tutor
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {(Object.keys(TUTOR_MODE_META) as TutorMode[]).map((mode) => (
+                    <button
+                      key={`session-mode-${mode}`}
+                      type="button"
+                      onClick={() => setTutorMode(mode)}
+                      className={`rounded-full border px-4 py-2 text-[12px] font-semibold transition ${
+                        tutorMode === mode
+                          ? 'border-[#8c3451] bg-[#8c3451] text-white shadow-[0_12px_24px_rgba(140,52,81,0.18)]'
+                          : 'border-[#ead6dd] bg-white text-[#6f5260] hover:bg-[#fff7fb]'
+                      }`}
+                    >
+                      {TUTOR_MODE_META[mode].label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-3 text-[12px] leading-5 text-[#7d666f]">{activeTutorMode.shortLabel}</p>
+              </div>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-3">
-            <button
-              onClick={handleClearSubjectHistory}
-              className="theme-button-secondary border-red-200 bg-white/90 text-red-700"
-            >
-              🗑️ Xóa lịch sử môn
-            </button>
-            <button onClick={() => setShowHistory(!showHistory)} className="theme-button-secondary">
-              📋 Lịch sử ({history.length})
-            </button>
-            <button
-              onClick={() => {
-                setShowGoalInput(true);
-                setMessages([]);
-                setGoal('');
-              }}
-              className="theme-button"
-            >
-              Phiên mới
-            </button>
+
+          <div className="rounded-[24px] border border-[#dbe8ff] bg-[#f5f9ff] px-5 py-4">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2563eb]">
+              Gợi ý nhanh
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {quickPromptSuggestions.slice(0, 4).map((prompt) => (
+                <button
+                  key={`hero-${prompt}`}
+                  type="button"
+                  onClick={() => handleUsePrompt(prompt)}
+                  className="rounded-full border border-[#d4e3ff] bg-white px-4 py-2 text-[12px] font-medium text-[#34527c] transition hover:-translate-y-0.5 hover:border-[#aac7ff]"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
           </div>
+        </div>
+
+        <div className="mb-6 hidden flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={handleClearSubjectHistory}
+            className="theme-button-secondary border-red-200 bg-white/90 text-red-700"
+          >
+            Xóa lịch sử môn
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/resources')}
+            className="theme-button-secondary"
+          >
+            Mở thư viện tài nguyên
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/learning-path')}
+            className="theme-button-secondary"
+          >
+            Xem lộ trình học
+          </button>
         </div>
 
         {/* History Modal */}
         {showHistory && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
-            <div className="white-panel flex max-h-[80vh] w-full max-w-[560px] flex-col overflow-hidden">
-              <div className="flex items-center justify-between border-b border-[#8c3451]/10 p-6">
-                <h2 className="text-[22px] font-medium tracking-[-0.03em] text-[#8c3451]">
-                  Lịch sử câu hỏi
-                </h2>
-                <button
-                  onClick={() => setShowHistory(false)}
-                  className="text-[24px] text-[#8c3451]"
-                >
-                  ×
-                </button>
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-[#2a121b]/35 p-4 backdrop-blur-sm"
+            onClick={() => setShowHistory(false)}
+          >
+            <div
+              className="white-panel flex max-h-[82vh] w-full max-w-[620px] flex-col overflow-hidden rounded-[28px] border border-[#f1d7e2] shadow-[0_32px_80px_rgba(45,31,17,0.22)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="border-b border-[#8c3451]/10 bg-[linear-gradient(180deg,#fff9fc_0%,#fff4f8_100%)] px-6 py-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#b07a8e]">
+                      Lịch sử phiên học
+                    </p>
+                    <h2 className="mt-2 text-[24px] font-semibold tracking-[-0.04em] text-[#8c3451]">
+                      Câu hỏi gần đây
+                    </h2>
+                    <p className="mt-2 text-[13px] leading-6 text-[#6f5260]">
+                      Chọn lại một câu hỏi để nạp nhanh vào ô chat, hoặc xóa riêng từng mục khi cần.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowHistory(false)}
+                    className="rounded-full p-2 text-[#8c3451] transition hover:bg-white"
+                    aria-label="Đóng lịch sử"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <span className="demo-pill">{currentSubject?.label || 'Môn hiện tại'}</span>
+                  <span className="demo-pill">{history.length} mục lịch sử</span>
+                </div>
               </div>
 
-              <div className="scroll-soft flex-1 overflow-y-auto p-4 space-y-3">
+              <div className="scroll-soft flex-1 overflow-y-auto p-4 sm:p-5">
                 {historyLoading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-[#8c3451]" />
+                  <div className="flex min-h-[220px] items-center justify-center">
+                    <div className="h-9 w-9 animate-spin rounded-full border-b-2 border-[#8c3451]" />
                   </div>
                 ) : history.length === 0 ? (
-                  <div className="text-center py-8 text-[#666]">
-                    <p>Chưa có câu hỏi nào</p>
+                  <div className="flex min-h-[240px] items-center justify-center">
+                    <div className="max-w-[340px] text-center">
+                      <p className="text-[18px] font-semibold text-[#8c3451]">
+                        Chưa có câu hỏi nào được lưu
+                      </p>
+                      <p className="mt-3 text-[13px] leading-6 text-[#6f5260]">
+                        Sau khi bạn hỏi vài câu, lịch sử sẽ xuất hiện ở đây để tái sử dụng nhanh trong cùng môn học.
+                      </p>
+                    </div>
                   </div>
                 ) : (
-                  history.map((item) => (
-                    <div key={item._id} className="metric-card group p-3">
-                      <div className="flex justify-between items-start gap-2">
-                        <div
-                          className="flex-1 cursor-pointer"
-                          onClick={() => handleLoadFromHistory(item)}
-                        >
-                          <p className="mb-1 line-clamp-2 text-[13px] font-medium text-[#8c3451]">
-                            {item.question}
-                          </p>
-                          <p className="mb-1 text-[11px] text-[#666]">Mục tiêu: {item.goal}</p>
-                          <p className="text-[10px] text-[#999]">
-                            {new Date(item.timestamp).toLocaleString('vi-VN')}
-                          </p>
+                  <div className="space-y-3">
+                    {history.map((item) => (
+                      <div key={item._id} className="group rounded-[22px] border border-[#efe1e8] bg-[#fff9fb] p-4 transition hover:border-[#dcb4c4] hover:bg-white">
+                        <div className="flex items-start justify-between gap-3">
+                          <button
+                            type="button"
+                            className="min-w-0 flex-1 text-left"
+                            onClick={() => handleLoadFromHistory(item)}
+                          >
+                            <p className="line-clamp-2 text-[14px] font-semibold leading-6 text-[#3b2c34]">
+                              {item.question}
+                            </p>
+                            <p className="mt-2 text-[12px] text-[#8a5d6d]">
+                              Mục tiêu: {item.goal}
+                            </p>
+                            <p className="mt-1 text-[11px] text-[#8e8388]">
+                              {new Date(item.timestamp).toLocaleString('vi-VN')}
+                            </p>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteHistoryItem(item._id)}
+                            className="rounded-full border border-red-200 bg-white px-3 py-1.5 text-[11px] font-medium whitespace-nowrap text-red-600 opacity-100 transition hover:bg-red-50 sm:opacity-0 sm:group-hover:opacity-100"
+                          >
+                            Xóa
+                          </button>
                         </div>
-                        <button
-                          onClick={() => handleDeleteHistoryItem(item._id)}
-                          className="rounded-full bg-red-100 px-2 py-1 text-[11px] whitespace-nowrap text-red-600 opacity-0 transition-opacity group-hover:opacity-100"
-                        >
-                          Xóa
-                        </button>
                       </div>
-                    </div>
-                  ))
+                    ))}
+                  </div>
                 )}
+              </div>
+
+              <div className="border-t border-[#f0dfe7] bg-white/95 px-5 py-4 text-[12px] text-[#7d666f]">
+                Nhấn vào một câu hỏi để nạp lại vào composer, sau đó chỉnh sửa và gửi như một lượt hỏi mới.
               </div>
             </div>
           </div>
         )}
 
-        <div className="flex min-h-0 flex-1 flex-col gap-6 xl:flex-row">
+        <div className="grid min-h-0 flex-1 gap-6">
           {/* Main Chat Area */}
-          <div className="white-panel flex h-[72vh] min-h-[540px] max-h-[860px] flex-1 flex-col overflow-hidden">
+          <div className="white-panel flex h-[82vh] min-h-[720px] max-h-[1560px] flex-col overflow-hidden">
+            <div className="border-b border-[#8c3451]/10 bg-[linear-gradient(180deg,rgba(255,249,252,0.98),rgba(255,245,249,0.98))] px-6 py-5 xl:px-8">
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8c3451]/55">
+                    Phiên học đang chạy
+                  </p>
+                  <h2 className="mt-2 text-[24px] font-medium tracking-[-0.04em] text-[#18141a]">
+                    Hỏi sâu, đọc nguồn, giữ mạch học liên tục
+                  </h2>
+                  <p className="mt-2 max-w-[760px] text-[13px] leading-5 text-[#655d58]">
+                    Hỏi, nhận câu trả lời và đi tiếp.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2 xl:max-w-[360px] xl:justify-end">
+                  <span className="demo-pill">Môn: {currentSubject?.label || 'Chưa chọn'}</span>
+                  <span className="demo-pill">Lịch sử: {history.length}</span>
+                  {currentConcept ? (
+                    <span className="demo-pill">
+                      Thành thạo: {Math.round(currentConcept.mastery * 100)}%
+                    </span>
+                  ) : null}
+                  {loading ? <span className="demo-pill">AI đang phản hồi</span> : null}
+                </div>
+              </div>
+            </div>
+
             {/* Messages Area */}
-            <div className="scroll-soft min-h-0 flex-1 overflow-y-auto p-6 space-y-4">
+            <div className="scroll-soft min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-6 xl:px-8 xl:py-7">
               {messages.length === 0 ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-center">
-                    <div className="text-[50px] mb-4">💡</div>
-                    <p className="text-[#8c3451] text-[16px]">
-                      Hãy bắt đầu bằng cách đặt một câu hỏi
+                <div className="flex h-full items-center justify-center">
+                  <div className="max-w-[1560px] text-center">
+                    <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-[#fdf0f5] text-[#8c3451] shadow-[0_12px_28px_rgba(140,52,81,0.12)]">
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-8 w-8"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M12 3.8 13.7 8l4.5.4-3.4 2.9 1 4.4L12 13.5 8.2 15.7l1-4.4-3.4-2.9L10.3 8 12 3.8Z" />
+                      </svg>
+                    </div>
+                    <p className="text-[22px] font-medium tracking-[-0.03em] text-[#8c3451]">
+                      Bắt đầu bằng một câu hỏi thật cụ thể
                     </p>
+                    <p className="mt-3 text-[13px] leading-5 text-[#645d58]">
+                      Chọn một prompt hoặc gõ câu hỏi đầu tiên.
+                    </p>
+                    <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                      {quickPromptSuggestions.map((prompt) => (
+                        <button
+                          key={prompt}
+                          type="button"
+                          onClick={() => handleUsePrompt(prompt)}
+                          className="rounded-[20px] border border-[#ead6dd] bg-white px-4 py-4 text-left text-[13px] font-medium leading-6 text-[#5c4450] transition hover:-translate-y-0.5 hover:border-[#d7b0bf] hover:bg-[#fff8fb]"
+                        >
+                          {prompt}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -1031,7 +1209,7 @@ export default function AITutor() {
                       className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                     >
                       <div
-                        className={`max-w-[88%] rounded-[24px] p-4 sm:max-w-[70%] ${
+                        className={`max-w-[92%] rounded-[26px] p-4 sm:max-w-[78%] xl:p-5 2xl:max-w-[74%] ${
                           message.role === 'user'
                             ? 'rounded-br-[10px] bg-[#8c3451] text-white'
                             : 'rounded-bl-[10px] bg-[#fdf0f5] text-[#5f3040]'
@@ -1062,7 +1240,10 @@ export default function AITutor() {
                             {message.answer.sources && message.answer.sources.length > 0 && (
                               <div className="mb-4">
                                 <p className="text-[13px] font-bold mb-3 text-[#8c3451] flex items-center gap-1.5">
-                                  <span>📚</span> Nguồn tài liệu
+                                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#f9eef3] text-[11px] font-semibold">
+                                    i
+                                  </span>
+                                  <span>Nguồn tài liệu</span>
                                 </p>
                                 <div className="scroll-soft max-h-44 space-y-2 overflow-y-auto pr-1">
                                   {message.answer.sources.map((source, idx) => (
@@ -1098,7 +1279,7 @@ export default function AITutor() {
                             {message.answer.confidence && (
                               <div className="flex items-center gap-2 p-2.5 bg-[#eef9ff] border border-[#b8e0f6] rounded-lg">
                                 <span className="text-[13px] font-semibold text-[#0066cc]">
-                                  ⭐ Độ tin cậy:
+                                  Độ tin cậy:
                                 </span>
                                 <div className="flex-1 bg-white border border-[#d0e8ff] rounded-full h-2 overflow-hidden">
                                   <div
@@ -1120,7 +1301,7 @@ export default function AITutor() {
                         {message.role === 'assistant' && message.conceptDetected && (
                           <div className="mt-3 p-2 bg-white bg-opacity-20 rounded-[10px]">
                             <p className="text-[12px] font-semibold mb-1">
-                              📌 Khái niệm được phát hiện:
+                              Khái niệm được phát hiện:
                             </p>
                             <p className="text-[13px]">{message.conceptDetected.concept_name}</p>
                             <p className="text-[11px] opacity-80 mt-1">
@@ -1135,7 +1316,7 @@ export default function AITutor() {
                           message.learning_path.length > 0 && (
                             <div className="mt-3 p-2 bg-white bg-opacity-20 rounded-[10px]">
                               <p className="text-[12px] font-semibold mb-2">
-                                🎯 Khái niệm tiếp theo:
+                                Khái niệm tiếp theo:
                               </p>
                               <div className="space-y-1">
                                 {message.learning_path.slice(0, 3).map((concept, idx) => (
@@ -1155,228 +1336,136 @@ export default function AITutor() {
               )}
             </div>
 
-            {error && (
-              <div className="border-t border-red-200 bg-red-50 px-6 py-3 text-[13px] text-red-700">
-                ⚠️ {error}
-              </div>
-            )}
+            {error ? (
+              <StatusPanel
+                className="border-t border-red-200 rounded-none px-6 py-3 shadow-none"
+                tone="error"
+                description={error}
+              />
+            ) : null}
 
             {/* Input Area */}
-            <div className="border-t border-[#8c3451]/10 bg-[#fff6fa] p-4">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !loading) {
-                      e.preventDefault();
-                      handleSendMessage();
-                    }
-                  }}
-                  placeholder="Nhập câu hỏi của bạn..."
-                  disabled={loading}
-                  className="theme-input flex-1 rounded-[18px] disabled:bg-gray-100"
-                />
+            <div className="border-t border-[#8c3451]/10 bg-[#fff6fa] px-5 py-4 xl:px-6 xl:py-5">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <p className="text-[12px] font-medium text-[#8c3451]">Gợi ý hỏi nhanh</p>
+              </div>
+              <div className="mb-3 flex flex-wrap gap-2">
+                {quickPromptSuggestions.map((prompt) => (
+                  <button
+                    key={`footer-${prompt}`}
+                    type="button"
+                    onClick={() => handleUsePrompt(prompt)}
+                    className="rounded-full border border-[#ead6dd] bg-white px-3 py-1.5 text-[12px] font-medium text-[#7a4d5d] transition hover:border-[#d1aabb] hover:bg-[#fff7fb]"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-end gap-3">
+                <div className="flex-1 rounded-[24px] border border-[#ecd6de] bg-white px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]">
+                  <textarea
+                    ref={composerRef}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !loading) {
+                        e.preventDefault();
+                        handleSendMessage();
+                      }
+                    }}
+                    rows={1}
+                    placeholder={`Đang ở chế độ ${activeTutorMode.shortLabel.toLowerCase()}. Hỏi thật cụ thể để AI trả lời đúng nhịp học của bạn.`}
+                    disabled={loading}
+                    className="min-h-[20px] max-h-[180px] w-full resize-none border-0 bg-transparent px-2 py-1 text-[14px] leading-6 text-[#3b2c34] outline-none placeholder:text-[#9b8790] disabled:cursor-not-allowed disabled:text-[#8f8690]"
+                  />
+                </div>
                 <button
                   onClick={handleSendMessage}
                   disabled={loading || !input.trim()}
-                  className="theme-button disabled:cursor-not-allowed disabled:opacity-50"
+                  className="theme-button min-w-[108px] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {loading ? '...' : 'Gửi'}
+                  {loading ? 'Đang gửi' : 'Gửi'}
                 </button>
               </div>
             </div>
           </div>
 
           {/* Right Sidebar - Learning Context */}
-          <div className="flex w-full flex-col gap-4 xl:sticky xl:top-4 xl:w-[320px] xl:self-start">
-            {/* Assessment Generator Card */}
+          <div className="hidden w-full flex-col gap-4 xl:sticky xl:top-4 xl:self-start">
             <div className="soft-panel p-5">
-              <h3 className="mb-3 text-[16px] font-medium text-[#8c3451]">
-                📝 Tạo câu hỏi kiểm tra
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8c3451]/55">
+                Ngữ cảnh phiên học
+              </p>
+              <h3 className="mt-2 text-[22px] font-medium tracking-[-0.04em] text-[#20181d]">
+                {currentSubject?.label || 'Phiên học hiện tại'}
               </h3>
-
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-[12px] text-[#8c3451] mb-1">Tên bài học</label>
-                  <input
-                    type="text"
-                    value={assessmentDraft.lesson_title}
-                    onChange={(e) =>
-                      setAssessmentDraft((prev) => ({
-                        ...prev,
-                        lesson_title: e.target.value,
-                      }))
-                    }
-                    placeholder="Ví dụ: Giới thiệu về RAG"
-                    className="theme-input rounded-[14px] px-3 py-2 text-[12px]"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[12px] text-[#8c3451] mb-1">Khái niệm</label>
-                  <input
-                    type="text"
-                    value={assessmentDraft.concept}
-                    onChange={(e) =>
-                      setAssessmentDraft((prev) => ({
-                        ...prev,
-                        concept: e.target.value,
-                      }))
-                    }
-                    placeholder="Ví dụ: RAG Pipeline"
-                    className="theme-input rounded-[14px] px-3 py-2 text-[12px]"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[12px] text-[#8c3451] mb-1">Độ khó</label>
-                    <select
-                      value={assessmentDraft.difficulty}
-                      onChange={(e) =>
-                        setAssessmentDraft((prev) => ({
-                          ...prev,
-                          difficulty: e.target.value as AssessmentDifficulty,
-                        }))
-                      }
-                      className="theme-input rounded-[14px] px-2 py-2 text-[12px]"
-                    >
-                      <option value="easy">Dễ</option>
-                      <option value="medium">Trung bình</option>
-                      <option value="hard">Khó</option>
-                    </select>
+              <p className="mt-3 line-clamp-2 text-[13px] leading-5 text-[#5d5651]">
+                {goal || 'Chưa có mô tả mục tiêu.'}
+              </p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+                <div className="rounded-[18px] border border-white/70 bg-white/80 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8c3451]/55">
+                      Trình độ
+                  </p>
+                    <p className="mt-2 text-[14px] font-semibold text-[#231d22]">
+                      {currentLevelMeta.label}
+                    </p>
+                  <p className="mt-1 text-[12px] leading-5 text-[#7d666f]">
+                      {currentLevelMeta.description}
+                  </p>
                   </div>
-
-                  <div>
-                    <label className="block text-[12px] text-[#8c3451] mb-1">Loại câu hỏi</label>
-                    <select
-                      aria-label="Loại câu hỏi"
-                      value={assessmentDraft.question_type}
-                      onChange={(e) =>
-                        setAssessmentDraft((prev) => ({
-                          ...prev,
-                          question_type: e.target.value,
-                        }))
-                      }
-                      className="theme-input rounded-[14px] px-2 py-2 text-[12px]"
-                    >
-                      {ASSESSMENT_QUESTION_TYPE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[12px] text-[#8c3451] mb-1">Số câu</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={20}
-                      aria-label="Số câu"
-                      value={assessmentDraft.num_questions}
-                      onChange={(e) =>
-                        setAssessmentDraft((prev) => ({
-                          ...prev,
-                          num_questions: Number(e.target.value) || 1,
-                        }))
-                      }
-                      className="theme-input rounded-[14px] px-2 py-2 text-[12px]"
-                    />
-                  </div>
+                <div className="rounded-[18px] border border-white/70 bg-white/80 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8c3451]/55">
+                      Chế độ Tutor
+                  </p>
+                  <p className="mt-2 text-[14px] font-semibold text-[#231d22]">
+                      {activeTutorMode.shortLabel}
+                  </p>
+                  <p className="mt-1 text-[12px] leading-5 text-[#7d666f]">{activeTutorMode.shortLabel}</p>
                 </div>
-
-                <div>
-                  <label className="block text-[12px] text-[#8c3451] mb-1">
-                    Nội dung chương học
-                  </label>
-                  <textarea
-                    value={assessmentDraft.chapter_content}
-                    onChange={(e) =>
-                      setAssessmentDraft((prev) => ({
-                        ...prev,
-                        chapter_content: e.target.value,
-                      }))
-                    }
-                    rows={6}
-                    placeholder="Dán nội dung chương học vào đây..."
-                    className="theme-input min-h-[132px] resize-y rounded-[14px] px-3 py-2 text-[12px]"
-                  />
+                <div className="rounded-[18px] border border-white/70 bg-white/80 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8c3451]/55">
+                      Câu hỏi
+                  </p>
+                  <p className="mt-2 text-[14px] font-semibold text-[#231d22]">
+                      {sessionQuestionCount} lượt hỏi
+                  </p>
                 </div>
-
-                <div
-                  className={`rounded-[12px] border px-3 py-2 text-[12px] ${
-                    assessmentValidationMessage
-                      ? 'border-amber-200 bg-amber-50 text-amber-800'
-                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                  }`}
-                >
-                  {assessmentValidationMessage ||
-                    'Đã đủ thông tin. Bấm tạo để mở popup card câu hỏi.'}
+                <div className="rounded-[18px] border border-white/70 bg-white/80 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[#8c3451]/55">
+                      Nguồn gần nhất
+                  </p>
+                  <p className="mt-2 text-[14px] font-semibold text-[#231d22]">
+                      {latestSourceCount} nguồn
+                  </p>
+                    <p className="mt-1 text-[12px] leading-5 text-[#7d666f]">
+                      Số nguồn của phản hồi gần nhất có trích dẫn.
+                    </p>
                 </div>
-
-                {assessmentError && (
-                  <div className="text-[12px] text-red-700 bg-red-50 border border-red-200 rounded-[8px] px-2 py-2">
-                    {assessmentError}
-                  </div>
-                )}
-
-                <button
-                  onClick={handleGenerateAssessment}
-                  disabled={!canGenerateAssessment}
-                  className="theme-button w-full rounded-[14px] py-2 text-[12px] disabled:opacity-50"
-                >
-                  {assessmentLoading ? 'Đang tạo...' : 'Tạo câu hỏi'}
-                </button>
               </div>
-
-              {assessmentQuestions.length > 0 && (
-                <div className="mt-4 border-t border-[#f2c9d4] pt-3">
-                  <p className="text-[12px] font-semibold text-[#8c3451] mb-2">Dữ liệu câu hỏi</p>
-                  <div className="hidden max-h-[260px] overflow-y-auto border border-[#f2d5dd] rounded-[10px] bg-[#fff9fb] p-2">
-                    <pre className="text-[11px] text-[#333] whitespace-pre-wrap break-words">
-                      {JSON.stringify(assessmentQuestions, null, 2)}
-                    </pre>
-                  </div>
-                  <div className="rounded-[12px] border border-[#f2d5dd] bg-[#fff9fb] p-3 text-[12px] text-[#5c4350]">
-                    Đã tạo {assessmentQuestions.length} câu hỏi. Nhấn nút dưới để xem popup card.
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveAssessmentIndex(0);
-                      setIsAssessmentModalOpen(true);
-                    }}
-                    className="theme-button-secondary mt-3 w-full rounded-[14px] py-2 text-[12px]"
-                  >
-                    Xem bộ câu hỏi
-                  </button>
-                </div>
-              )}
             </div>
 
-            {/* Goal Card */}
             <div className="metric-card p-5">
-              <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">📚 Mục tiêu</h3>
-              <p className="text-[13px] text-[#333] line-clamp-3">{goal}</p>
-              <p className="text-[12px] text-[#8c3451] mt-3 font-medium">
-                Trình độ:{' '}
-                {level === 'beginner'
-                  ? 'Người mới'
-                  : level === 'intermediate'
-                    ? 'Trung cấp'
-                    : 'Nâng cao'}
-              </p>
+              <h3 className="mb-1 text-[15px] font-medium text-[#8c3451]">Ngữ cảnh AI đã nắm</h3>
+              <div className="space-y-3">
+                {aiReadyContext.map((item) => (
+                  <div key={`rail-${item.label}`} className="rounded-[18px] border border-[#efe1e8] bg-[#fff9fb] px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-[#8c3451]/55">
+                      {item.label}
+                    </p>
+                    <p className="mt-2 text-[13px] font-semibold text-[#3c2f36]">{item.value}</p>
+                    <p className="mt-1 text-[12px] leading-5 text-[#7d666f]">{item.detail}</p>
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Current Concept Card */}
             {currentConcept && (
               <div className="metric-card p-5">
                 <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">
-                  🎯 Khái niệm hiện tại
+                  Khái niệm hiện tại
                 </h3>
                 {conceptLoading ? (
                   <div className="h-6 w-6 animate-spin rounded-full border-b-2 border-[#8c3451]" />
@@ -1428,20 +1517,54 @@ export default function AITutor() {
               </div>
             )}
 
-            {/* Learning Tips Card */}
             <div className="metric-card p-5">
-              <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">💡 Mẹo học tập</h3>
-              <ul className="text-[12px] text-[#666] space-y-2">
-                <li>✓ Hỏi các câu hỏi chi tiết</li>
-                <li>✓ Kiểm tra nguồn tài liệu</li>
-                <li>✓ Luyện tập các khái niệm</li>
-                <li>✓ Xem tài nguyên được đề xuất</li>
-              </ul>
+              <h3 className="mb-1 text-[15px] font-medium text-[#8c3451]">Câu hỏi mẫu</h3>
+              <p className="mb-3 text-[12px] leading-5 text-[#6b6460]">
+                Chạm để đưa nhanh một câu hỏi vào ô nhập thay vì gõ lại từ đầu.
+              </p>
+              <div className="space-y-2">
+                {quickPromptSuggestions.map((prompt) => (
+                  <button
+                    key={`sidebar-${prompt}`}
+                    type="button"
+                    onClick={() => handleUsePrompt(prompt)}
+                    className="w-full rounded-[18px] border border-[#ead6dd] bg-[#fff8fb] px-4 py-3 text-left text-[12px] leading-5 text-[#5e4c56] transition hover:border-[#d5afbd] hover:bg-white"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            {/* Quick Actions */}
             <div className="metric-card p-5">
-              <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">⚡ Hành động nhanh</h3>
+              <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">Lịch sử gần đây</h3>
+              {historyPreview.length === 0 ? (
+                <p className="text-[12px] leading-6 text-[#6a6460]">
+                  Chưa có lịch sử câu hỏi cho mục tiêu này. Hãy hỏi câu đầu tiên để bắt đầu lưu.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {historyPreview.map((item) => (
+                    <button
+                      key={item._id}
+                      type="button"
+                      onClick={() => handleLoadFromHistory(item)}
+                      className="w-full rounded-[18px] border border-[#efe1e8] bg-[#fff9fb] px-4 py-3 text-left transition hover:border-[#d9b8c5] hover:bg-white"
+                    >
+                      <p className="line-clamp-2 text-[12px] font-semibold leading-5 text-[#3c2f36]">
+                        {item.question}
+                      </p>
+                      <p className="mt-1 text-[11px] text-[#8a5d6d]">
+                        {new Date(item.timestamp).toLocaleDateString('vi-VN')}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="metric-card p-5">
+              <h3 className="mb-3 text-[15px] font-medium text-[#8c3451]">Hành động nhanh</h3>
               <button
                 onClick={() => navigate('/resources')}
                 className="theme-button-secondary mb-2 w-full rounded-[14px] py-2 text-[12px]"
@@ -1458,284 +1581,6 @@ export default function AITutor() {
           </div>
         </div>
 
-        {isAssessmentModalOpen && activeAssessmentQuestion && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
-            <div className="white-panel flex max-h-[90vh] w-full max-w-[760px] flex-col overflow-hidden">
-              <div className="flex items-start justify-between gap-4 border-b border-[#8c3451]/10 p-6">
-                <div>
-                  <p className="text-[12px] font-medium uppercase tracking-[0.24em] text-[#b26a83]">
-                    Bộ câu hỏi kiểm tra
-                  </p>
-                  <h2 className="mt-2 text-[26px] font-medium tracking-[-0.03em] text-[#8c3451]">
-                    Câu {activeAssessmentIndex + 1}/{assessmentQuestions.length}
-                  </h2>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsAssessmentModalOpen(false)}
-                  className="theme-button-secondary rounded-full px-4 py-2 text-[12px]"
-                >
-                  Đóng
-                </button>
-              </div>
-
-              <div className="scroll-soft flex-1 space-y-4 overflow-y-auto p-6">
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="rounded-[22px] border border-[#f2d5dd] bg-[#fff9fb] p-4">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b26a83]">
-                      Đã chấm
-                    </p>
-                    <p className="mt-2 text-[24px] font-medium text-[#8c3451]">
-                      {answeredAssessmentCount}/{assessmentQuestions.length}
-                    </p>
-                  </div>
-                  <div className="rounded-[22px] border border-[#d8eee3] bg-[#f5fffa] p-4">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#3d8c6a]">
-                      Trả lời đúng
-                    </p>
-                    <p className="mt-2 text-[24px] font-medium text-[#2e7355]">
-                      {correctAssessmentCount}
-                    </p>
-                  </div>
-                  <div className="rounded-[22px] border border-[#e6d9f6] bg-[#fbf8ff] p-4">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8d69b2]">
-                      Tỉ lệ hiện tại
-                    </p>
-                    <p className="mt-2 text-[24px] font-medium text-[#6f59c0]">
-                      {answeredAssessmentCount > 0
-                        ? Math.round((correctAssessmentCount / answeredAssessmentCount) * 100)
-                        : 0}
-                      %
-                    </p>
-                  </div>
-                </div>
-
-                {allAssessmentAnswered && (
-                  <div className="rounded-[28px] border border-[#e7d4db] bg-[linear-gradient(135deg,rgba(255,249,251,0.98),rgba(250,243,255,0.96))] p-5 shadow-[0_18px_50px_rgba(140,52,81,0.1)]">
-                    <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-[#b26a83]">
-                      Tổng kết bộ đề
-                    </p>
-                    <h3 className="mt-2 text-[24px] font-medium leading-[1.4] text-[#2b1f26]">
-                      {correctAssessmentCount}/{assessmentQuestions.length} câu đúng
-                    </h3>
-                    <p className="mt-2 text-[14px] leading-[1.7] text-[#6e5a63]">
-                      {incorrectAssessmentCount === 0
-                        ? 'Bạn đã hoàn thành rất tốt. Có thể làm lại bộ đề để luyện phản xạ hoặc tạo bộ mới khó hơn.'
-                        : `Bạn còn ${incorrectAssessmentCount} câu cần cải thiện. Mình đã chuẩn bị sẵn nút ôn tập theo đúng các lỗi sai này.`}
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-3">
-                      {incorrectAssessmentCount > 0 && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setActiveAssessmentIndex(incorrectAssessmentIndexes[0] ?? 0)
-                          }
-                          className="theme-button-secondary rounded-[14px] px-4 py-2 text-[12px]"
-                        >
-                          Xem câu sai đầu tiên
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={handleGenerateAssessmentFromMistakes}
-                        disabled={incorrectAssessmentCount === 0 || assessmentLoading}
-                        className="theme-button rounded-[14px] px-4 py-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {assessmentLoading ? 'Đang tạo lại...' : 'Tạo bộ đề mới theo lỗi sai'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex flex-wrap gap-2">
-                  <span className="rounded-full bg-[#fdf0f5] px-3 py-1 text-[12px] font-medium text-[#8c3451]">
-                    {activeAssessmentQuestion.concept ||
-                      normalizedAssessmentDraft.concept ||
-                      'Khái niệm tổng hợp'}
-                  </span>
-                  <span className="rounded-full bg-[#f7f3ff] px-3 py-1 text-[12px] font-medium text-[#6f59c0]">
-                    {ASSESSMENT_DIFFICULTY_LABELS[activeAssessmentQuestion.difficulty] ||
-                      activeAssessmentQuestion.difficulty}
-                  </span>
-                  <span className="rounded-full bg-[#eef9ff] px-3 py-1 text-[12px] font-medium text-[#2f6b9a]">
-                    {getAssessmentQuestionTypeLabel(activeAssessmentQuestion.question_type)}
-                  </span>
-                </div>
-
-                <div className="rounded-[28px] border border-[#f2d5dd] bg-[#fff9fb] p-5">
-                  <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-[#b26a83]">
-                    Câu hỏi
-                  </p>
-                  <p className="mt-3 text-[22px] font-medium leading-[1.5] text-[#2b1f26]">
-                    {activeAssessmentQuestion.question}
-                  </p>
-                </div>
-
-                {activeAssessmentChoices.length > 0 && (
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {activeAssessmentChoices.map((choice, choiceIndex) => (
-                      <button
-                        type="button"
-                        key={`${choice}-${choiceIndex}`}
-                        onClick={() => handleUpdateAssessmentResponse(choice)}
-                        className={`rounded-[22px] border bg-white p-4 text-left shadow-[0_10px_30px_rgba(140,52,81,0.08)] transition-all ${
-                          activeAssessmentResponse === choice
-                            ? 'border-[#8c3451] ring-2 ring-[#8c3451]/15'
-                            : 'border-[#ead6dd] hover:border-[#d7a6b7]'
-                        } ${
-                          isActiveAssessmentRevealed && choice === activeAssessmentAnswer
-                            ? 'border-emerald-300 bg-emerald-50'
-                            : ''
-                        } ${
-                          isActiveAssessmentRevealed &&
-                          activeAssessmentResponse === choice &&
-                          choice !== activeAssessmentAnswer
-                            ? 'border-red-300 bg-red-50'
-                            : ''
-                        }`}
-                      >
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b26a83]">
-                          {ASSESSMENT_OPTION_LABELS[choiceIndex] || `Lựa chọn ${choiceIndex + 1}`}
-                        </p>
-                        <p className="mt-2 text-[15px] leading-[1.6] text-[#43313a]">{choice}</p>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {activeAssessmentChoices.length === 0 && (
-                  <div className="rounded-[24px] border border-[#ead6dd] bg-white p-5 shadow-[0_10px_30px_rgba(140,52,81,0.08)]">
-                    <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-[#b26a83]">
-                      Câu trả lời của bạn
-                    </p>
-                    <textarea
-                      value={activeAssessmentResponse}
-                      onChange={(event) => handleUpdateAssessmentResponse(event.target.value)}
-                      rows={5}
-                      placeholder="Nhập câu trả lời ngắn của bạn..."
-                      className="theme-input mt-3 min-h-[120px] w-full resize-y rounded-[18px] px-4 py-3 text-[14px]"
-                    />
-                  </div>
-                )}
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div
-                    className={`rounded-[24px] border p-5 ${
-                      !isActiveAssessmentRevealed
-                        ? 'border-[#f0e6f5] bg-[#fbf8ff]'
-                        : isActiveAssessmentCorrect
-                          ? 'border-emerald-200 bg-emerald-50'
-                          : 'border-red-200 bg-red-50'
-                    }`}
-                  >
-                    <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-[#8d69b2]">
-                      Kết quả câu này
-                    </p>
-                    {!isActiveAssessmentRevealed ? (
-                      <p className="mt-3 text-[15px] leading-[1.7] text-[#5f5470]">
-                        Chọn hoặc nhập đáp án của bạn rồi bấm kiểm tra để xem kết quả.
-                      </p>
-                    ) : (
-                      <>
-                        <p
-                          className={`mt-3 inline-flex rounded-full px-3 py-1 text-[12px] font-medium ${
-                            isActiveAssessmentCorrect
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : 'bg-red-100 text-red-700'
-                          }`}
-                        >
-                          {isActiveAssessmentCorrect
-                            ? 'Bạn trả lời đúng'
-                            : 'Bạn cần cải thiện câu này'}
-                        </p>
-                        <p className="mt-3 text-[14px] text-[#5f5470]">
-                          Câu trả lời của bạn:{' '}
-                          <span className="font-medium text-[#2b1f26]">
-                            {activeAssessmentResponse || 'Chưa trả lời'}
-                          </span>
-                        </p>
-                        <p className="mt-2 text-[15px] leading-[1.7] text-[#3e3150]">
-                          Đáp án đúng: {activeAssessmentAnswer || 'Chưa có đáp án gợi ý.'}
-                        </p>
-                      </>
-                    )}
-                  </div>
-
-                  <div className="rounded-[24px] border border-[#d8eee3] bg-[#f5fffa] p-5">
-                    <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-[#3d8c6a]">
-                      Giải thích
-                    </p>
-                    {isActiveAssessmentRevealed ? (
-                      <p className="mt-3 text-[15px] leading-[1.7] text-[#285542]">
-                        {activeAssessmentQuestion.explanation || 'Chưa có giải thích chi tiết.'}
-                      </p>
-                    ) : (
-                      <p className="mt-3 text-[15px] leading-[1.7] text-[#4e7a67]">
-                        Phần giải thích sẽ hiện sau khi bạn tự trả lời và bấm kiểm tra.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="rounded-[24px] border border-[#f0e1c9] bg-[#fffaf1] p-5">
-                  <p className="text-[12px] font-medium uppercase tracking-[0.18em] text-[#a2752a]">
-                    Đoạn nội dung tham chiếu
-                  </p>
-                  <p className="mt-3 whitespace-pre-wrap text-[14px] leading-[1.7] text-[#5f4b2a]">
-                    {activeAssessmentQuestion.source_excerpt ||
-                      normalizedAssessmentDraft.chapterContent ||
-                      'Chưa có đoạn trích nguồn.'}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#8c3451]/10 bg-[#fff6fa] p-6">
-                <p className="text-[13px] text-[#7d5d68]">
-                  Bạn có thể làm từng câu, kiểm tra ngay trong popup và theo dõi tiến độ của cả bộ
-                  câu hỏi.
-                </p>
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={handleResetAssessmentSession}
-                    disabled={assessmentQuestions.length === 0}
-                    className="theme-button-secondary rounded-[14px] px-4 py-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Làm lại bộ câu hỏi
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleRevealAssessmentAnswer}
-                    disabled={!activeAssessmentResponse.trim()}
-                    className="theme-button rounded-[14px] px-4 py-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isActiveAssessmentRevealed ? 'Xem lại kết quả' : 'Kiểm tra đáp án'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveAssessmentIndex((prev) => Math.max(prev - 1, 0))}
-                    disabled={activeAssessmentIndex === 0}
-                    className="theme-button-secondary rounded-[14px] px-4 py-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Câu trước
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setActiveAssessmentIndex((prev) =>
-                        Math.min(prev + 1, assessmentQuestions.length - 1),
-                      )
-                    }
-                    disabled={activeAssessmentIndex === assessmentQuestions.length - 1}
-                    className="theme-button rounded-[14px] px-4 py-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Câu tiếp
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </DashboardLayout>
   );

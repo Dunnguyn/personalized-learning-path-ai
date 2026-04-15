@@ -9,7 +9,14 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from backend.app.api.auth import get_current_user
-from backend.app.api.schemas import ProgressUpdate, ProgressUpdateResponse
+from backend.app.api.schemas import (
+    ConceptProgressResponse,
+    ProgressUpdate,
+    ProgressOverviewResponse,
+    ProgressSummaryResponse,
+    ProgressUpdateResponse,
+    UserConfidenceOverviewResponse,
+)
 from backend.app.database.mongo import get_db
 from backend.app.services.progress_tracking.progress import (
     get_progress,
@@ -171,7 +178,11 @@ def update_progress_api(
         ) from exc
 
 
-@router.get("/summary", status_code=status.HTTP_200_OK)
+@router.get(
+    "/summary",
+    response_model=ProgressSummaryResponse,
+    status_code=status.HTTP_200_OK,
+)
 def get_progress_summary(
     user_id: str = None, current_user: dict = Depends(get_current_user)
 ):
@@ -200,7 +211,11 @@ def get_progress_summary(
         ) from exc
 
 
-@router.get("/overview", status_code=status.HTTP_200_OK)
+@router.get(
+    "/overview",
+    response_model=ProgressOverviewResponse,
+    status_code=status.HTTP_200_OK,
+)
 def get_progress_overview(
     user_id: str = None, current_user: dict = Depends(get_current_user)
 ):
@@ -268,7 +283,11 @@ def get_progress_overview(
         ) from exc
 
 
-@router.get("/confidence", status_code=status.HTTP_200_OK)
+@router.get(
+    "/confidence",
+    response_model=UserConfidenceOverviewResponse,
+    status_code=status.HTTP_200_OK,
+)
 def get_progress_confidence(
     user_id: str = None, current_user: dict = Depends(get_current_user)
 ):
@@ -335,7 +354,11 @@ def get_progress_confidence(
         ) from exc
 
 
-@router.get("/concept/{concept_id}", status_code=status.HTTP_200_OK)
+@router.get(
+    "/concept/{concept_id}",
+    response_model=ConceptProgressResponse,
+    status_code=status.HTTP_200_OK,
+)
 def get_concept_progress_api(
     concept_id: int, user_id: str = None, current_user: dict = Depends(get_current_user)
 ):

@@ -1,56 +1,98 @@
-import React, { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import bunnyLogo from '../../assets/Elegant Sub-Logo Designs for Beauty Brands.jpg';
-import iconDropdown from '../../assets/down-arrow.png';
+import AuthShell from './AuthShell';
 import illustrationLearning from '../../assets/tải xuống (1).jpg';
+import { brandLogo } from '../../assets';
+import { useAuth } from '../../contexts/AuthContext';
 import { authService } from '../../services/authService';
-import type { SignUpRequest, SignupStep2FormData } from '../../types/auth';
+import { learnerProfileService } from '../../services/learnerProfileService';
+import type { SignUpRequest } from '../../types/auth';
+import type { LearnerLevel, SubjectId } from '../../types/learnerProfile';
+
+type GoalOption = {
+  value: SubjectId;
+  label: string;
+  learningGoal: string;
+  outcome: string;
+};
+
+const GOAL_OPTIONS: GoalOption[] = [
+  {
+    value: 'python',
+    label: 'Học lập trình Python',
+    learningGoal: 'Học lập trình Python',
+    outcome: 'Nắm nền tảng Python và bắt đầu học theo lộ trình cá nhân hóa.',
+  },
+  {
+    value: 'web',
+    label: 'Phát triển web',
+    learningGoal: 'Học phát triển web',
+    outcome: 'Xây nền tảng HTML, CSS, JavaScript và học theo lộ trình web rõ ràng.',
+  },
+  {
+    value: 'java',
+    label: 'Lập trình Java',
+    learningGoal: 'Học lập trình Java',
+    outcome: 'Nắm nền tảng Java để đi tiếp sang ứng dụng thực tế.',
+  },
+  {
+    value: 'cpp',
+    label: 'Lập trình C++',
+    learningGoal: 'Học lập trình C++',
+    outcome: 'Xây chắc nền tảng C++ với nhịp học phù hợp trình độ hiện tại.',
+  },
+  {
+    value: 'csharp',
+    label: 'Lập trình C#',
+    learningGoal: 'Học lập trình C#',
+    outcome: 'Bắt đầu lộ trình C# có cấu trúc và bám sát mục tiêu học tập.',
+  },
+];
+
+const LEVEL_OPTIONS: Array<{ value: LearnerLevel; label: string }> = [
+  { value: 'beginner', label: 'Mới bắt đầu' },
+  { value: 'intermediate', label: 'Đã có nền tảng' },
+  { value: 'advanced', label: 'Muốn học chuyên sâu' },
+];
+
+const introVisual = (
+  <div className="flex flex-col items-center">
+    <div className="flex h-18 w-18 items-center justify-center rounded-full bg-[#fff4f8] shadow-[0_14px_32px_rgba(162,94,121,0.12)]">
+      <img src={brandLogo} alt="Learning brand" className="h-11 w-11 rounded-full object-cover" />
+    </div>
+    <div className="mt-4 text-[14px] font-semibold tracking-[0.38em] text-[#8c3451]/56">02</div>
+  </div>
+);
 
 export default function SignupStep2() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { setUser } = useAuth();
   const formData = (location.state?.formData as SignUpRequest) || {
     fullName: '',
     email: '',
     password: '',
   };
 
-  const [step2Data, setStep2Data] = useState<SignupStep2FormData>({
-    goal: '',
-    level: '',
-  });
+  const [selectedGoal, setSelectedGoal] = useState<SubjectId>('python');
+  const [level, setLevel] = useState<LearnerLevel>('beginner');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const goalOptions = [
-    'Cải thiện kỹ năng',
-    'Học một ngôn ngữ mới',
-    'Chuẩn bị thi cử',
-    'Phát triển sự nghiệp',
-  ];
+  useEffect(() => {
+    if (!formData.email || !formData.password || !formData.fullName) {
+      navigate('/signup', { replace: true });
+    }
+  }, [formData.email, formData.fullName, formData.password, navigate]);
 
-  const levelOptions = ['Bước đầu', 'Trung cấp', 'Nâng cao'];
+  const goalMeta = useMemo(
+    () => GOAL_OPTIONS.find((option) => option.value === selectedGoal) || GOAL_OPTIONS[0],
+    [selectedGoal],
+  );
 
-  const handleChange = (field: 'goal' | 'level', value: string) => {
-    setStep2Data((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
     setError('');
-
-    if (!step2Data.goal.trim()) {
-      setError('Vui lòng chọn mục tiêu');
-      return;
-    }
-    if (!step2Data.level.trim()) {
-      setError('Vui lòng chọn cấp độ hiện tại');
-      return;
-    }
-
     setLoading(true);
 
     try {
@@ -61,140 +103,116 @@ export default function SignupStep2() {
       });
 
       localStorage.setItem('token', signupData.token);
-      authService.setStoredUser(signupData.user);
 
-      const levelMap: Record<string, string> = {
-        'Bước đầu': 'beginner',
-        'Trung cấp': 'intermediate',
-        'Nâng cao': 'advanced',
-      };
-      const englishLevel = levelMap[step2Data.level] || 'beginner';
+      await learnerProfileService.updateMyProfile({
+        level,
+        learning_goal: goalMeta.learningGoal,
+        target_outcome: goalMeta.outcome,
+        time_budget: {
+          value: 300,
+          unit: 'weekly',
+        },
+        preferred_resource_type: 'mixed',
+        learning_pace: 'steady',
+        prior_knowledge_by_subject: {
+          [goalMeta.value]: level,
+        },
+      });
 
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        await authService.updateUserLevel({
-          user_id: signupData.user.user_id,
-          level: englishLevel,
-          learning_goal: step2Data.goal,
-        });
+      const currentUser = await authService.getCurrentUser();
+      authService.setStoredUser(currentUser);
+      setUser({
+        user_id: currentUser.user_id || signupData.user.user_id,
+        email: currentUser.email,
+        name: currentUser.name,
+        level: currentUser.level || level,
+        role: currentUser.role || signupData.user.role,
+        learning_goal: currentUser.learning_goal || goalMeta.learningGoal,
+      });
 
-        authService.setStoredUser({
-          ...signupData.user,
-          level: englishLevel,
-        });
-      } catch (updateErr) {
-        console.error('Failed to update user level:', updateErr);
-      }
-
-      localStorage.setItem('userGoal', step2Data.goal);
-      window.location.href = '/dashboard';
+      navigate('/dashboard');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Có lỗi xảy ra. Vui lòng thử lại.');
+      setError(err instanceof Error ? err.message : 'Không thể hoàn tất đăng ký.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#fbe7ef_0%,#f6d7e4_100%)] p-6">
-      <div className="relative flex min-h-[800px] w-full max-w-[1253px] overflow-hidden rounded-[36px] border border-white/70 bg-[#fff9fd]/95 shadow-[0_28px_80px_rgba(114,62,83,0.16)]">
-        <div className="flex w-[682px] flex-col items-center justify-center bg-[linear-gradient(180deg,#fff7fb_0%,#fce7f0_100%)] p-12">
-          <div className="mb-8 h-[100px] w-[100px] overflow-hidden rounded-full">
-            <img alt="Logo" className="h-full w-full object-cover" src={bunnyLogo} />
-          </div>
-
-          <div className="mb-8 flex gap-2">
-            <div className="h-[4px] w-[10px] rounded-[2px] bg-[#de8fac]" />
-            <div className="h-[4px] w-[10px] rounded-[2px] bg-[#5b1724]" />
-          </div>
-
-          <h1 className="mb-4 text-center text-[35px] font-semibold text-[#832e44]">
-            Bắt đầu ngay
-          </h1>
-
-          <p className="mb-12 text-center text-[15px] text-[#832e44]">Chọn mục tiêu của bạn</p>
-
-          <form onSubmit={handleSubmit} className="w-[396px] space-y-6">
-            <div className="relative">
-              <select
-                value={step2Data.goal}
-                onChange={(e) => handleChange('goal', e.target.value)}
-                className="h-[35px] w-full cursor-pointer appearance-none rounded-[12px] border-none bg-white px-4 text-[13px] text-[#e4b6d0] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] focus:outline-none focus:ring-2 focus:ring-[#832e44]"
-              >
-                <option value="">Mục tiêu</option>
-                {goalOptions.map((opt) => (
-                  <option key={opt} value={opt} className="text-[#832e44]">
-                    {opt}
-                  </option>
-                ))}
-              </select>
-              <img
-                alt=""
-                className="pointer-events-none absolute right-4 top-1/2 h-5 w-5 -translate-y-1/2"
-                src={iconDropdown}
-              />
-            </div>
-
-            <div className="relative">
-              <select
-                value={step2Data.level}
-                onChange={(e) => handleChange('level', e.target.value)}
-                className="h-[35px] w-full cursor-pointer appearance-none rounded-[12px] border-none bg-white px-4 text-[13px] text-[#e4b6d0] shadow-[0px_0px_4px_0px_rgba(253,171,181,0.2)] focus:outline-none focus:ring-2 focus:ring-[#832e44]"
-              >
-                <option value="">Cấp độ hiện tại</option>
-                {levelOptions.map((opt) => (
-                  <option key={opt} value={opt} className="text-[#832e44]">
-                    {opt}
-                  </option>
-                ))}
-              </select>
-              <img
-                alt=""
-                className="pointer-events-none absolute right-4 top-1/2 h-5 w-5 -translate-y-1/2"
-                src={iconDropdown}
-              />
-            </div>
-
-            {error && <div className="text-center text-[12px] text-red-500">{error}</div>}
-
-            <div className="flex justify-center pt-4">
-              <button
-                type="submit"
-                disabled={loading}
-                className="h-[38px] w-full rounded-[14px] bg-[#5b1724] px-6 text-[13px] font-semibold text-[#f7d5e0] transition-colors duration-200 hover:bg-[#6d1f2e]"
-              >
-                {loading ? 'Đang xử lý...' : 'Đăng ký'}
-              </button>
-            </div>
-          </form>
-
-          <button
-            onClick={() => navigate('/signup')}
-            className="mt-4 text-[13px] text-[#832e44] hover:underline"
-          >
-            ← Quay lại
+    <AuthShell
+      badge="Thiết lập hồ sơ"
+      title="Bắt đầu ngay"
+      description="Chọn mục tiêu của bạn để hệ thống tạo điểm khởi đầu phù hợp."
+      mediaAlt="Minh họa học tập"
+      mediaSrc={illustrationLearning}
+      sideLabel=""
+      sideTitle=""
+      sideCopy=""
+      showSideContent={false}
+      introVisual={introVisual}
+      centerContent
+      titleClassName="mt-2 text-[42px] font-semibold leading-[1.02] tracking-[-0.05em] text-[#8c3451] md:text-[46px]"
+      descriptionClassName="text-[14px] leading-6 text-[#6d655f]"
+      formShellClassName="mt-8 w-full max-w-[410px] border-0 bg-transparent p-0 shadow-none"
+      footerClassName="text-[13px] text-[#6d655f]"
+      footer={
+        <p>
+          Đã có tài khoản?{' '}
+          <button type="button" onClick={() => navigate('/login')} className="font-semibold text-[#8c3451] hover:underline">
+            Đăng nhập
           </button>
-
-          <p className="mt-8 text-center text-[10px] text-[#832e44]">
-            <span>Đã có tài khoản? </span>
-            <button
-              onClick={() => navigate('/login')}
-              className="cursor-pointer font-bold hover:underline"
-            >
-              Đăng nhập
-            </button>
-          </p>
+        </p>
+      }
+    >
+      <form onSubmit={handleSubmit} className="mx-auto flex w-full max-w-[410px] flex-col gap-4">
+        <div>
+          <label className="auth-label text-left">Mục tiêu</label>
+          <select
+            value={selectedGoal}
+            onChange={(event) => setSelectedGoal(event.target.value as SubjectId)}
+            className="auth-input text-[15px]"
+          >
+            {GOAL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </div>
 
-        <div className="relative h-full w-[571px] overflow-hidden">
-          <img
-            alt="Learning illustration"
-            className="h-full w-full object-cover"
-            src={illustrationLearning}
-          />
-          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(140,52,81,0.08)_0%,rgba(255,255,255,0)_45%,rgba(140,52,81,0.14)_100%)]" />
+        <div>
+          <label className="auth-label text-left">Cấp độ hiện tại</label>
+          <select
+            value={level}
+            onChange={(event) => setLevel(event.target.value as LearnerLevel)}
+            className="auth-input text-[15px]"
+          >
+            {LEVEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </div>
-      </div>
-    </div>
+
+        {error ? (
+          <div className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-left text-[13px] text-red-700">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="rounded-[18px] border border-[#efe1d6] bg-white/80 px-4 py-3 text-left text-[13px] text-[#6d655f]">
+          Hệ thống sẽ dùng mục tiêu và mức hiện tại để cá nhân hóa lộ trình học đầu tiên của bạn.
+        </div>
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="theme-button mt-2 min-h-[54px] w-full justify-center text-[15px] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? 'Đang đăng ký...' : 'Đăng ký'}
+        </button>
+      </form>
+    </AuthShell>
   );
 }

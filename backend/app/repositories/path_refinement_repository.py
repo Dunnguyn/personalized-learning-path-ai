@@ -51,19 +51,39 @@ class PathRefinementRepository:
         return document
 
     def list_refinements(
-        self, *, user_id: str, limit: int = 100
+        self,
+        *,
+        user_id: str,
+        limit: int = 100,
+        path_id: str | None = None,
+        lesson_id: str | None = None,
     ) -> List[Dict[str, Any]]:
+        query: Dict[str, Any] = {"user_id": str(user_id)}
+        if path_id:
+            query["path_id"] = str(path_id)
+        if lesson_id:
+            query["lesson_id"] = str(lesson_id)
         return list(
-            self.refinement_actions.find({"user_id": str(user_id)})
+            self.refinement_actions.find(query)
             .sort("created_at", -1)
             .limit(max(1, limit))
         )
 
     def list_interventions(
-        self, *, user_id: str, limit: int = 100
+        self,
+        *,
+        user_id: str,
+        limit: int = 100,
+        path_id: str | None = None,
+        lesson_id: str | None = None,
     ) -> List[Dict[str, Any]]:
+        query: Dict[str, Any] = {"user_id": str(user_id)}
+        if path_id:
+            query["path_id"] = str(path_id)
+        if lesson_id:
+            query["lesson_id"] = str(lesson_id)
         return list(
-            self.intervention_logs.find({"user_id": str(user_id)})
+            self.intervention_logs.find(query)
             .sort("created_at", -1)
             .limit(max(1, limit))
         )

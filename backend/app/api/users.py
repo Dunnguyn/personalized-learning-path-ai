@@ -31,6 +31,7 @@ import logging
 from backend.app.database.mongo import get_db
 from backend.app.api.schemas import UserCreate, UserResponse, LevelEnum
 from backend.app.api.auth import get_current_user, resolve_user_role
+from backend.app.services.learner_profile_service import learner_profile_service
 from pymongo.errors import DuplicateKeyError
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,19 @@ logging.basicConfig(level=logging.INFO)
 router = APIRouter(prefix="/users", tags=["Users"])
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+
+
+def _build_user_response(user_doc: dict) -> UserResponse:
+    profile = learner_profile_service.get_profile(str(user_doc.get("_id")))
+    return UserResponse(
+        user_id=str(user_doc["_id"]),
+        name=user_doc["name"],
+        email=user_doc["email"],
+        level=profile.get("level", user_doc.get("level", "beginner")),
+        role=resolve_user_role(user_doc),
+        learning_goal=profile.get("learning_goal"),
+        created_at=user_doc["created_at"],
+    )
 
 
 # =========================
@@ -154,18 +168,12 @@ def create_user(user: UserCreate):
 
         result = db.users.insert_one(doc)
         user_id = str(result.inserted_id)
+        learner_profile_service.initialize_profile(user_id)
 
         logger.info(f"User created successfully: user_id={user_id}, email={email}")
-
-        return UserResponse(
-            user_id=user_id,
-            name=doc["name"],
-            email=doc["email"],
-            level=doc["level"],
-            role=resolve_user_role(doc),
-            learning_goal=doc.get("learning_goal"),
-            created_at=doc["created_at"],
-        )
+        created_user = db.users.find_one({"_id": ObjectId(user_id)}) or doc
+        created_user["_id"] = created_user.get("_id") or ObjectId(user_id)
+        return _build_user_response(created_user)
 
     except HTTPException:
         raise
@@ -200,15 +208,8 @@ def get_current_user_profile(current_user: dict = Depends(get_current_user)):
         UserResponse with user info
     """
     try:
-        return UserResponse(
-            user_id=str(current_user["_id"]),
-            name=current_user["name"],
-            email=current_user["email"],
-            level=current_user.get("level", "beginner"),
-            role=resolve_user_role(current_user),
-            learning_goal=current_user.get("learning_goal"),
-            created_at=current_user["created_at"],
-        )
+        learner_profile_service.initialize_profile(str(current_user["_id"]))
+        return _build_user_response(current_user)
     except Exception as e:
         logger.exception(f"Error getting user profile: {e}")
         raise HTTPException(
@@ -227,7 +228,9 @@ class UserUpdate(BaseModel):
     learning_goal: str = Field(None, description="Learning goal")
 
 
-@router.put("/{user_id}", status_code=status.HTTP_200_OK)
+@router.put(
+    "/{user_id}", response_model=UserResponse, status_code=status.HTTP_200_OK
+)
 def update_user(
     user_id: str,
     update_data: UserUpdate,
@@ -261,34 +264,23 @@ def update_user(
 
     try:
         db = get_db()
-
-        # Build update document
-        update_doc = {}
-        if update_data.level:
-            update_doc["level"] = (
-                update_data.level.value
-                if isinstance(update_data.level, LevelEnum)
-                else update_data.level
-            )
-        if update_data.learning_goal:
-            update_doc["learning_goal"] = update_data.learning_goal
-
-        update_doc["updated_at"] = datetime.now(timezone.utc)
-
-        # Update user
-        result = db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update_doc})
-
-        if result.matched_count == 0:
+        if not db.users.find_one({"_id": ObjectId(user_id)}):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
             )
 
-        # Get updated user
+        learner_profile_service.update_profile(
+            user_id,
+            {
+                "level": update_data.level.value if update_data.level else None,
+                "learning_goal": update_data.learning_goal,
+            },
+        )
         updated_user = db.users.find_one({"_id": ObjectId(user_id)})
 
-        logger.info(f"User updated: user_id={user_id}, updates={update_doc}")
+        logger.info("User profile updated via learner profile: user_id=%s", user_id)
 
-        return {"success": True, "user_id": user_id, "updated_fields": update_doc}
+        return _build_user_response(updated_user)
 
     except HTTPException:
         raise

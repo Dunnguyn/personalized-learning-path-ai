@@ -40,13 +40,6 @@ const normalizeRecommendedConcept = (value: unknown): RecommendedConceptApiItem 
 
 const normalizeRecommendedResource = (value: unknown): RecommendedResourceItem => {
   const record = asRecord(value);
-  const scoreBreakdownRaw = asRecord(record.score_breakdown);
-  const scoreBreakdown =
-    Object.keys(scoreBreakdownRaw).length > 0
-      ? Object.fromEntries(
-          Object.entries(scoreBreakdownRaw).map(([key, itemValue]) => [key, asNumber(itemValue)]),
-        )
-      : null;
 
   return {
     resource_id:
@@ -59,12 +52,14 @@ const normalizeRecommendedResource = (value: unknown): RecommendedResourceItem =
     topic: asString(record.topic),
     url: typeof record.url === 'string' ? record.url : null,
     reason: asString(record.reason, 'Phù hợp với lộ trình học hiện tại của bạn.'),
-    reason_tags: Array.isArray(record.reason_tags)
-      ? record.reason_tags.map((item) => asString(item)).filter(Boolean)
+    why_selected: Array.isArray(record.why_selected)
+      ? record.why_selected.map((item) => asString(item)).filter(Boolean)
       : [],
+    supports_concepts: Array.isArray(record.supports_concepts)
+      ? record.supports_concepts.map((item) => asString(item)).filter(Boolean)
+      : [],
+    fit_level: typeof record.fit_level === 'string' ? record.fit_level : null,
     relevance_score: asNumber(record.relevance_score),
-    recommendation_mode:
-      typeof record.recommendation_mode === 'string' ? record.recommendation_mode : undefined,
     estimated_time: typeof record.estimated_time === 'number' ? record.estimated_time : null,
     primary_concepts: Array.isArray(record.primary_concepts)
       ? record.primary_concepts.map((item) => asString(item)).filter(Boolean)
@@ -72,8 +67,22 @@ const normalizeRecommendedResource = (value: unknown): RecommendedResourceItem =
     quality_score: typeof record.quality_score === 'number' ? record.quality_score : null,
     expected_learning_gain:
       typeof record.expected_learning_gain === 'number' ? record.expected_learning_gain : null,
-    score_breakdown: scoreBreakdown,
+    retrieval_signals:
+      record.retrieval_signals && typeof record.retrieval_signals === 'object'
+        ? (record.retrieval_signals as Record<string, unknown>)
+        : null,
     rank_position: typeof record.rank_position === 'number' ? record.rank_position : null,
+    chunk_match_score:
+      typeof record.chunk_match_score === 'number' ? record.chunk_match_score : null,
+    chunk_coverage_score:
+      typeof record.chunk_coverage_score === 'number' ? record.chunk_coverage_score : null,
+    matched_chunk_preview:
+      typeof record.matched_chunk_preview === 'string' ? record.matched_chunk_preview : null,
+    matched_chunk_terms: Array.isArray(record.matched_chunk_terms)
+      ? record.matched_chunk_terms.map((item) => asString(item)).filter(Boolean)
+      : [],
+    supporting_chunk_count:
+      typeof record.supporting_chunk_count === 'number' ? record.supporting_chunk_count : null,
   };
 };
 

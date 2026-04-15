@@ -16,7 +16,7 @@ All endpoints include:
 - Comprehensive logging
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends, Query
+from fastapi import APIRouter, Body, HTTPException, status, Depends, Query
 from datetime import datetime, timezone
 import logging
 import uuid
@@ -24,9 +24,13 @@ import uuid
 from backend.app.api.schemas import (
     AskRequest,
     AskResponse,
+    AskAdaptiveStatusResponse,
+    AskDetectConceptsRequest,
+    AskDetectConceptsResponse,
+    AskRecommendedConceptsResponse,
+    AskHistoryResponse,
+    BasicMessageResponse,
     LevelEnum,
-    GenerateAssessmentQuestionsRequest,
-    GenerateAssessmentQuestionsResponse,
 )
 from backend.app.api.auth import get_current_user
 from backend.app.services.ai_tutor.service import AITutorService
@@ -36,6 +40,7 @@ from backend.app.database.mongo import get_db
 from backend.app.services.event_logging_service import event_logging_service
 from backend.app.services.feedback_service import feedback_service
 from backend.app.services.knowledge_tracing_service import knowledge_tracing_service
+from backend.app.services.unified_learning_path_service import learning_path_service
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -47,6 +52,13 @@ ai_tutor = AITutorService()
 # =========================
 # HELPER FUNCTIONS
 # =========================
+def _scalar_request_value(value):
+    """Accept enum-like values or plain scalars from request payloads."""
+    if value is None:
+        return None
+    return getattr(value, "value", value)
+
+
 def _save_ask_history(
     user_id: str,
     question: str,
@@ -231,11 +243,13 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
             user_id=request.user_id,
             question=request.question,
             goal=request.goal,
-            level=request.level.value,
+            level=_scalar_request_value(request.level),
+            subject_id=_scalar_request_value(request.subject_id),
             completed=request.completed or [],
         )
 
         answer_payload = response.get("answer", {}) or {}
+        concept_detected = response.get("concept_detected") or {}
         latency_ms = int(answer_payload.get("latency_ms", 0) or 0)
         llm_model = str(
             answer_payload.get("model") or response.get("model") or "unknown"
@@ -243,7 +257,7 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
 
         logger.info(
             f"Ask completed successfully: user={request.user_id}, "
-            f"concept={response.get('concept_detected', {}).get('concept_name')}"
+            f"concept={concept_detected.get('concept_name')}"
         )
 
         event_logging_service.log_event(
@@ -252,12 +266,12 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
             llm_model=llm_model,
             latency_ms=latency_ms,
             success=bool(response.get("success", False)),
-            metadata={"goal": request.goal[:100], "level": request.level.value},
+            metadata={"goal": request.goal[:100], "level": _scalar_request_value(request.level)},
         )
         event_logging_service.log_event(
             "ai_response_generated",
             user_id=request.user_id,
-            concept_id=response.get("concept_detected", {}).get("concept_id"),
+            concept_id=concept_detected.get("concept_id"),
             success=bool(response.get("success", False)),
             latency_ms=latency_ms,
             metadata={
@@ -266,7 +280,7 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
             },
         )
 
-        detected_concept_id = response.get("concept_detected", {}).get("concept_id")
+        detected_concept_id = concept_detected.get("concept_id")
         answer_confidence = float(
             response.get("answer", {}).get("confidence", 0.0) or 0.0
         )
@@ -296,9 +310,9 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
             question=request.question,
             answer_text=response.get("answer", {}).get("answer_text", ""),
             goal=request.goal,
-            level=request.level.value,
+            level=_scalar_request_value(request.level),
             concept_id=detected_concept_id,
-            concept_name=response.get("concept_detected", {}).get("concept_name"),
+            concept_name=concept_detected.get("concept_name"),
             confidence=answer_confidence,
         )
 
@@ -306,7 +320,7 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
             success=response.get("success", False),
             answer=response.get("answer", {}),
             learning_path=response.get("learning_path", []),
-            concept_detected=response.get("concept_detected"),
+            concept_detected=concept_detected or None,
             adaptive_info=response.get("adaptive_info"),
             progress_updated=response.get("progress_updated", False),
         )
@@ -319,7 +333,7 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
             user_id=request.user_id,
             success=False,
             error_code=e.__class__.__name__,
-            metadata={"goal": request.goal[:100], "level": request.level.value},
+            metadata={"goal": request.goal[:100], "level": _scalar_request_value(request.level)},
         )
         logger.exception(f"Ask error: {e}")
         raise HTTPException(
@@ -331,7 +345,11 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
 # =========================
 # ADAPTIVE STATUS ENDPOINT
 # =========================
-@router.get("/adaptive-status", status_code=status.HTTP_200_OK)
+@router.get(
+    "/adaptive-status",
+    response_model=AskAdaptiveStatusResponse,
+    status_code=status.HTTP_200_OK,
+)
 def get_adaptive_status(
     user_id: str = Query(..., description="User ID (MongoDB ObjectId as string)"),
     concept_id: int = Query(..., ge=1, description="Concept ID"),
@@ -371,9 +389,9 @@ def get_adaptive_status(
 
         # Generate adaptive summary
         summary = adaptive_decision_summary(
-            mastery=progress.get("mastery", 0),
-            confidence=progress.get("confidence", 0),
-            success_rate=progress.get("success_rate", 0),
+            mastery=float(progress.get("mastery", 0) or 0.0),
+            confidence=float(progress.get("confidence", 0) or 0.0),
+            total_attempts=int(progress.get("total_attempts", 0) or 0),
         )
 
         logger.info(
@@ -401,9 +419,17 @@ def get_adaptive_status(
 # =========================
 # BATCH CONCEPT DETECTION
 # =========================
-@router.post("/detect-concepts", status_code=status.HTTP_200_OK)
+@router.post(
+    "/detect-concepts",
+    response_model=AskDetectConceptsResponse,
+    status_code=status.HTTP_200_OK,
+)
 def detect_concepts_batch(
-    questions: list = Query(..., description="List of question strings"),
+    payload: AskDetectConceptsRequest | None = Body(default=None),
+    questions: list[str] | None = Query(
+        default=None,
+        description="List of question strings. Legacy query-string fallback.",
+    ),
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -416,11 +442,27 @@ def detect_concepts_batch(
     Returns:
         List of detected concepts
     """
-    logger.info(f"Batch concept detection: {len(questions)} questions")
+    effective_questions = (
+        list(payload.questions)
+        if payload and payload.questions
+        else [str(item) for item in (questions or []) if str(item).strip()]
+    )
+    if not effective_questions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="questions is required",
+        )
+
+    logger.info(f"Batch concept detection: {len(effective_questions)} questions")
 
     try:
-        results = ai_tutor.detect_concepts_batch(questions)
-        return {"success": True, "total": len(questions), "detected": results}
+        results = ai_tutor.detect_concepts_batch(effective_questions)
+        normalized_results = [item or {} for item in results]
+        return {
+            "success": True,
+            "total": len(effective_questions),
+            "detected": normalized_results,
+        }
     except Exception as e:
         logger.exception(f"Batch concept detection error: {e}")
         raise HTTPException(
@@ -432,10 +474,21 @@ def detect_concepts_batch(
 # =========================
 # RECOMMEND CONCEPTS
 # =========================
-@router.get("/recommend-concepts", status_code=status.HTTP_200_OK)
+@router.get(
+    "/recommend-concepts",
+    response_model=AskRecommendedConceptsResponse,
+    status_code=status.HTTP_200_OK,
+)
 def recommend_next_concepts(
     user_id: str = Query(..., description="User ID"),
     limit: int = Query(5, ge=1, le=20),
+    goal: str | None = Query(None),
+    level: str | None = Query(None),
+    subject_id: str | None = Query(None),
+    allow_generate: bool = Query(
+        True,
+        description="Allow creating a new learning path when no matching path exists",
+    ),
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -457,36 +510,14 @@ def recommend_next_concepts(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
             )
 
-        # Get user's progress summary
-        db = get_db()
-        progress_docs = list(db.progress.find({"user_id": user_id}))
-
-        completed_concepts = set(
-            p.get("concept_id") for p in progress_docs if p.get("mastery", 0) >= 0.8
+        recommended = learning_path_service.recommend_next_concepts(
+            user_id=user_id,
+            limit=limit,
+            goal=goal,
+            level=level,
+            subject_id=subject_id,
+            allow_generate=allow_generate,
         )
-
-        # Find all concepts
-        all_concepts = list(db.concepts.find({}).limit(1000))
-
-        # Filter: not completed + no prerequisites with low mastery
-        recommended = []
-        for concept in all_concepts:
-            concept_id = concept.get("concept_id")
-
-            if concept_id in completed_concepts:
-                continue
-
-            recommended.append(
-                {
-                    "concept_id": concept_id,
-                    "concept_name": concept.get("concept_name"),
-                    "difficulty": concept.get("difficulty"),
-                    "topic": concept.get("topic"),
-                }
-            )
-
-            if len(recommended) >= limit:
-                break
 
         logger.info(f"Recommended {len(recommended)} concepts for user {user_id}")
 
@@ -505,7 +536,11 @@ def recommend_next_concepts(
 # =========================
 # 6. ASK HISTORY
 # =========================
-@router.get("/history", status_code=status.HTTP_200_OK)
+@router.get(
+    "/history",
+    response_model=AskHistoryResponse,
+    status_code=status.HTTP_200_OK,
+)
 def get_ask_history(
     limit: int = Query(50, ge=1, le=100),
     skip: int = Query(0, ge=0),
@@ -575,7 +610,11 @@ def get_ask_history(
         )
 
 
-@router.delete("/history/{history_id}", status_code=status.HTTP_200_OK)
+@router.delete(
+    "/history/{history_id}",
+    response_model=BasicMessageResponse,
+    status_code=status.HTTP_200_OK,
+)
 def delete_ask_history_item(
     history_id: str, current_user: dict = Depends(get_current_user)
 ):
@@ -603,6 +642,12 @@ def delete_ask_history_item(
 
         logger.info(f"Deleting ask history item: user={user_id}, item_id={history_id}")
 
+        if not ObjectId.is_valid(history_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid history item id",
+            )
+
         db = get_db()
         result = db.ask_history.delete_one(
             {"_id": ObjectId(history_id), "user_id": user_id}
@@ -626,53 +671,3 @@ def delete_ask_history_item(
             detail="Failed to delete history item",
         )
 
-
-@router.post(
-    "/generate-assessment",
-    response_model=GenerateAssessmentQuestionsResponse,
-    status_code=status.HTTP_200_OK,
-)
-def generate_assessment_questions(
-    request: GenerateAssessmentQuestionsRequest,
-    current_user: dict = Depends(get_current_user),
-):
-    """
-    Generate assessment questions from chapter content and concept.
-    """
-    logger.info(
-        "Generate assessment request: user_id=%s, lesson_title=%s, concept=%s, difficulty=%s, question_type=%s, num_questions=%s",
-        request.user_id,
-        request.lesson_title,
-        request.concept,
-        request.difficulty.value,
-        request.question_type,
-        request.num_questions,
-    )
-
-    try:
-        current_user_id = str(current_user.get("_id", ""))
-        if current_user_id != request.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Cannot generate questions for another user",
-            )
-
-        questions = ai_tutor.generate_assessment_questions(
-            lesson_title=request.lesson_title or request.concept,
-            concept=request.concept,
-            difficulty=request.difficulty.value,
-            question_type=request.question_type,
-            chapter_content=request.retrieved_context or request.chapter_content or "",
-            num_questions=request.num_questions,
-        )
-
-        return GenerateAssessmentQuestionsResponse(success=True, questions=questions)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Generate assessment error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Assessment question generation failed",
-        )

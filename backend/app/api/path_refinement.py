@@ -53,9 +53,19 @@ def refine_path(
 
 
 @router.get("/path/refinement/{user_id}", status_code=status.HTTP_200_OK)
-def get_refinement_actions(user_id: str, current_user=Depends(get_current_user)):
+def get_refinement_actions(
+    user_id: str,
+    path_id: Optional[str] = Query(default=None),
+    lesson_id: Optional[str] = Query(default=None),
+    current_user=Depends(get_current_user),
+):
     _assert_same_user(user_id, current_user)
-    items = path_refinement_service.list_refinement_actions(user_id=user_id, limit=200)
+    items = path_refinement_service.list_refinement_actions(
+        user_id=user_id,
+        limit=200,
+        path_id=path_id,
+        lesson_id=lesson_id,
+    )
     return {
         "user_id": user_id,
         "total": len(items),
@@ -64,9 +74,19 @@ def get_refinement_actions(user_id: str, current_user=Depends(get_current_user))
 
 
 @router.get("/interventions/{user_id}", status_code=status.HTTP_200_OK)
-def get_intervention_logs(user_id: str, current_user=Depends(get_current_user)):
+def get_intervention_logs(
+    user_id: str,
+    path_id: Optional[str] = Query(default=None),
+    lesson_id: Optional[str] = Query(default=None),
+    current_user=Depends(get_current_user),
+):
     _assert_same_user(user_id, current_user)
-    items = path_refinement_service.list_interventions(user_id=user_id, limit=200)
+    items = path_refinement_service.list_interventions(
+        user_id=user_id,
+        limit=200,
+        path_id=path_id,
+        lesson_id=lesson_id,
+    )
     return {
         "user_id": user_id,
         "total": len(items),

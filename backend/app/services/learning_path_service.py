@@ -6,19 +6,23 @@ from datetime import datetime, timedelta
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
 from backend.app.ai_module import CurriculumLLMClient
+from backend.app.database.mongo import get_db
 from backend.app.repositories import (
     ChapterRepository,
     LearningPathRepository,
     LessonRecommendedChunkRepository,
     LessonRepository,
-    QuestionBankRepository,
+    LessonQuestionRepository,
+    ResourceRepository,
     SubjectRepository,
 )
 from backend.app.services.lesson_chunk_service import lesson_chunk_service
@@ -29,10 +33,13 @@ from backend.app.services.learning_path_prompt_builder import (
     get_subject_label,
     normalize_curriculum,
 )
+from backend.app.services.embedding_service import cosine_similarity, embed_text
 from backend.app.services.lesson_completion_engine import lesson_completion_engine
 from backend.app.services.adaptive_learning_service import adaptive_learning_service
 
 from backend.app.services.exercise_logging_service import exercise_logging_service
+from backend.app.services.learner_state_service import learner_state_service
+from backend.app.services.prerequisite_resolver import prerequisite_resolver
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +53,21 @@ class HybridLearningPathService:
         self.lesson_repository = LessonRepository()
         self.learning_path_repository = LearningPathRepository()
         self.lesson_recommended_chunk_repository = LessonRecommendedChunkRepository()
-        self.question_repository = QuestionBankRepository()
+        self.question_repository = LessonQuestionRepository()
+        self.resource_repository = ResourceRepository()
         self.lesson_chunk_service = lesson_chunk_service
         self.llm_client = CurriculumLLMClient()
         self.max_chunks_per_lesson = int(
             os.getenv("LEARNING_PATH_MAX_CHUNKS_PER_LESSON", "8")
+        )
+        self.max_seed_resources_per_lesson = int(
+            os.getenv("LEARNING_PATH_MAX_SEED_RESOURCES_PER_LESSON", "8")
+        )
+        self.precompute_recommendations_on_generate = (
+            os.getenv("LEARNING_PATH_PRECOMPUTE_RECOMMENDATIONS_ON_GENERATE", "false")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
         )
 
         self.subject_repository.ensure_indexes()
@@ -109,6 +126,7 @@ class HybridLearningPathService:
         chapter_responses: List[Dict[str, Any]] = []
         lesson_progress: Dict[str, str] = {}
         lesson_confidence_log: Dict[str, Dict[str, Any]] = {}
+        used_resource_ids_across_path: set[str] = set()
         total_lessons = 0
         for chapter_index, chapter_payload in enumerate(
             curriculum["chapters"], start=1
@@ -134,6 +152,24 @@ class HybridLearningPathService:
             for lesson_index, lesson_payload in enumerate(
                 chapter_payload["lessons"], start=1
             ):
+                lesson_keywords = self._build_keywords(
+                    subject_label=subject_label,
+                    chapter_title=chapter_payload["title"],
+                    lesson_title=lesson_payload["title"],
+                    lesson_summary=lesson_payload["summary"],
+                    goal=normalized_goal,
+                )
+                seed_resource_ids = self._select_resource_ids_for_lesson(
+                    subject_id=normalized_subject_id,
+                    subject_label=subject_label,
+                    chapter_title=chapter_payload["title"],
+                    lesson_title=lesson_payload["title"],
+                    lesson_summary=lesson_payload["summary"],
+                    goal=normalized_goal,
+                    level=normalized_level,
+                    limit=self.max_seed_resources_per_lesson,
+                    avoid_resource_ids=list(used_resource_ids_across_path),
+                )
                 lesson = self.lesson_repository.create(
                     {
                         "subject_id": subject["_id"],
@@ -144,13 +180,8 @@ class HybridLearningPathService:
                         "topic": normalized_subject_id,
                         "level": normalized_level,
                         "learning_objectives": [lesson_payload["summary"]],
-                        "keywords": self._build_keywords(
-                            subject_label=subject_label,
-                            chapter_title=chapter_payload["title"],
-                            lesson_title=lesson_payload["title"],
-                            goal=normalized_goal,
-                        ),
-                        "resource_ids": [],
+                        "keywords": lesson_keywords,
+                        "resource_ids": seed_resource_ids,
                         "metadata": {
                             "learning_path_id": path_id,
                             "subject_key": normalized_subject_id,
@@ -158,6 +189,9 @@ class HybridLearningPathService:
                             "level": normalized_level,
                             "generated_by": "hybrid_learning_path_service",
                             "curriculum_source": curriculum_source,
+                            "lesson_anchor_phrases": lesson_keywords,
+                            "seed_resource_ids": seed_resource_ids,
+                            "avoid_resource_ids": list(used_resource_ids_across_path),
                         },
                     }
                 )
@@ -172,9 +206,15 @@ class HybridLearningPathService:
                 )
                 recommended_chunk_ids = recommendation.get("chunk_ids", [])
                 recommended_resource_ids = recommendation.get("resource_ids", [])
+                used_resource_ids_across_path.update(
+                    str(resource_id)
+                    for resource_id in (recommended_resource_ids or seed_resource_ids)
+                    if resource_id
+                )
                 self.lesson_repository.update(
                     lesson["_id"],
                     {
+                        "resource_ids": seed_resource_ids,
                         "recommended_chunk_ids": recommended_chunk_ids,
                         "recommended_resource_ids": recommended_resource_ids,
                     },
@@ -484,6 +524,7 @@ class HybridLearningPathService:
             lesson_id=lesson_id,
             chapter_index=chapter_idx,
             lesson_index=lesson_idx,
+            user_id=user_id,
         )
 
         # If locked, cannot start or complete
@@ -507,14 +548,24 @@ class HybridLearningPathService:
                 ),
                 "reason_locked": access_result["reason"],
                 "blocking_lesson_id": access_result.get("blocking_lesson_id"),
+                "blocking_concepts": list(access_result.get("blocking_concepts") or []),
+                "missing_prerequisite_concepts": list(
+                    access_result.get("missing_prerequisite_concepts") or []
+                ),
+                "prerequisite_mastery": dict(
+                    access_result.get("prerequisite_mastery") or {}
+                ),
+                "bridge_recommendations": list(
+                    access_result.get("bridge_recommendations") or []
+                ),
+                "mastery_threshold": access_result.get("mastery_threshold"),
                 "updated_at": datetime.utcnow(),
             }
 
-        # Handle auto-completion with confidence score
-        # Requirement: confidence must be >= 75% to complete
         final_status = status
         auto_completed = False
         adaptive_outcome = None
+        lesson_assessment = {}
 
         if has_submitted_exercise and questions_answered:
             try:
@@ -524,7 +575,7 @@ class HybridLearningPathService:
                     path_id=path_id,
                     questions=questions_answered,
                     submitted_confidence=confidence,
-                    target_count=6,
+                    target_count=max(1, len(questions_answered)),
                 )
             except Exception as exc:
                 logger.error(
@@ -535,6 +586,9 @@ class HybridLearningPathService:
                     exc,
                 )
                 adaptive_outcome = None
+
+        if adaptive_outcome and isinstance(adaptive_outcome.get("lesson_assessment"), dict):
+            lesson_assessment = dict(adaptive_outcome.get("lesson_assessment") or {})
 
         submission_accuracy = 0.0
         if has_submitted_exercise and questions_answered:
@@ -551,42 +605,41 @@ class HybridLearningPathService:
             except Exception:
                 submission_accuracy = 0.0
 
-        completion_ready = bool(
-            has_submitted_exercise
-            and questions_answered
-            and submission_accuracy >= 0.75
-        )
+        completion_ready = bool(lesson_assessment.get("completed"))
         completion_mastery = (
             float(adaptive_outcome.get("updated_mastery") or 0.0)
             if adaptive_outcome
             else 0.0
         )
-        completion_accuracy = submission_accuracy
+        completion_accuracy = float(
+            lesson_assessment.get("accuracy", submission_accuracy) or submission_accuracy
+        )
+        mastery_score = (
+            float(lesson_assessment.get("mastery_score") or 0.0)
+            if lesson_assessment
+            else None
+        )
+        completion_status = (
+            str(lesson_assessment.get("completion_status") or "").strip() or None
+        )
+        reinforce_required = bool(lesson_assessment.get("reinforce_required"))
+        retry_required = bool(lesson_assessment.get("retry_required"))
 
         if completion_ready:
             final_status = "completed"
             auto_completed = True
             logger.info(
-                f"Auto-completing lesson due to quiz accuracy threshold: "
+                f"Auto-completing lesson due to mastery threshold: "
                 f"path={path_id}, lesson={lesson_id}, "
-                f"accuracy={completion_accuracy:.2%}, confidence={confidence}"
+                f"accuracy={completion_accuracy:.2%}, mastery_score={mastery_score}"
             )
         elif status == "completed":
-            # Block manual completion until quiz correctness threshold is met.
-            if stored_confidence >= 0.75:
-                final_status = "completed"
-                auto_completed = True
-                logger.info(
-                    "Allowing completion from stored passing confidence: path=%s lesson=%s confidence=%.2f",
-                    path_id,
-                    lesson_id,
-                    stored_confidence,
-                )
-            elif has_submitted_exercise and questions_answered:
+            if has_submitted_exercise and questions_answered:
                 _persist_confidence_if_present()
                 logger.info(
-                    f"Blocking completion with insufficient quiz accuracy: "
-                    f"path={path_id}, lesson={lesson_id}, accuracy={completion_accuracy:.2%}"
+                    f"Blocking completion with insufficient lesson mastery: "
+                    f"path={path_id}, lesson={lesson_id}, "
+                    f"accuracy={completion_accuracy:.2%}, mastery_score={mastery_score}"
                 )
                 return {
                     "path_id": path_id,
@@ -603,6 +656,25 @@ class HybridLearningPathService:
                     ),
                     "accuracy": completion_accuracy,
                     "updated_mastery": completion_mastery,
+                    "mastery_score": mastery_score,
+                    "completion_status": completion_status,
+                    "reinforce_required": reinforce_required,
+                    "retry_required": retry_required,
+                    "bloom_score": lesson_assessment.get("bloom_score"),
+                    "bloom_accuracy_by_level": dict(
+                        lesson_assessment.get("bloom_accuracy_by_level") or {}
+                    ),
+                    "concept_coverage_score": lesson_assessment.get(
+                        "concept_coverage_score"
+                    ),
+                    "concept_coverage_rate": lesson_assessment.get(
+                        "concept_coverage_score"
+                    ),
+                    "difficulty_weighted_score": lesson_assessment.get(
+                        "difficulty_weighted_score"
+                    ),
+                    "confidence_score": lesson_assessment.get("confidence_score"),
+                    "weak_concepts": list(lesson_assessment.get("weak_concepts") or []),
                     "next_action": (
                         adaptive_outcome.get("next_action") if adaptive_outcome else None
                     ),
@@ -610,8 +682,8 @@ class HybridLearningPathService:
                         adaptive_outcome.get("next_quiz") if adaptive_outcome else None
                     ),
                     "reason_locked": (
-                        f"Cannot complete because quiz accuracy {completion_accuracy:.2%} < 75%. "
-                        "Please retry the quiz."
+                        "Lesson is not completed under mastery evaluation. "
+                        f"Current status: {completion_status or 'reinforce_required'}."
                     ),
                     "blocking_lesson_id": None,
                     "updated_at": datetime.utcnow(),
@@ -642,7 +714,6 @@ class HybridLearningPathService:
                     "updated_at": datetime.utcnow(),
                 }
         elif confidence is not None and confidence >= 0.75:
-            # Keep high confidence for feedback only, but do not complete without quiz accuracy >= 75%.
             final_status = "in_progress"
 
         # Update database
@@ -661,10 +732,34 @@ class HybridLearningPathService:
             update_payload[f"lesson_confidence_log.{lesson_id}.updated_at"] = (
                 confidence_updated_at
             )
+        if lesson_assessment:
+            update_payload[f"lesson_confidence_log.{lesson_id}.mastery_score"] = (
+                lesson_assessment.get("mastery_score")
+            )
+            update_payload[f"lesson_confidence_log.{lesson_id}.completion_status"] = (
+                lesson_assessment.get("completion_status")
+            )
+            update_payload[f"lesson_confidence_log.{lesson_id}.concept_coverage_rate"] = (
+                lesson_assessment.get("concept_coverage_score")
+            )
 
         self.learning_path_repository.collection.update_one(
             {"_id": document["_id"]},
             {"$set": update_payload},
+        )
+        refreshed_document = self.learning_path_repository.get_by_path_id(path_id) or document
+        concept_mastery = prerequisite_resolver.estimate_concept_mastery(
+            path_document=refreshed_document,
+            user_id=user_id,
+        )
+        self.learning_path_repository.collection.update_one(
+            {"_id": document["_id"]},
+            {
+                "$set": {
+                    "concept_mastery": concept_mastery,
+                    "updated_at": updated_at,
+                }
+            },
         )
         if confidence is not None and has_submitted_exercise:
             logger.info(
@@ -699,6 +794,7 @@ class HybridLearningPathService:
                     confidence=confidence,
                     auto_completed=auto_completed,
                     lesson_status_after=final_status,
+                    attempt_metrics=lesson_assessment,
                 )
                 logger.info(
                     f"Exercise attempt logged: path={path_id}, lesson={lesson_id}, "
@@ -725,12 +821,32 @@ class HybridLearningPathService:
             ),
             "accuracy": completion_accuracy if adaptive_outcome else None,
             "updated_mastery": completion_mastery if adaptive_outcome else None,
+            "mastery_score": mastery_score,
+            "completion_status": completion_status,
+            "reinforce_required": reinforce_required,
+            "retry_required": retry_required,
+            "bloom_score": lesson_assessment.get("bloom_score"),
+            "bloom_accuracy_by_level": dict(
+                lesson_assessment.get("bloom_accuracy_by_level") or {}
+            ),
+            "concept_coverage_score": lesson_assessment.get("concept_coverage_score"),
+            "concept_coverage_rate": lesson_assessment.get("concept_coverage_score"),
+            "difficulty_weighted_score": lesson_assessment.get(
+                "difficulty_weighted_score"
+            ),
+            "confidence_score": lesson_assessment.get("confidence_score"),
+            "weak_concepts": list(lesson_assessment.get("weak_concepts") or []),
             "next_action": adaptive_outcome.get("next_action") if adaptive_outcome else None,
             "adaptive_next_quiz": (
                 adaptive_outcome.get("next_quiz") if adaptive_outcome else None
             ),
             "reason_locked": None,
             "blocking_lesson_id": None,
+            "blocking_concepts": [],
+            "missing_prerequisite_concepts": [],
+            "prerequisite_mastery": {},
+            "bridge_recommendations": [],
+            "mastery_threshold": prerequisite_resolver.mastery_threshold,
             "updated_at": updated_at,
         }
 
@@ -762,7 +878,11 @@ class HybridLearningPathService:
             if lesson.get("lesson_id")
         ]
 
-        return lesson_completion_engine.get_lesson_lock_status(path_id, lesson_ids)
+        return lesson_completion_engine.get_lesson_lock_status(
+            path_id,
+            lesson_ids,
+            user_id=user_id,
+        )
 
     def record_lesson_study_time(
         self,
@@ -944,9 +1064,9 @@ class HybridLearningPathService:
             subject_id=subject_id, goal=goal, level=level
         )
         llm_status = self.llm_client.status()
-        if not self.llm_client.is_available():
+        if not self.llm_client.is_available() or bool(llm_status.get("cooldown_active")):
             logger.warning(
-                "Curriculum LLM unavailable, using fallback curriculum for subject_id=%s",
+                "Curriculum LLM unavailable or cooling down, using fallback curriculum for subject_id=%s",
                 subject_id,
             )
             return {
@@ -960,6 +1080,16 @@ class HybridLearningPathService:
         )
         raw_text = self.llm_client.generate(prompt)
         json_text = extract_json_object(raw_text)
+        if not json_text and raw_text:
+            logger.info(
+                "Curriculum LLM returned incomplete JSON, attempting repair for subject_id=%s",
+                subject_id,
+            )
+            repaired_text = self.llm_client.repair_json(raw_text)
+            repaired_json = extract_json_object(repaired_text)
+            if repaired_json:
+                raw_text = repaired_text
+                json_text = repaired_json
         if not json_text:
             logger.warning(
                 "Curriculum LLM returned no JSON, using fallback curriculum for subject_id=%s",
@@ -977,13 +1107,25 @@ class HybridLearningPathService:
             logger.warning(
                 "Curriculum JSON parse failed for subject_id=%s: %s", subject_id, exc
             )
-            return {
-                "chapters": fallback,
-                "source": "fallback",
-                "llm_status": llm_status,
-            }
+            repaired_text = self.llm_client.repair_json(raw_text)
+            repaired_json = extract_json_object(repaired_text)
+            if repaired_json:
+                try:
+                    parsed = json.loads(repaired_json)
+                except json.JSONDecodeError:
+                    return {
+                        "chapters": fallback,
+                        "source": "fallback",
+                        "llm_status": llm_status,
+                    }
+            else:
+                return {
+                    "chapters": fallback,
+                    "source": "fallback",
+                    "llm_status": llm_status,
+                }
 
-        normalized = normalize_curriculum(parsed)
+        normalized = normalize_curriculum(parsed, goal=goal)
         if not normalized:
             logger.warning(
                 "Curriculum normalization produced no chapters, using fallback for subject_id=%s",
@@ -1023,6 +1165,13 @@ class HybridLearningPathService:
             "learning_path_id": path_id,
             "subject_key": subject.get("slug"),
             "pipeline": "hybrid_subject_lesson_v1",
+            "avoid_resource_ids": [
+                str(item)
+                for item in (lesson.get("metadata", {}) or {}).get(
+                    "avoid_resource_ids", []
+                )
+                if item
+            ],
         }
         try:
             return self.lesson_chunk_service.recommend_chunks(
@@ -1064,11 +1213,26 @@ class HybridLearningPathService:
     ) -> Dict[str, Any]:
         topic = lesson.get("topic") or chapter.get("topic") or subject.get("topic")
         level = lesson.get("level")
+        lesson_resource_ids = [
+            str(item)
+            for item in (
+                lesson.get("resource_ids")
+                or lesson.get("recommended_resource_ids")
+                or []
+            )
+            if item
+        ]
+        candidate_chunks = []
+        if lesson_resource_ids:
+            candidate_chunks = self.lesson_chunk_service.chunk_repository.candidate_chunks(
+                resource_ids=lesson_resource_ids,
+                limit=max(self.max_chunks_per_lesson * 3, self.max_chunks_per_lesson),
+            )
         candidate_chunks = self.lesson_chunk_service.chunk_repository.candidate_chunks(
             topic=topic,
             level=level,
             limit=self.max_chunks_per_lesson,
-        )
+        ) if not candidate_chunks else candidate_chunks
         if not candidate_chunks:
             candidate_chunks = (
                 self.lesson_chunk_service.chunk_repository.candidate_chunks(
@@ -1128,10 +1292,348 @@ class HybridLearningPathService:
         subject_label: str,
         chapter_title: str,
         lesson_title: str,
+        lesson_summary: str,
         goal: str,
     ) -> List[str]:
-        tokens = [subject_label, chapter_title, lesson_title, goal]
-        return [token.strip() for token in tokens if token and token.strip()]
+        def add_phrase(target: List[str], seen: set[str], value: str) -> None:
+            phrase = re.sub(r"\s+", " ", str(value or "").strip())
+            normalized = phrase.lower()
+            if not phrase or normalized in seen:
+                return
+            seen.add(normalized)
+            target.append(phrase)
+
+        phrases: List[str] = []
+        seen: set[str] = set()
+        for value in [subject_label, chapter_title, lesson_title, lesson_summary, goal]:
+            add_phrase(phrases, seen, value)
+
+        for source in [chapter_title, lesson_title, lesson_summary, goal]:
+            cleaned = re.sub(r"[\\/|]+", " ", str(source or ""))
+            for part in re.split(r"[:\-–—,()]+", cleaned):
+                add_phrase(phrases, seen, part)
+
+            tokens = [
+                token
+                for token in re.findall(r"\w+", cleaned.lower())
+                if len(token) >= 3 and token not in {"lesson", "bai", "chuong", "chapter"}
+            ]
+            for index, token in enumerate(tokens):
+                add_phrase(phrases, seen, token)
+                if index + 1 < len(tokens):
+                    add_phrase(phrases, seen, f"{token} {tokens[index + 1]}")
+                if index + 2 < len(tokens):
+                    add_phrase(phrases, seen, f"{token} {tokens[index + 1]} {tokens[index + 2]}")
+
+        return phrases[:20]
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+    @classmethod
+    def _tokenize_text(cls, value: str) -> List[str]:
+        return [
+            token
+            for token in re.findall(r"\w+", cls._normalize_text(value))
+            if len(token) >= 3 and token not in {"lesson", "bai", "chuong", "chapter"}
+        ]
+
+    @staticmethod
+    def _semantic_similarity(
+        query_embedding: Optional[np.ndarray], candidate_embedding: Any
+    ) -> float:
+        if query_embedding is None or candidate_embedding in (None, []):
+            return 0.0
+        try:
+            candidate_vector = np.array(candidate_embedding, dtype=float)
+            if candidate_vector.size == 0:
+                return 0.0
+            return float(cosine_similarity(query_embedding, candidate_vector))
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def _score_haystack_for_lesson(
+        cls,
+        *,
+        haystack: str,
+        primary_phrases: List[str],
+        secondary_phrases: List[str],
+        keyword_set: set[str],
+        token_set: set[str],
+    ) -> float:
+        normalized_haystack = cls._normalize_text(haystack)
+        if not normalized_haystack:
+            return 0.0
+
+        score = 0.0
+        primary_hits = sum(
+            1 for phrase in primary_phrases if phrase and phrase in normalized_haystack
+        )
+        secondary_hits = sum(
+            1 for phrase in secondary_phrases if phrase and phrase in normalized_haystack
+        )
+        keyword_hits = sum(
+            1 for phrase in keyword_set if phrase and phrase in normalized_haystack
+        )
+        haystack_tokens = set(cls._tokenize_text(normalized_haystack))
+        token_hits = sum(1 for token in token_set if token in haystack_tokens)
+
+        if primary_hits:
+            score += min(1.25, primary_hits * 0.42)
+        if secondary_hits:
+            score += min(0.2, secondary_hits * 0.05)
+        if keyword_hits:
+            score += min(0.38, keyword_hits * 0.06)
+        if token_hits:
+            score += min(0.28, token_hits * 0.02)
+
+        return score
+
+    def _select_resource_ids_for_lesson(
+        self,
+        *,
+        subject_id: str,
+        subject_label: str,
+        chapter_title: str,
+        lesson_title: str,
+        lesson_summary: str,
+        goal: str,
+        level: str,
+        limit: int,
+        avoid_resource_ids: Optional[List[str]] = None,
+    ) -> List[str]:
+        lesson_keywords = self._build_keywords(
+            subject_label=subject_label,
+            chapter_title=chapter_title,
+            lesson_title=lesson_title,
+            lesson_summary=lesson_summary,
+            goal=goal,
+        )
+        normalized_avoid_ids = {
+            str(resource_id).strip()
+            for resource_id in (avoid_resource_ids or [])
+            if str(resource_id or "").strip()
+        }
+        primary_phrases = [
+            self._normalize_text(lesson_title),
+            self._normalize_text(lesson_summary),
+        ]
+        secondary_phrases = [
+            self._normalize_text(chapter_title),
+            self._normalize_text(subject_label),
+            self._normalize_text(goal),
+        ]
+        query_text = " ".join(
+            part
+            for part in [
+                subject_label,
+                chapter_title,
+                lesson_title,
+                lesson_summary,
+                goal,
+            ]
+            if str(part or "").strip()
+        )
+        try:
+            query_embedding = np.array(embed_text(query_text), dtype=float)
+            if query_embedding.size == 0:
+                query_embedding = None
+        except Exception:
+            query_embedding = None
+        keyword_set = {
+            self._normalize_text(item)
+            for item in lesson_keywords
+            if str(item).strip()
+        }
+        token_set = {
+            token
+            for phrase in keyword_set
+            for token in re.findall(r"\w+", phrase)
+            if len(token) >= 3
+        }
+
+        query: Dict[str, Any] = {}
+        if level:
+            query["$or"] = [
+                {"metadata.level": level},
+                {"level": level},
+            ]
+
+        candidates = list(
+            self.resource_repository.collection.find(
+                query,
+                {
+                    "_id": 1,
+                    "title": 1,
+                    "topic": 1,
+                    "source": 1,
+                    "content_summary": 1,
+                    "metadata": 1,
+                    "level": 1,
+                },
+            ).limit(max(limit * 12, 80))
+        )
+        if not candidates:
+            candidates = []
+
+        metadata_scores: Dict[str, float] = {}
+
+        for resource in candidates:
+            metadata = resource.get("metadata") or {}
+            haystack = self._normalize_text(
+                " ".join(
+                    [
+                        str(resource.get("title") or ""),
+                        str(resource.get("topic") or ""),
+                        str(metadata.get("title") or ""),
+                        str(metadata.get("source_title") or ""),
+                        str(metadata.get("description") or ""),
+                        str(metadata.get("summary") or ""),
+                        str(metadata.get("topic") or ""),
+                        str(metadata.get("keywords") or ""),
+                        str(resource.get("content_summary") or ""),
+                    ]
+                )
+            )
+            score = self._score_haystack_for_lesson(
+                haystack=haystack,
+                primary_phrases=primary_phrases,
+                secondary_phrases=secondary_phrases,
+                keyword_set=keyword_set,
+                token_set=token_set,
+            )
+
+            resource_topic = self._normalize_text(str(resource.get("topic") or metadata.get("topic") or ""))
+            if subject_id and subject_id in resource_topic:
+                score += 0.08
+            if subject_label and self._normalize_text(subject_label) in haystack:
+                score += 0.05
+            resource_level = self._normalize_text(
+                str(metadata.get("level") or resource.get("level") or "")
+            )
+            if resource_level == self._normalize_text(level):
+                score += 0.08
+            resource_id = str(resource.get("_id") or "").strip()
+            if resource_id:
+                metadata_scores[resource_id] = max(metadata_scores.get(resource_id, 0.0), score)
+
+        chunk_queries = [
+            {
+                "topic": subject_id or None,
+                "level": level or None,
+                "limit": max(limit * 40, 220),
+            },
+            {
+                "topic": subject_id or None,
+                "level": None,
+                "limit": max(limit * 28, 180),
+            },
+            {
+                "topic": None,
+                "level": level or None,
+                "limit": max(limit * 20, 140),
+            },
+        ]
+        chunk_candidates: List[Dict[str, Any]] = []
+        seen_chunk_ids: set[str] = set()
+        for query in chunk_queries:
+            rows = self.lesson_chunk_service.chunk_repository.candidate_chunks(**query)
+            for row in rows:
+                chunk_id = str(row.get("_id") or "").strip()
+                if not chunk_id or chunk_id in seen_chunk_ids:
+                    continue
+                seen_chunk_ids.add(chunk_id)
+                chunk_candidates.append(row)
+            if len(chunk_candidates) >= max(limit * 60, 320):
+                break
+
+        chunk_scores_by_resource: Dict[str, List[float]] = {}
+        for chunk in chunk_candidates:
+            metadata = chunk.get("metadata") or {}
+            resource_id = str(chunk.get("resource_id") or "").strip()
+            if not resource_id:
+                continue
+
+            haystack = " ".join(
+                [
+                    str(chunk.get("content") or ""),
+                    str(metadata.get("heading") or ""),
+                    str(metadata.get("section_title") or ""),
+                    str(metadata.get("chapter_title") or ""),
+                    str(metadata.get("source_title") or ""),
+                    str(metadata.get("title") or ""),
+                    str(metadata.get("topic") or ""),
+                    " ".join(str(item) for item in metadata.get("covered_concepts") or []),
+                    " ".join(str(item) for item in metadata.get("primary_concepts") or []),
+                ]
+            )
+            lexical_chunk_score = self._score_haystack_for_lesson(
+                haystack=haystack,
+                primary_phrases=primary_phrases,
+                secondary_phrases=secondary_phrases,
+                keyword_set=keyword_set,
+                token_set=token_set,
+            )
+            semantic_chunk_score = self._semantic_similarity(
+                query_embedding, chunk.get("embedding")
+            )
+            chunk_score = lexical_chunk_score * 0.55 + semantic_chunk_score * 0.45
+            if metadata.get("level") == level:
+                chunk_score += 0.06
+            if metadata.get("topic") == subject_id:
+                chunk_score += 0.04
+            if lexical_chunk_score >= 0.6 and semantic_chunk_score >= 0.55:
+                chunk_score += 0.1
+            elif lexical_chunk_score >= 0.45 or semantic_chunk_score >= 0.62:
+                chunk_score += 0.05
+            if chunk_score <= 0.0:
+                continue
+            chunk_scores_by_resource.setdefault(resource_id, []).append(chunk_score)
+
+        scored: List[tuple[float, str, bool]] = []
+        for resource_id in set(metadata_scores) | set(chunk_scores_by_resource):
+            chunk_scores = sorted(
+                chunk_scores_by_resource.get(resource_id, []), reverse=True
+            )
+            metadata_score = float(metadata_scores.get(resource_id, 0.0))
+            top_chunk_score = float(chunk_scores[0]) if chunk_scores else 0.0
+            second_chunk_score = float(chunk_scores[1]) if len(chunk_scores) > 1 else 0.0
+            third_chunk_score = float(chunk_scores[2]) if len(chunk_scores) > 2 else 0.0
+            support_bonus = min(0.24, max(len(chunk_scores) - 1, 0) * 0.045)
+            score = (
+                metadata_score * 0.1
+                + top_chunk_score * 0.58
+                + second_chunk_score * 0.2
+                + third_chunk_score * 0.12
+                + support_bonus
+            )
+
+            if top_chunk_score >= 0.9:
+                score += 0.12
+            elif top_chunk_score >= 0.65:
+                score += 0.06
+
+            was_used_in_path = resource_id in normalized_avoid_ids
+            if was_used_in_path:
+                score -= 0.2
+
+            base_signal = max(metadata_score, top_chunk_score)
+            if base_signal >= 0.18:
+                scored.append((score, resource_id, was_used_in_path))
+
+        scored.sort(key=lambda item: (item[2], -item[0], item[1]))
+        ordered_ids: List[str] = []
+        seen_ids: set[str] = set()
+        for _score, resource_id, _was_used_in_path in scored:
+            if resource_id in seen_ids:
+                continue
+            seen_ids.add(resource_id)
+            ordered_ids.append(resource_id)
+            if len(ordered_ids) >= limit:
+                break
+        return ordered_ids
 
     def _serialize_learning_path(self, document: Dict[str, Any]) -> Dict[str, Any]:
         subject_id = str(document.get("subject_id") or "python").strip().lower()
