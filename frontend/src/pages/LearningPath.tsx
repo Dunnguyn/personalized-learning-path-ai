@@ -4,10 +4,22 @@ import { activityIcon, learningJourneyIcon } from '../assets';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import PageHero from '../components/ui/PageHero';
 import { useAuth } from '../contexts/AuthContext';
+import { useSubjects } from '../hooks/useSubjects';
 import { learningPathService } from '../services/learningPathService';
-import type { LearningLevel, LearningPath, LearningPathSubjectId } from '../types/learningPath';
-import { SUBJECTS } from '../utils/subjects';
+import type { LearningLevel, LearningPath } from '../types/learningPath';
+import {
+  buildSubjectGoal,
+  findSubjectById,
+  getSubjectSuggestionKey,
+} from '../utils/subjects';
 
+const GOAL_DETAIL_SUGGESTIONS: Record<string, string[]> = {
+  python: ['OOP', 'Automation script', 'Data analysis', 'Web backend'],
+  cpp: ['OOP', 'STL', 'Competitive programming', 'Memory management'],
+  csharp: ['.NET backend', 'OOP', 'Desktop app', 'REST API'],
+  java: ['Spring Boot', 'OOP', 'DSA', 'Backend service'],
+  web: ['HTML/CSS', 'React', 'Frontend project', 'Responsive UI'],
+};
 const CARD_THEMES = ['pastel-pink', 'pastel-yellow', 'pastel-purple', 'pastel-mint'] as const;
 const GENERATION_STAGES = [
   'Đang phân tích mục tiêu học tập',
@@ -40,8 +52,37 @@ const getChapterStatus = (lessons: Array<{ status?: string }>) => {
   return 'Chưa bắt đầu';
 };
 
+const getCurriculumSourceLabel = (source?: string | null) => {
+  switch ((source || '').trim().toLowerCase()) {
+    case 'ai':
+      return 'AI planner';
+    case 'fallback':
+      return 'Fallback planner';
+    default:
+      return 'Planner';
+  }
+};
+
+const getPathNextStepSummary = (path: LearningPath) => {
+  const chapters = path.curriculum || path.chapters || [];
+  for (const chapter of chapters) {
+    const inProgressLesson = chapter.lessons.find((lesson) => lesson.status === 'in_progress');
+    if (inProgressLesson) {
+      return `Tiếp tục ${inProgressLesson.title}`;
+    }
+  }
+  for (const chapter of chapters) {
+    const nextLesson = chapter.lessons.find((lesson) => lesson.status !== 'complete');
+    if (nextLesson) {
+      return `Mở ${nextLesson.title}`;
+    }
+  }
+  return chapters.length > 0 ? 'Đã hoàn thành toàn bộ lộ trình' : 'Đang chờ tạo cấu trúc bài học';
+};
+
 export default function LearningPath() {
   const { user } = useAuth();
+  const { subjects, error: subjectsError } = useSubjects();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -57,10 +98,24 @@ export default function LearningPath() {
   const [pendingDeletePath, setPendingDeletePath] = useState<LearningPath | null>(null);
   const [deletingPathId, setDeletingPathId] = useState<string | null>(null);
   const [pathForm, setPathForm] = useState({
-    subjectId: SUBJECTS[0]?.id ?? '',
+    subjectId: '',
     goalDetail: '',
     level: 'beginner' as LearningLevel,
   });
+  const selectedSubject = useMemo(
+    () => findSubjectById(subjects, pathForm.subjectId),
+    [pathForm.subjectId, subjects],
+  );
+  const goalSuggestions = useMemo(
+    () => GOAL_DETAIL_SUGGESTIONS[getSubjectSuggestionKey(selectedSubject)] ?? [],
+    [selectedSubject],
+  );
+
+  useEffect(() => {
+    if (!pathForm.subjectId && subjects[0]?.id) {
+      setPathForm((previous) => ({ ...previous, subjectId: subjects[0].id }));
+    }
+  }, [pathForm.subjectId, subjects]);
 
   useEffect(() => {
     const state = location.state as { notice?: string } | null;
@@ -109,23 +164,6 @@ export default function LearningPath() {
 
     return () => window.clearInterval(intervalId);
   }, [generatingPath]);
-
-  const buildGoal = (subjectId: string, goalDetail: string) => {
-    const subject = SUBJECTS.find((item) => item.id === subjectId);
-    const baseGoal = subject?.goal?.trim() ?? '';
-    const detail = goalDetail.trim();
-
-    if (!baseGoal && !detail) {
-      return '';
-    }
-    if (!baseGoal) {
-      return detail;
-    }
-    if (!detail) {
-      return baseGoal;
-    }
-    return `${baseGoal} - ${detail}`;
-  };
 
   const fetchLearningPaths = useCallback(async () => {
     if (!user) {
@@ -190,7 +228,7 @@ export default function LearningPath() {
       return;
     }
 
-    const goal = buildGoal(pathForm.subjectId, pathForm.goalDetail);
+    const goal = buildSubjectGoal(subjects, pathForm.subjectId, pathForm.goalDetail);
     if (!goal) {
       setError('Vui lòng chọn môn học hoặc nhập mục tiêu chi tiết.');
       return;
@@ -204,7 +242,7 @@ export default function LearningPath() {
       setNotice(null);
 
       const result = await learningPathService.generateLearningPath({
-        subject_id: pathForm.subjectId as LearningPathSubjectId,
+        subject_id: pathForm.subjectId,
         goal,
         level: pathForm.level,
       });
@@ -215,7 +253,7 @@ export default function LearningPath() {
       setHoveredPathId(result.path_id);
       setShowCreatePath(false);
       setPathForm({
-        subjectId: SUBJECTS[0]?.id ?? '',
+        subjectId: subjects[0]?.id ?? '',
         goalDetail: '',
         level: 'beginner',
       });
@@ -271,6 +309,14 @@ export default function LearningPath() {
     () => learningPaths.find((path) => path.path_id === hoveredPathId) ?? learningPaths[0] ?? null,
     [hoveredPathId, learningPaths],
   );
+  const pathGoalPreview = useMemo(
+    () => buildSubjectGoal(subjects, pathForm.subjectId, pathForm.goalDetail),
+    [pathForm.goalDetail, pathForm.subjectId, subjects],
+  );
+  void getCurriculumSourceLabel(activePath?.curriculum_source);
+  if (activePath) {
+    void getPathNextStepSummary(activePath);
+  }
 
   const stats = useMemo(() => {
     let total = 0;
@@ -304,7 +350,7 @@ export default function LearningPath() {
         <PageHero
           className="mb-6 learning-path-hero-minimal"
           descriptionClassName="hidden"
-          kicker="Learning tracks"
+          kicker="Lộ trình học"
           title="Quản lý lộ trình học theo mục tiêu thay vì tự ghép từng bước rời rạc."
           description="Trang này gom toàn bộ track đang hoạt động, tiến độ hiện tại và chi tiết chương để bạn chuyển nhịp nhanh hơn, đặc biệt khi đang học song song nhiều môn."
           actions={
@@ -386,6 +432,12 @@ export default function LearningPath() {
           </div>
         )}
 
+        {!error && subjectsError && (
+          <div className="white-panel mb-6 border border-amber-200 px-4 py-3 text-[14px] text-amber-700">
+            Không tải được danh sách môn học từ API. Hệ thống đang dùng danh sách dự phòng.
+          </div>
+        )}
+
         {notice && (
           <div className="white-panel mb-6 flex items-start justify-between gap-4 border border-[#ead7df] bg-[#fff7fb] px-4 py-3 text-[14px] text-[#8c3451]">
             <p>{notice}</p>
@@ -428,7 +480,7 @@ export default function LearningPath() {
                   className="theme-input rounded-[18px]"
                   required
                 >
-                  {SUBJECTS.map((subject) => (
+                  {subjects.map((subject) => (
                     <option key={subject.id} value={subject.id}>
                       {subject.label}
                     </option>
@@ -488,6 +540,66 @@ export default function LearningPath() {
                   </div>
                 </div>
               )}
+
+              <div className="md:col-span-2">
+                <div className="grid gap-4 rounded-[24px] border border-[#ead7df] bg-white/70 p-5 md:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/55">
+                      Xem trước lộ trình
+                    </p>
+                    <h3 className="mt-3 text-[22px] font-semibold tracking-[-0.03em] text-[#17141a]">
+                      {pathGoalPreview || 'Chọn môn học và thêm mục tiêu cụ thể nếu cần'}
+                    </h3>
+                    <p className="mt-3 text-[14px] leading-6 text-[#6a625d]">
+                      {selectedSubject
+                        ? `Hệ thống sẽ ưu tiên ${selectedSubject.label}, giữ đúng cấp độ hiện tại và cố gắng chia lộ trình thành nhiều chương rõ ràng.`
+                        : 'Lộ trình sẽ được dựng theo môn học, mục tiêu và mức hiện tại của bạn.'}
+                    </p>
+                    {goalSuggestions.length > 0 ? (
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {goalSuggestions.map((suggestion) => (
+                          <button
+                            key={suggestion}
+                            type="button"
+                            onClick={() =>
+                              setPathForm((previous) => ({
+                                ...previous,
+                                goalDetail: suggestion,
+                              }))
+                            }
+                            className="rounded-full border border-[#ead7df] bg-white px-3 py-1 text-[12px] font-medium text-[#8c3451] transition hover:bg-[#fff7fb]"
+                          >
+                            {suggestion}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="rounded-[20px] bg-[#fff8fb] px-4 py-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/55">
+                      Kỳ vọng đầu ra
+                    </p>
+                    <div className="mt-3 space-y-2 text-[13px] leading-6 text-[#5f5853]">
+                      <p>
+                        <span className="font-semibold text-[#8c3451]">Môn học:</span>{' '}
+                        {selectedSubject?.label || 'Chưa chọn'}
+                      </p>
+                      <p>
+                        <span className="font-semibold text-[#8c3451]">Cấp độ:</span>{' '}
+                        {getLevelLabel(pathForm.level)}
+                      </p>
+                      <p>
+                        <span className="font-semibold text-[#8c3451]">Cấu trúc:</span> ưu tiên
+                        2-4 chương, mỗi chương 2-4 bài khi dữ liệu đủ.
+                      </p>
+                      <p>
+                        <span className="font-semibold text-[#8c3451]">Độ an toàn:</span> nếu AI
+                        planner không ổn định, hệ thống vẫn tạo path dự phòng để bạn tiếp tục học.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
               <div className="flex gap-3 md:col-span-2">
                 <button

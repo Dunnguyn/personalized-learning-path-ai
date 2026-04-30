@@ -3,7 +3,6 @@ import type {
   AdminAverageStudyHoursMetrics,
   AdminDashboardMetrics,
   AdminResearchDashboardMetrics,
-  LearnerAnalyticsDashboard,
 } from '../types/analytics';
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -12,12 +11,6 @@ const asRecord = (value: unknown): Record<string, unknown> =>
     : {};
 
 export const analyticsService = {
-  async getLearnerDashboard(userId: string): Promise<LearnerAnalyticsDashboard> {
-    return (await apiClient.get(
-      `/analytics/learner/${encodeURIComponent(userId)}`,
-    )) as LearnerAnalyticsDashboard;
-  },
-
   async getAdminDashboard(): Promise<AdminDashboardMetrics> {
     return (await apiClient.get('/analytics/admin/dashboard')) as AdminDashboardMetrics;
   },

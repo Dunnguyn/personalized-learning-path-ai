@@ -1,11 +1,19 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from 'react';
 import { authService } from '../services/authService';
 import type { StoredUser, User } from '../types/auth';
 
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  setUser: (user: User | null) => void;
+  setUser: Dispatch<SetStateAction<User | null>>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }

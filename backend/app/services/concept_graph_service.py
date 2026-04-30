@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-import math
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -31,6 +30,14 @@ def _coerce_difficulty(value: Any, *, default: int = 1) -> int:
         return max(1, min(int(value), 10))
     except Exception:
         return default
+
+
+def _chapter_sort_key(lesson: Dict[str, Any]) -> Tuple[int, int, int]:
+    return (
+        int(lesson.get("_concept_rank", 10**6)),
+        _coerce_difficulty(lesson.get("difficulty"), default=1),
+        int(lesson.get("original_lesson_index") or lesson.get("original_index") or 0),
+    )
 
 
 class ConceptGraphService:
@@ -313,25 +320,45 @@ class ConceptGraphService:
             ),
         )
 
-        chapter_count = max(
-            1,
-            min(
-                max(len(original_chapter_titles), 1),
-                int(math.ceil(len(ordered_lessons) / 3.0)),
-            ),
+        chapter_titles_by_index: Dict[int, str] = {
+            index: title
+            for index, title in enumerate(original_chapter_titles, start=1)
+            if title
+        }
+        chapter_buckets: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        lesson_concept_map: Dict[str, Dict[str, List[str]]] = {}
+        for lesson in ordered_lessons:
+            lesson_copy = dict(lesson)
+            lesson_copy["_concept_rank"] = min(
+                (
+                    concept_rank.get(concept_id, len(concept_rank) + lesson["original_index"])
+                    for concept_id in (lesson_copy.get("target_concepts") or [""])
+                ),
+                default=len(concept_rank) + lesson_copy["original_index"],
+            )
+            bucket_index = int(lesson_copy.get("original_chapter_index") or 0)
+            if lesson_copy.get("lesson_kind") == "bridge":
+                bucket_index = 0
+            elif bucket_index <= 0:
+                bucket_index = 1
+            chapter_buckets[bucket_index].append(lesson_copy)
+
+        ordered_chapter_indices: List[int] = []
+        if chapter_buckets.get(0):
+            ordered_chapter_indices.append(0)
+        ordered_chapter_indices.extend(
+            index
+            for index in sorted(chapter_titles_by_index)
+            if chapter_buckets.get(index)
         )
-        chapter_titles = list(original_chapter_titles[:chapter_count])
-        while len(chapter_titles) < chapter_count:
-            chapter_titles.append(f"Concept Block {len(chapter_titles) + 1}")
-        chunk_size = int(math.ceil(len(ordered_lessons) / float(chapter_count))) if ordered_lessons else 1
+        for index in sorted(chapter_buckets):
+            if index not in ordered_chapter_indices and chapter_buckets.get(index):
+                ordered_chapter_indices.append(index)
 
         chapters_out: List[Dict[str, Any]] = []
-        lesson_concept_map: Dict[str, Dict[str, List[str]]] = {}
         lesson_sequence = 0
-        for chapter_index in range(chapter_count):
-            lesson_slice = ordered_lessons[
-                chapter_index * chunk_size : (chapter_index + 1) * chunk_size
-            ]
+        for chapter_index in ordered_chapter_indices:
+            lesson_slice = sorted(chapter_buckets.get(chapter_index) or [], key=_chapter_sort_key)
             if not lesson_slice:
                 continue
             lessons_out: List[Dict[str, Any]] = []
@@ -366,7 +393,12 @@ class ConceptGraphService:
                 }
             chapters_out.append(
                 {
-                    "title": chapter_titles[chapter_index],
+                    "title": (
+                        "Prerequisite Bridge"
+                        if chapter_index == 0
+                        else chapter_titles_by_index.get(chapter_index)
+                        or f"Chapter {chapter_index}"
+                    ),
                     "lessons": lessons_out,
                 }
             )

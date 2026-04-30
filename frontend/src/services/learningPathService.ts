@@ -1,4 +1,5 @@
 import { apiClient } from '../utils/apiClient';
+import { normalizeSubjectOption, type SubjectOption } from '../utils/subjects';
 import type {
   BloomLevel,
   LearningLevel,
@@ -67,6 +68,19 @@ export type {
 export { normalizeLearningPath } from './parsers/learningPathParser';
 
 export const learningPathService = {
+  async getSubjects(): Promise<SubjectOption[]> {
+    const response = asRecord(await apiClient.get('/subjects'));
+    const items = Array.isArray(response.items)
+      ? response.items
+      : Array.isArray(response.subjects)
+        ? response.subjects
+        : [];
+
+    return items
+      .map((item) => normalizeSubjectOption(asRecord(item)))
+      .filter((item): item is SubjectOption => item != null);
+  },
+
   async generateLearningPath(data: {
     user_id?: string;
     subject_id: LearningPathSubjectId;
@@ -147,8 +161,19 @@ export const learningPathService = {
     return normalizeStudySummary(response);
   },
 
-  async getLessonQuestions(lessonId: string): Promise<LessonQuestions> {
-    const response = await apiClient.get(`/lessons/${lessonId}/questions`);
+  async getLessonQuestions(
+    lessonId: string,
+    payload?: {
+      question_set_kind?: 'standard' | 'adaptive';
+    },
+  ): Promise<LessonQuestions> {
+    const query =
+      payload?.question_set_kind != null
+        ? `?question_set_kind=${encodeURIComponent(payload.question_set_kind)}`
+        : '';
+    const response = await apiClient.get(`/lessons/${lessonId}/questions${query}`, {
+      timeoutMs: null,
+    });
     return normalizeLessonQuestions(response);
   },
 
@@ -168,14 +193,18 @@ export const learningPathService = {
       metadata?: Record<string, unknown>;
     },
   ): Promise<LessonQuestionGenerationResponse> {
-    const response = await apiClient.post(`/lessons/${lessonId}/generate-questions`, {
-      ...(payload?.target_count != null ? { target_count: payload.target_count } : {}),
-      question_types: payload?.question_types ?? ['multiple_choice', 'short_answer'],
-      difficulty: payload?.difficulty ?? 'beginner',
-      bloom_levels: payload?.bloom_levels ?? ['remember', 'understand', 'apply'],
-      overwrite: payload?.overwrite ?? false,
-      metadata: payload?.metadata ?? {},
-    });
+    const response = await apiClient.post(
+      `/lessons/${lessonId}/generate-questions`,
+      {
+        ...(payload?.target_count != null ? { target_count: payload.target_count } : {}),
+        question_types: payload?.question_types ?? ['multiple_choice', 'short_answer'],
+        difficulty: payload?.difficulty ?? 'beginner',
+        bloom_levels: payload?.bloom_levels ?? ['remember', 'understand', 'apply'],
+        overwrite: payload?.overwrite ?? false,
+        metadata: payload?.metadata ?? {},
+      },
+      { timeoutMs: null },
+    );
 
     return normalizeLessonQuestionGenerationResponse(response, lessonId);
   },
@@ -187,10 +216,14 @@ export const learningPathService = {
       target_count?: number;
     },
   ): Promise<AdaptiveQuizNextResponse> {
-    const response = await apiClient.post(`/lessons/${lessonId}/adaptive-quiz/next`, {
-      path_id: payload.path_id,
-      ...(payload.target_count != null ? { target_count: payload.target_count } : {}),
-    });
+    const response = await apiClient.post(
+      `/lessons/${lessonId}/adaptive-quiz/next`,
+      {
+        path_id: payload.path_id,
+        ...(payload.target_count != null ? { target_count: payload.target_count } : {}),
+      },
+      { timeoutMs: null },
+    );
     return normalizeAdaptiveQuizNextResponse(response, lessonId);
   },
 
@@ -206,14 +239,18 @@ export const learningPathService = {
     },
   ): Promise<ApiRecord> {
     return asRecord(
-      await apiClient.post(`/lessons/${lessonId}/question-generation-debug`, {
-        target_count: payload?.target_count ?? 4,
-        question_types: payload?.question_types ?? ['multiple_choice', 'short_answer'],
-        difficulty: payload?.difficulty ?? 'beginner',
-        bloom_levels: payload?.bloom_levels ?? ['remember', 'understand'],
-        allow_llm: payload?.allow_llm ?? true,
-        metadata: payload?.metadata ?? {},
-      }),
+      await apiClient.post(
+        `/lessons/${lessonId}/question-generation-debug`,
+        {
+          target_count: payload?.target_count ?? 4,
+          question_types: payload?.question_types ?? ['multiple_choice', 'short_answer'],
+          difficulty: payload?.difficulty ?? 'beginner',
+          bloom_levels: payload?.bloom_levels ?? ['remember', 'understand'],
+          allow_llm: payload?.allow_llm ?? true,
+          metadata: payload?.metadata ?? {},
+        },
+        { timeoutMs: null },
+      ),
     );
   },
 

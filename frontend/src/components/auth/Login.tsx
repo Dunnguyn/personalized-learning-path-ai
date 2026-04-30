@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AuthShell from './AuthShell';
-import illustrationLearning from '../../assets/tải xuống (1).jpg';
+import loginHeroImage from '../../assets/tải xuống (1).jpg';
 import { useAuth } from '../../contexts/AuthContext';
 import { authService } from '../../services/authService';
 import type { StoredUser } from '../../types/auth';
@@ -67,7 +67,7 @@ export default function Login() {
       title="Quay lại nhịp học đang dang dở."
       description="Đăng nhập để tiếp tục lộ trình cá nhân hóa, xem tài nguyên phù hợp và hỏi AI Tutor trong đúng ngữ cảnh học tập hiện tại."
       mediaAlt="Minh họa học tập"
-      mediaSrc={illustrationLearning}
+      mediaSrc={loginHeroImage}
       sideLabel="Điểm nổi bật"
       sideTitle="Một nơi để theo dõi cả tiến độ lẫn quyết định học tiếp theo."
       sideCopy="Từ dashboard đến AI Tutor, mọi gợi ý đều bám theo mục tiêu và mức độ hiện tại của bạn thay vì đưa ra nội dung chung chung."
@@ -116,7 +116,11 @@ export default function Login() {
             />
             <span>Ghi nhớ email cho lần đăng nhập tiếp theo</span>
           </label>
-          <button type="button" className="text-left font-medium text-[#8c3451] hover:underline sm:text-right">
+          <button
+            type="button"
+            onClick={() => navigate('/forgot-password')}
+            className="text-left font-medium text-[#8c3451] hover:underline sm:text-right"
+          >
             Quên mật khẩu?
           </button>
         </div>

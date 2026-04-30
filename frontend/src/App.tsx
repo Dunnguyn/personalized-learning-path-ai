@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-d
 import { AuthProvider } from './contexts/AuthContext';
 
 const Login = lazy(() => import('./components/auth/Login'));
+const ForgotPassword = lazy(() => import('./components/auth/ForgotPassword'));
 const Signup = lazy(() => import('./components/auth/Signup'));
 const SignupStep2 = lazy(() => import('./components/auth/SignupStep2'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -11,7 +12,6 @@ const LearningPathDetail = lazy(() => import('./pages/LearningPathDetail'));
 const Resources = lazy(() => import('./pages/Resources'));
 const AITutor = lazy(() => import('./pages/AITutor'));
 const Settings = lazy(() => import('./pages/Settings'));
-const DebugToken = lazy(() => import('./pages/DebugToken'));
 
 function App() {
   return (
@@ -29,6 +29,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/signup" element={<Signup />} />
             <Route path="/signup-step2" element={<SignupStep2 />} />
             <Route path="/dashboard" element={<Dashboard />} />
@@ -37,7 +38,6 @@ function App() {
             <Route path="/resources" element={<Resources />} />
             <Route path="/ai-tutor" element={<AITutor />} />
             <Route path="/settings" element={<Settings />} />
-            <Route path="/debug-token" element={<DebugToken />} />
           </Routes>
         </Suspense>
       </Router>

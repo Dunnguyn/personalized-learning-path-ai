@@ -11,7 +11,7 @@ import unicodedata
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Sequence
 
-from backend.app.utils.gemini import get_gemini_client
+from backend.app.utils.gemini import get_gemini_client, get_gemini_client_manager
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +266,9 @@ class LessonSemanticQueryService:
     def _rewrite_with_llm_cached(self, cache_key: str) -> Dict[str, Any]:
         if not self.client or not cache_key.strip():
             return {}
-        if time.time() < self._llm_cooldown_until:
+        if max(time.time(), 0.0) < self._llm_cooldown_until:
+            return {}
+        if self._scope_retry_after_seconds() > 0:
             return {}
         prompt = (
             "You are helping a learning retrieval system.\n"
@@ -314,6 +316,11 @@ class LessonSemanticQueryService:
                     break
                 time.sleep(min(attempt, 2))
         return {}
+
+    def _scope_retry_after_seconds(self) -> float:
+        manager = get_gemini_client_manager()
+        status = manager.get_scope_status(scope=f"generate_content:{self._LLM_MODEL}")
+        return max(0.0, float(status.get("retry_after_seconds", 0.0) or 0.0))
 
     def _rewrite_with_llm(self, sources: Sequence[str]) -> Dict[str, Any]:
         if not self._looks_vietnamese(sources):

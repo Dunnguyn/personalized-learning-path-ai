@@ -1,6 +1,8 @@
 import { apiClient } from '../utils/apiClient';
 import type {
   CurrentUserResponse,
+  ForgotPasswordRequest,
+  ForgotPasswordResponse,
   LoginRequest,
   LoginResponse,
   SignUpRequest,
@@ -10,6 +12,7 @@ import type {
 } from '../types/auth';
 import {
   normalizeCurrentUserResponse,
+  normalizeForgotPasswordResponse,
   normalizeLoginResponse,
   normalizeSignupResponse,
   normalizeStoredUser,
@@ -25,6 +28,10 @@ export const authService = {
 
   async signup(data: SignUpRequest): Promise<SignupResponse> {
     return normalizeSignupResponse(await apiClient.post('/auth/signup', data));
+  },
+
+  async requestPasswordReset(data: ForgotPasswordRequest): Promise<ForgotPasswordResponse> {
+    return normalizeForgotPasswordResponse(await apiClient.post('/auth/forgot-password', data));
   },
 
   async updateUserLevel(data: UpdateUserLevelRequest): Promise<CurrentUserResponse> {

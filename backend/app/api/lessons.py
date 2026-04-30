@@ -325,10 +325,19 @@ def debug_question_generation_for_lesson(
     response_model=LessonQuestionsResponse,
     status_code=status.HTTP_200_OK,
 )
-def get_questions_for_lesson(lesson_id: str):
+def get_questions_for_lesson(
+    lesson_id: str,
+    question_set_kind: Optional[str] = Query(
+        None,
+        description="Optional question set kind, for example 'standard' or 'adaptive'.",
+    ),
+):
     """Return the lesson-scoped question set."""
     try:
-        return lesson_question_generation_service.get_questions_for_lesson(lesson_id)
+        return lesson_question_generation_service.get_questions_for_lesson(
+            lesson_id,
+            question_set_kind=question_set_kind,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:

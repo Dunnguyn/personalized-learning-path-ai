@@ -1,18 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AuthShell from './AuthShell';
-import illustrationLearning from '../../assets/tải xuống (1).jpg';
-import { brandLogo } from '../../assets';
+import AuthStepIndicator from './AuthStepIndicator';
+import authHeroImage from '../../assets/tải xuống (1).jpg';
 import type { SignUpRequest } from '../../types/auth';
 
-const introVisual = (
-  <div className="flex flex-col items-center">
-    <div className="flex h-18 w-18 items-center justify-center rounded-full bg-[#fff4f8] shadow-[0_14px_32px_rgba(162,94,121,0.12)]">
-      <img src={brandLogo} alt="Learning brand" className="h-11 w-11 rounded-full object-cover" />
-    </div>
-    <div className="mt-4 text-[14px] font-semibold tracking-[0.38em] text-[#8c3451]/56">01</div>
-  </div>
-);
+const introVisual = <AuthStepIndicator activeStep={1} />;
 
 export default function Signup() {
   const navigate = useNavigate();
@@ -57,20 +50,19 @@ export default function Signup() {
 
   return (
     <AuthShell
-      badge="Tạo tài khoản"
       title="Bắt đầu ngay"
       description="Tạo tài khoản để bắt đầu hành trình học tập cá nhân hóa."
       mediaAlt="Minh họa học tập"
-      mediaSrc={illustrationLearning}
+      mediaSrc={authHeroImage}
       sideLabel=""
       sideTitle=""
       sideCopy=""
       showSideContent={false}
       introVisual={introVisual}
       centerContent
-      titleClassName="mt-2 text-[42px] font-semibold leading-[1.02] tracking-[-0.05em] text-[#8c3451] md:text-[46px]"
-      descriptionClassName="text-[14px] leading-6 text-[#6d655f]"
-      formShellClassName="mt-8 w-full max-w-[390px] border-0 bg-transparent p-0 shadow-none"
+      titleClassName="mt-7 text-[42px] font-semibold leading-[1.02] tracking-[-0.05em] text-[#8c3451] md:text-[46px]"
+      descriptionClassName="text-[15px] leading-7 text-[#6d655f]"
+      formShellClassName="mt-10 w-full max-w-[390px] border-0 bg-transparent p-0 shadow-none"
       footerClassName="text-[13px] text-[#6d655f]"
       footer={
         <p>

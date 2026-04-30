@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Optional
 
-from backend.app.utils.gemini import get_gemini_client
+from backend.app.utils.gemini import get_gemini_client, get_gemini_client_manager
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -182,6 +182,13 @@ def _confidence_quota_cooldown_seconds(error: Exception) -> Optional[int]:
     return CONFIDENCE_QUOTA_COOLDOWN_SECONDS
 
 
+def _confidence_scope_retry_after_seconds() -> float:
+    status = get_gemini_client_manager().get_scope_status(
+        scope=f"generate_content:{CONFIDENCE_MODEL}"
+    )
+    return max(0.0, float(status.get("retry_after_seconds", 0.0) or 0.0))
+
+
 def score_confidence(
     question: str, answer: str, context: Optional[str] = None
 ) -> float:
@@ -226,6 +233,11 @@ def score_confidence(
     global CONFIDENCE_COOLDOWN_UNTIL
     if time.time() < CONFIDENCE_COOLDOWN_UNTIL:
         logger.debug("Confidence scorer cooldown active; returning fallback score.")
+        return DEFAULT_FALLBACK_SCORE
+    if _confidence_scope_retry_after_seconds() > 0:
+        logger.debug(
+            "Confidence scorer skipped because Gemini shared scope cooldown is active."
+        )
         return DEFAULT_FALLBACK_SCORE
 
     try:

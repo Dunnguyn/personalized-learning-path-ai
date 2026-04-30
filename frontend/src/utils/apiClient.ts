@@ -36,15 +36,15 @@ const RETRY_DELAY_MS = 1000;
 // ==========================================
 
 interface RequestInterceptor {
-  (config: RequestInit): RequestInit;
+  (_config: RequestInit): RequestInit;
 }
 
 interface ResponseInterceptor {
-  (response: Response): Promise<Response>;
+  (_response: Response): Promise<Response>;
 }
 
 interface ErrorInterceptor {
-  (error: Error): void;
+  (_error: Error): void;
 }
 
 class ApiClient {
@@ -175,8 +175,7 @@ class ApiClient {
 
       if (!finalResponse.ok) {
         const error = await finalResponse.json().catch(() => ({}));
-        const message =
-          error.detail || error.message || `YÃªu cáº§u tháº¥t báº¡i: ${finalResponse.statusText}`;
+        const message = error.detail || error.message || `Yêu cầu thất bại: ${finalResponse.statusText}`;
 
         const apiError: ApiClientError = new Error(message);
         apiError.status = finalResponse.status;

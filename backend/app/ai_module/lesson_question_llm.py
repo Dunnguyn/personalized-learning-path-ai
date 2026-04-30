@@ -10,8 +10,15 @@ import time
 from typing import Optional
 
 from backend.app.utils.gemini import (
+    build_gemini_model_candidates,
     configured_gemini_api_key_count,
     get_gemini_client,
+    get_gemini_model_scope_status,
+    is_gemini_capacity_exhausted_error,
+    is_gemini_failover_error,
+    is_gemini_hard_quota_error,
+    is_gemini_invalid_key_error,
+    is_gemini_transient_unavailable_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -20,17 +27,7 @@ LESSON_QA_PROVIDER = os.getenv("LESSON_QUESTION_LLM_PROVIDER", "gemini").lower()
 LESSON_QA_MODEL = os.getenv(
     "LESSON_QUESTION_LLM_MODEL", os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash")
 )
-LESSON_QA_FALLBACK_MODELS = [
-    item.strip()
-    for item in re.split(
-        r"[\n,]+",
-        os.getenv(
-            "LESSON_QUESTION_LLM_FALLBACK_MODELS",
-            "models/gemini-2.0-flash-lite,models/gemini-2.0-flash",
-        ),
-    )
-    if item.strip()
-]
+LESSON_QA_FALLBACK_MODELS = os.getenv("LESSON_QUESTION_LLM_FALLBACK_MODELS")
 LESSON_QA_MAX_RETRIES = int(os.getenv("LESSON_QUESTION_LLM_MAX_RETRIES", "3"))
 LESSON_QA_MAX_OUTPUT_TOKENS = int(
     os.getenv("LESSON_QUESTION_LLM_MAX_OUTPUT_TOKENS", "1800")
@@ -89,11 +86,12 @@ class LessonQuestionLLMClient:
         active_model = self._select_available_model(now=now)
         display_model = active_model or self._last_used_model or self.model
         cooldown_remaining = (
-            0.0 if active_model else max(0.0, self.cooldown_until_ts - now)
+            0.0 if active_model else self._minimum_model_wait_seconds(now=now)
         )
         api_key_configured = (
             configured_gemini_api_key_count() > 0 if self.provider == "gemini" else False
         )
+        scope_status = self._get_model_scope_status(display_model, now=now)
         return {
             "provider": self.provider,
             "model": display_model,
@@ -106,6 +104,12 @@ class LessonQuestionLLMClient:
             "last_error": self.last_error,
             "cooldown_active": cooldown_remaining > 0,
             "cooldown_remaining_seconds": int(cooldown_remaining),
+            "scope_cooldown_active": bool(scope_status.get("cooldown_active")),
+            "scope_cooldown_remaining_seconds": int(
+                scope_status.get("retry_after_seconds", 0) or 0
+            ),
+            "available_key_count": int(scope_status.get("available_key_count", 0) or 0),
+            "total_key_count": int(scope_status.get("total_key_count", 0) or 0),
         }
 
     def generate(self, prompt: str) -> str:
@@ -114,8 +118,7 @@ class LessonQuestionLLMClient:
             self.last_error = self.init_error or "Lesson question LLM is not available."
             return ""
 
-        model_name = self._select_available_model()
-        if not model_name:
+        if not self._available_model_candidates():
             wait_seconds = self._minimum_model_wait_seconds()
             self.last_error = (
                 f"Lesson question LLM cooldown active after quota exhaustion. Retry in {wait_seconds}s."
@@ -124,100 +127,138 @@ class LessonQuestionLLMClient:
 
         self.last_error = None
         for attempt in range(1, LESSON_QA_MAX_RETRIES + 1):
-            model_name = self._select_available_model()
-            if not model_name:
+            candidate_models = self._available_model_candidates()
+            if not candidate_models:
                 wait_seconds = self._minimum_model_wait_seconds()
                 self.last_error = (
                     "Lesson question LLM model cooldown active after quota exhaustion. "
                     f"Retry in {wait_seconds}s."
                 )
                 return ""
-            try:
-                if self.provider == "gemini":
-                    self._last_used_model = model_name
-                    response = self.client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config={
-                            "temperature": 0.3,
-                            "max_output_tokens": LESSON_QA_MAX_OUTPUT_TOKENS,
-                            "response_mime_type": "application/json",
-                        },
-                    )
-                    self.model = model_name
-                    text = getattr(response, "text", None)
-                    if text:
-                        return str(text).strip()
-                self.last_error = "Lesson question LLM returned an empty response."
-                return ""
-            except Exception as exc:  # pragma: no cover - external dependency
-                self.last_error = str(exc)
-                logger.warning(
-                    "Lesson question LLM request failed on attempt %s/%s with model %s: %s",
-                    attempt,
-                    LESSON_QA_MAX_RETRIES,
-                    model_name,
-                    exc,
-                )
-                if self._should_fail_over_model(exc):
-                    cooldown = self._compute_model_cooldown_seconds(exc)
-                    self._model_cooldowns[model_name] = time.time() + cooldown
-                    self.cooldown_until_ts = self._minimum_global_cooldown_until()
-                    logger.info(
-                        "Lesson question LLM model cooldown set to %.1fs for %s after generation failure.",
-                        cooldown,
-                        model_name,
-                    )
-                    if not LESSON_QA_HARD_QUOTA_RETRY_ENABLED and not self._select_available_model():
-                        logger.info(
-                            "Lesson question LLM exhausted all available models under cooldown; stop retrying early."
+            retryable_error: Exception | None = None
+            should_stop = False
+            for model_name in candidate_models:
+                try:
+                    if self.provider == "gemini":
+                        self._last_used_model = model_name
+                        response = self.client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config={
+                                "temperature": 0.3,
+                                "max_output_tokens": LESSON_QA_MAX_OUTPUT_TOKENS,
+                                "response_mime_type": "application/json",
+                            },
                         )
-                        break
-                if not self._should_fail_over_model(exc):
-                    break
-                if attempt < LESSON_QA_MAX_RETRIES and self._is_retryable_error(exc):
-                    delay = self._compute_retry_delay_seconds(attempt, exc)
-                    logger.info(
-                        "Lesson question LLM retrying in %.2fs (attempt %s/%s).",
-                        delay,
-                        attempt + 1,
+                        self.model = model_name
+                        text = getattr(response, "text", None)
+                        if text:
+                            return str(text).strip()
+                    self.last_error = "Lesson question LLM returned an empty response."
+                    return ""
+                except Exception as exc:  # pragma: no cover - external dependency
+                    self.last_error = str(exc)
+                    logger.warning(
+                        "Lesson question LLM request failed on attempt %s/%s with model %s: %s",
+                        attempt,
                         LESSON_QA_MAX_RETRIES,
+                        model_name,
+                        exc,
                     )
-                    time.sleep(delay)
+                    if self._should_fail_over_model(exc):
+                        cooldown = self._compute_model_cooldown_seconds(exc)
+                        self._model_cooldowns[model_name] = time.time() + cooldown
+                        self.cooldown_until_ts = self._minimum_global_cooldown_until()
+                        logger.info(
+                            "Lesson question LLM model cooldown set to %.1fs for %s after generation failure.",
+                            cooldown,
+                            model_name,
+                        )
+                        if self._is_retryable_error(exc):
+                            retryable_error = exc
+                        continue
+                    should_stop = True
+                    break
+            if should_stop:
+                break
+            if (
+                not LESSON_QA_HARD_QUOTA_RETRY_ENABLED
+                and not self._available_model_candidates()
+            ):
+                logger.info(
+                    "Lesson question LLM exhausted all available models under cooldown; stop retrying early."
+                )
+                break
+            if attempt < LESSON_QA_MAX_RETRIES and retryable_error is not None:
+                delay = self._compute_retry_delay_seconds(attempt, retryable_error)
+                logger.info(
+                    "Lesson question LLM retrying in %.2fs (attempt %s/%s).",
+                    delay,
+                    attempt + 1,
+                    LESSON_QA_MAX_RETRIES,
+                )
+                time.sleep(delay)
         return ""
 
     def _build_model_candidates(self) -> list[str]:
-        ordered: list[str] = []
-        seen: set[str] = set()
-        for item in [LESSON_QA_MODEL, *LESSON_QA_FALLBACK_MODELS]:
-            model_name = str(item or "").strip()
-            if not model_name or model_name in seen:
-                continue
-            seen.add(model_name)
-            ordered.append(model_name)
-        return ordered or [LESSON_QA_MODEL]
+        return build_gemini_model_candidates(
+            LESSON_QA_MODEL,
+            LESSON_QA_FALLBACK_MODELS,
+        ) or [LESSON_QA_MODEL]
 
     def _select_available_model(self, *, now: float | None = None) -> str | None:
-        current_time = now if now is not None else time.time()
-        for model_name in self.model_candidates:
-            if self._model_cooldowns.get(model_name, 0.0) <= current_time:
-                return model_name
-        return None
+        candidates = self._available_model_candidates(now=now)
+        return candidates[0] if candidates else None
 
-    def _minimum_model_wait_seconds(self) -> int:
-        now = time.time()
-        waits = [
-            max(0.0, ts - now)
-            for ts in self._model_cooldowns.values()
-            if ts > now
+    def _available_model_candidates(self, *, now: float | None = None) -> list[str]:
+        current_time = now if now is not None else time.time()
+        return [
+            model_name
+            for model_name in self.model_candidates
+            if self._model_wait_seconds(model_name, now=current_time) <= 0
         ]
-        return max(1, int(min(waits))) if waits else max(
-            1, int(max(0.0, self.cooldown_until_ts - now))
-        )
+
+    def _minimum_model_wait_seconds(self, *, now: float | None = None) -> int:
+        current_time = now if now is not None else time.time()
+        waits = [
+            self._model_wait_seconds(model_name, now=current_time)
+            for model_name in self.model_candidates
+        ]
+        positive_waits = [wait for wait in waits if wait > 0]
+        if positive_waits:
+            return max(1, int(min(positive_waits)))
+        return max(1, int(max(0.0, self.cooldown_until_ts - current_time)))
 
     def _minimum_global_cooldown_until(self) -> float:
         future = [ts for ts in self._model_cooldowns.values() if ts > time.time()]
         return min(future) if future else 0.0
+
+    def _model_wait_seconds(
+        self, model_name: str, *, now: float | None = None
+    ) -> float:
+        current_time = now if now is not None else time.time()
+        local_wait = max(0.0, self._model_cooldowns.get(model_name, 0.0) - current_time)
+        scope_status = self._get_model_scope_status(model_name, now=current_time)
+        scope_wait = float(scope_status.get("retry_after_seconds", 0.0) or 0.0)
+        return max(local_wait, scope_wait)
+
+    def _get_model_scope_status(
+        self, model_name: str | None, *, now: float | None = None
+    ) -> dict:
+        if self.provider != "gemini" or not model_name:
+            return {}
+        status = get_gemini_model_scope_status(model_name)
+        if now is None:
+            return status
+        # Keep derived status aligned when a cached `now` is already available.
+        scope_wait = max(
+            0.0,
+            float(status.get("scope_cooldown_remaining_seconds", 0.0) or 0.0),
+        )
+        retry_after = max(0.0, float(status.get("retry_after_seconds", 0.0) or 0.0))
+        status["scope_cooldown_active"] = scope_wait > 0
+        status["cooldown_active"] = bool(status.get("cooldown_active")) or retry_after > 0
+        return status
 
     def _init_client(self):
         self.init_error = None
@@ -244,44 +285,19 @@ class LessonQuestionLLMClient:
 
     @staticmethod
     def _is_retryable_error(exc: Exception) -> bool:
-        message = str(exc).lower()
-        return (
-            "resource_exhausted" in message
-            or "quota exceeded" in message
-            or "rate limit" in message
-            or "429" in message
-            or "503" in message
-            or "unavailable" in message
-            or "deadline exceeded" in message
-            or "timeout" in message
-            or "temporar" in message
-        )
+        return is_gemini_transient_unavailable_error(exc) or is_gemini_capacity_exhausted_error(exc)
 
     @staticmethod
     def _is_model_switchable_error(exc: Exception) -> bool:
-        message = str(exc).lower()
-        return (
-            "api key" in message
-            or "invalid_argument" in message
-            or "invalid api key" in message
-            or "api_key_invalid" in message
-            or "permission denied" in message
-            or "401" in message
-            or "403" in message
-        )
+        return is_gemini_invalid_key_error(exc)
 
     @classmethod
     def _should_fail_over_model(cls, exc: Exception) -> bool:
-        return cls._is_retryable_error(exc) or cls._is_model_switchable_error(exc)
+        return is_gemini_failover_error(exc) or cls._is_model_switchable_error(exc)
 
     @staticmethod
     def _is_hard_quota_error(exc: Exception) -> bool:
-        message = str(exc).lower()
-        return (
-            "generaterequestsperday" in message
-            or "free_tier_requests" in message
-            or "perdayperproject" in message
-        )
+        return is_gemini_hard_quota_error(exc)
 
     @staticmethod
     def _compute_model_cooldown_seconds(exc: Exception) -> float:

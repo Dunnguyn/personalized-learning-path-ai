@@ -1,13 +1,23 @@
-import os
 import logging
-from pymongo import MongoClient
-from dotenv import load_dotenv
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
+from pymongo import MongoClient
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parents[2]
-load_dotenv(BASE_DIR / ".env")
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = BACKEND_DIR.parent
+
+# Load backend/.env first, then allow the repo root .env to override it.
+load_dotenv(BACKEND_DIR / ".env")
+load_dotenv(PROJECT_ROOT / ".env")
+
+if not os.getenv("MONGODB_URI") and os.getenv("MONGO_URI"):
+    os.environ["MONGODB_URI"] = os.getenv("MONGO_URI")
+if not os.getenv("MONGO_URI") and os.getenv("MONGODB_URI"):
+    os.environ["MONGO_URI"] = os.getenv("MONGODB_URI")
 
 MONGO_URI = os.getenv("MONGODB_URI") or os.getenv(
     "MONGO_URI", "mongodb://localhost:27017/personalized_learning_path"

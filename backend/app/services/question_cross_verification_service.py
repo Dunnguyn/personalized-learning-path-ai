@@ -11,10 +11,10 @@ from backend.app.services.question_nlp_service import question_nlp_service
 
 
 QUESTION_VERIFICATION_MIN_SCORE = float(
-    os.getenv("LESSON_QUESTION_VERIFICATION_MIN_SCORE", "0.55")
+    os.getenv("LESSON_QUESTION_VERIFICATION_MIN_SCORE", "0.64")
 )
 QUESTION_VERIFICATION_HARD_FAIL_SCORE = float(
-    os.getenv("LESSON_QUESTION_VERIFICATION_HARD_FAIL_SCORE", "0.35")
+    os.getenv("LESSON_QUESTION_VERIFICATION_HARD_FAIL_SCORE", "0.44")
 )
 
 
@@ -25,6 +25,7 @@ class QuestionVerificationResult:
     bloom_score: float
     distractor_score: float
     grounding_score: float
+    stem_score: float
     predicted_bloom_level: str
     matched_target_concepts: List[str]
     blockers: List[str]
@@ -79,6 +80,72 @@ class QuestionCrossVerificationService:
     @staticmethod
     def _normalize_text(value: Any) -> str:
         return " ".join(str(value or "").strip().lower().split())
+
+    def _has_application_cue(self, *, question_text: str, metadata: Dict[str, Any]) -> bool:
+        normalized = self._normalize_text(question_text)
+        reasoning_pattern = self._normalize_text(metadata.get("reasoning_pattern"))
+        if reasoning_pattern in {"worked_example", "decision_rule", "error_detection"}:
+            return True
+        cues = (
+            "trong vi du",
+            "ví dụ",
+            "trong truong hop",
+            "trường hợp",
+            "khi",
+            "neu",
+            "nếu",
+            "quyet dinh",
+            "quyết định",
+        )
+        return any(cue in normalized for cue in cues)
+
+    def _score_stem_quality(
+        self,
+        *,
+        question_text: str,
+        correct_answer: str,
+        requested_bloom_levels: Sequence[str],
+        predicted_bloom_level: str,
+    ) -> float:
+        normalized_question = self._normalize_text(question_text)
+        normalized_answer = self._normalize_text(correct_answer)
+        requested = {
+            self._normalize_text(value)
+            for value in (requested_bloom_levels or [])
+            if self._normalize_text(value)
+        }
+        if not normalized_question:
+            return 0.0
+
+        score = 0.82
+        if normalized_answer and normalized_answer in normalized_question:
+            return 0.0
+
+        if len(normalized_question) < 28:
+            score -= 0.28
+        elif len(normalized_question) < 40:
+            score -= 0.12
+
+        shallow_starts = {
+            "khai niem nao",
+            "khái niệm nào",
+            "dap an nao",
+            "đáp án nào",
+            "term nao",
+            "nêu",
+            "nhac lai",
+            "nhắc lại",
+        }
+        if any(normalized_question.startswith(prefix) for prefix in shallow_starts):
+            score -= 0.22
+
+        if requested & {"apply", "analyze", "evaluate", "create"} and predicted_bloom_level in {
+            "remember",
+            "understand",
+        }:
+            score -= 0.28
+
+        return max(0.0, min(score, 1.0))
 
     def _predict_bloom_level(self, *, question_text: str, question_type: str) -> str:
         normalized = self._normalize_text(question_text)
@@ -211,6 +278,11 @@ class QuestionCrossVerificationService:
         source_excerpt = self._normalize_text(metadata.get("source_excerpt"))
         evidence_score = float(metadata.get("evidence_score", 0.0) or 0.0)
         source_score = float(metadata.get("source_score", 0.0) or 0.0)
+        evidence_terms = [
+            self._normalize_text(value)
+            for value in (metadata.get("evidence_terms") or [])
+            if self._normalize_text(value)
+        ]
         score = 0.0
         if 45 <= len(source_excerpt) <= 280:
             score += 0.4
@@ -218,6 +290,7 @@ class QuestionCrossVerificationService:
             score += 0.2
         score += min(1.0, evidence_score / 4.0) * 0.35
         score += min(1.0, source_score) * 0.25
+        score += min(len(evidence_terms), 3) * 0.05
         return max(0.0, min(score, 1.0))
 
     def verify_question(
@@ -229,6 +302,10 @@ class QuestionCrossVerificationService:
         chunk_map: Dict[str, Dict[str, Any]],
     ) -> QuestionVerificationResult:
         metadata = question.metadata if isinstance(getattr(question, "metadata", None), dict) else {}
+        has_application_cue = self._has_application_cue(
+            question_text=str(getattr(question, "question", "") or ""),
+            metadata=metadata,
+        )
         concept_score, matched_target_concepts = self._score_concept_alignment(
             question=question,
             target_concepts=target_concepts,
@@ -242,12 +319,21 @@ class QuestionCrossVerificationService:
         )
         distractor_score = self._score_distractor_quality(question=question)
         grounding_score = self._score_grounding_quality(metadata=metadata)
-        overall = (
-            concept_score * 0.35
-            + bloom_score * 0.2
-            + distractor_score * 0.2
-            + grounding_score * 0.25
+        stem_score = self._score_stem_quality(
+            question_text=str(getattr(question, "question", "") or ""),
+            correct_answer=str(getattr(question, "correct_answer", "") or ""),
+            requested_bloom_levels=requested_bloom_levels,
+            predicted_bloom_level=predicted_bloom,
         )
+        overall = (
+            concept_score * 0.33
+            + bloom_score * 0.18
+            + distractor_score * 0.2
+            + grounding_score * 0.23
+            + stem_score * 0.06
+        )
+        if has_application_cue and predicted_bloom in {"remember", "understand"}:
+            overall += 0.05
         blockers: List[str] = []
         if target_concepts and concept_score < 0.3:
             blockers.append("concept_mismatch")
@@ -255,10 +341,23 @@ class QuestionCrossVerificationService:
             blockers.append("weak_grounding")
         if getattr(question, "question_type", "") == "multiple_choice" and distractor_score < 0.28:
             blockers.append("weak_distractors")
+        if stem_score < 0.35:
+            blockers.append("answer_leak_or_shallow_stem")
+        if (
+            {
+                self._normalize_text(value)
+                for value in (requested_bloom_levels or [])
+                if self._normalize_text(value)
+            }
+            & {"apply", "analyze", "evaluate", "create"}
+            and predicted_bloom in {"remember", "understand"}
+            and not has_application_cue
+        ):
+            blockers.append("shallow_cognitive_level")
 
         hard_fail = overall < QUESTION_VERIFICATION_HARD_FAIL_SCORE or (
             "concept_mismatch" in blockers and overall < 0.5
-        )
+        ) or "answer_leak_or_shallow_stem" in blockers
         passed = overall >= QUESTION_VERIFICATION_MIN_SCORE and not hard_fail
         return QuestionVerificationResult(
             overall_score=round(max(0.0, min(overall, 1.0)), 4),
@@ -266,6 +365,7 @@ class QuestionCrossVerificationService:
             bloom_score=round(max(0.0, min(bloom_score, 1.0)), 4),
             distractor_score=round(max(0.0, min(distractor_score, 1.0)), 4),
             grounding_score=round(max(0.0, min(grounding_score, 1.0)), 4),
+            stem_score=round(max(0.0, min(stem_score, 1.0)), 4),
             predicted_bloom_level=predicted_bloom,
             matched_target_concepts=matched_target_concepts,
             blockers=blockers,

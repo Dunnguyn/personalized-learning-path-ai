@@ -10,7 +10,8 @@ from fastapi import Depends, FastAPI, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError
 
 BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BACKEND_DIR.parent
@@ -55,6 +56,7 @@ from backend.app.api import (
     users,
 )
 from backend.app.api.auth import require_admin_user
+from backend.app.config import is_secure_secret_key
 from backend.app.repositories import ResourceChunkRepository
 from backend.app.services.event_logging_service import event_logging_service
 from backend.app.services.ingestion_service import ingestion_service
@@ -79,8 +81,11 @@ def validate_env():
 
     if not mongo_uri:
         raise RuntimeError("Missing required env var: MONGODB_URI or MONGO_URI")
-    if not secret_key or secret_key == "CHANGE_THIS_SECRET_KEY":
-        raise RuntimeError("SECRET_KEY must be configured with a non-default value")
+    if not is_secure_secret_key(secret_key):
+        raise RuntimeError(
+            "SECRET_KEY must be configured with a strong non-default value "
+            "(minimum 32 characters)"
+        )
 
     optional_missing = []
     if not has_configured_gemini_api_keys():
@@ -134,7 +139,7 @@ async def logging_middleware(request: Request, call_next):
                 algorithms=["HS256"],
             )
             user_id = payload.get("sub")
-        except JWTError:
+        except InvalidTokenError:
             user_id = None
 
     try:
@@ -230,13 +235,25 @@ app = FastAPI(
 # =========================
 app.middleware("http")(logging_middleware)
 
-allowed_origins = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000",
-).split(",")
+
+def _parse_cors_origins(raw_value: str | None) -> list[str]:
+    defaults = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+    ]
+    if not raw_value:
+        return defaults
+    parsed = [origin.strip() for origin in raw_value.split(",") if origin.strip()]
+    return parsed or defaults
+
+
+allowed_origins = _parse_cors_origins(os.getenv("CORS_ORIGINS"))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

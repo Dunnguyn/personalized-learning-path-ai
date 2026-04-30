@@ -32,6 +32,22 @@ class LessonQuestionRepository:
             collection.create_index([("lesson_id", 1), ("created_at", -1)])
             collection.create_index([("subject_id", 1), ("chapter_id", 1)])
             collection.create_index([("question_type", 1), ("difficulty", 1)])
+            collection.create_index([("metadata.question_set_kind", 1), ("created_at", -1)])
+
+    @staticmethod
+    def _build_question_set_kind_clause(question_set_kind: str | None) -> Dict[str, Any]:
+        normalized_kind = str(question_set_kind or "").strip().lower()
+        if not normalized_kind:
+            return {}
+        if normalized_kind == "standard":
+            return {
+                "$or": [
+                    {"metadata.question_set_kind": "standard"},
+                    {"metadata.question_set_kind": {"$exists": False}},
+                    {"metadata": {"$exists": False}},
+                ]
+            }
+        return {"metadata.question_set_kind": normalized_kind}
 
     def insert_many(self, questions: List[Dict[str, Any]]) -> List[str]:
         if not questions:
@@ -45,15 +61,29 @@ class LessonQuestionRepository:
         result = self.collection.insert_many(payload, ordered=False)
         return [str(item) for item in result.inserted_ids]
 
-    def list_by_lesson(self, lesson_id: str | ObjectId) -> List[Dict[str, Any]]:
-        query = {"lesson_id": self._to_object_id(lesson_id)}
+    def list_by_lesson(
+        self,
+        lesson_id: str | ObjectId,
+        question_set_kind: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        query = {
+            "lesson_id": self._to_object_id(lesson_id),
+            **self._build_question_set_kind_clause(question_set_kind),
+        }
         questions = list(self.collection.find(query).sort("created_at", -1))
         if questions:
             return questions
         return list(self.legacy_collection.find(query).sort("created_at", -1))
 
-    def delete_by_lesson(self, lesson_id: str | ObjectId) -> int:
-        query = {"lesson_id": self._to_object_id(lesson_id)}
+    def delete_by_lesson(
+        self,
+        lesson_id: str | ObjectId,
+        question_set_kind: str | None = None,
+    ) -> int:
+        query = {
+            "lesson_id": self._to_object_id(lesson_id),
+            **self._build_question_set_kind_clause(question_set_kind),
+        }
         removed_primary = self.collection.delete_many(query).deleted_count
         removed_legacy = self.legacy_collection.delete_many(query).deleted_count
         return removed_primary + removed_legacy

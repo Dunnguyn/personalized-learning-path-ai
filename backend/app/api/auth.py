@@ -16,21 +16,25 @@ All operations include:
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, EmailStr, Field
-from jose import jwt, JWTError
 from passlib.context import CryptContext
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import hashlib
 import uuid
 
 import os
 import logging
 import time
+import jwt
 from bson import ObjectId
+from jwt.exceptions import InvalidTokenError
 
 from backend.app.database.mongo import get_db
 from backend.app.api.schemas import UserResponse, UserRoleEnum
+from backend.app.config import env_flag_enabled
 from backend.app.services.event_logging_service import event_logging_service
 from backend.app.services.learner_profile_service import learner_profile_service
 
@@ -50,7 +54,7 @@ logger.info(
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+bearer_scheme = HTTPBearer(auto_error=False)
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -73,7 +77,7 @@ def _token_fingerprint(token: str) -> str:
 
 
 def _ensure_auth_indexes() -> None:
-    """Create indexes for revoked tokens collection."""
+    """Create indexes for auth-related collections."""
     try:
         db = get_db()
         revoked = db.revoked_tokens
@@ -98,6 +102,27 @@ def _is_token_revoked(db, token: str, payload: dict) -> bool:
         }
     )
     return revoked is not None
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _as_utc_datetime(value: object) -> Optional[datetime]:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    return None
 
 
 _ensure_auth_indexes()
@@ -157,8 +182,15 @@ def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
         expires_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
     # Calculate expiry as Unix timestamp (seconds since epoch)
-    expire_timestamp = int(time.time()) + int(expires_delta.total_seconds())
-    to_encode.update({"exp": expire_timestamp, "jti": str(uuid.uuid4())})
+    issued_at_timestamp = int(time.time())
+    expire_timestamp = issued_at_timestamp + int(expires_delta.total_seconds())
+    to_encode.update(
+        {
+            "iat": issued_at_timestamp,
+            "exp": expire_timestamp,
+            "jti": str(uuid.uuid4()),
+        }
+    )
 
     token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     logger.debug(
@@ -168,7 +200,7 @@ def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     return token
 
 
-def resolve_user_role(user: dict | None) -> str:
+def resolve_user_role(user: Optional[dict]) -> str:
     """Resolve the effective role for a user document."""
     if not user:
         return UserRoleEnum.learner.value
@@ -187,7 +219,7 @@ def resolve_user_role(user: dict | None) -> str:
     return UserRoleEnum.learner.value
 
 
-def attach_effective_role(user: dict | None) -> dict | None:
+def attach_effective_role(user: Optional[dict]) -> Optional[dict]:
     """Return a shallow copy of the user document with resolved role attached."""
     if not user:
         return user
@@ -197,7 +229,19 @@ def attach_effective_role(user: dict | None) -> dict | None:
     return enriched_user
 
 
-def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+def _extract_bearer_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> str:
+    """Extract raw JWT from Authorization: Bearer header."""
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+    return credentials.credentials
+
+
+def get_current_user(token: str = Depends(_extract_bearer_token)) -> dict:
     """
     Dependency: Extract and validate current user from JWT token.
 
@@ -243,7 +287,7 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
                 detail="Invalid authentication credentials",
             )
 
-    except JWTError as e:
+    except InvalidTokenError as e:
         logger.warning(f"JWT decode error: {e}, token={token[:30]}...")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -267,6 +311,24 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
             )
+
+        password_changed_at = _as_utc_datetime(user.get("password_changed_at"))
+        issued_at_timestamp = payload.get("iat")
+        if password_changed_at is not None:
+            if not issued_at_timestamp:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Session expired. Please sign in again",
+                )
+
+            issued_at = datetime.fromtimestamp(
+                int(issued_at_timestamp), tz=timezone.utc
+            )
+            if issued_at < password_changed_at:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Session expired. Please sign in again",
+                )
 
         logger.debug(f"User authenticated: {user.get('email')}")
         return attach_effective_role(user)
@@ -326,6 +388,20 @@ class LogoutResponse(BaseModel):
     message: str = "Logged out successfully"
 
 
+class ForgotPasswordRequest(BaseModel):
+    """Request payload to directly replace a password by email."""
+
+    email: EmailStr = Field(..., description="User email")
+    new_password: str = Field(..., min_length=6, description="New password")
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Response payload for direct password reset."""
+
+    success: bool = True
+    message: str = "Password updated successfully"
+
+
 # =========================
 # API
 # =========================
@@ -353,19 +429,20 @@ def signup(payload: SignupRequest):
         HTTPException(400): If user already exists
         HTTPException(500): If database error
     """
-    logger.info(f"Signup attempt: email={payload.email}")
+    normalized_email = _normalize_email(str(payload.email))
+    logger.info(f"Signup attempt: email={normalized_email}")
 
     try:
         db = get_db()
 
         # Check if user already exists (case-insensitive email)
         existing_user = db.users.find_one(
-            {"email": {"$regex": f"^{payload.email}$", "$options": "i"}}
+            {"email": {"$regex": f"^{normalized_email}$", "$options": "i"}}
         )
 
         if existing_user:
             logger.warning(
-                f"Signup failed: user already exists for email {payload.email}"
+                f"Signup failed: user already exists for email {normalized_email}"
             )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -377,19 +454,20 @@ def signup(payload: SignupRequest):
 
         role = (
             UserRoleEnum.admin.value
-            if payload.email.strip().lower() in ADMIN_EMAILS
+            if normalized_email in ADMIN_EMAILS
             else UserRoleEnum.learner.value
         )
 
         # Create new user document
         new_user = {
-            "email": payload.email,
+            "email": normalized_email,
             "password": hashed_password,
             "name": payload.fullName,
             "level": "beginner",
             "role": role,
             "created_at": datetime.now(timezone.utc),
             "updated_at": datetime.now(timezone.utc),
+            "password_changed_at": datetime.now(timezone.utc),
         }
 
         # Insert into database
@@ -400,11 +478,11 @@ def signup(payload: SignupRequest):
         # Create JWT token
         access_token = create_access_token(data={"sub": user_id})
 
-        logger.info(f"Signup successful: user={payload.email}, user_id={user_id}")
+        logger.info(f"Signup successful: user={normalized_email}, user_id={user_id}")
 
         user_response = {
             "user_id": user_id,
-            "email": payload.email,
+            "email": normalized_email,
             "name": payload.fullName,
             "level": "beginner",
             "role": role,
@@ -458,23 +536,24 @@ def login(payload: LoginRequest):
         ...     "name": "John Doe"
         ... }
     """
-    logger.info(f"Login attempt: email={payload.email}")
+    normalized_email = _normalize_email(str(payload.email))
+    logger.info(f"Login attempt: email={normalized_email}")
 
     try:
         db = get_db()
 
         # Lookup user by email (case-insensitive)
         user = db.users.find_one(
-            {"email": {"$regex": f"^{payload.email}$", "$options": "i"}}
+            {"email": {"$regex": f"^{normalized_email}$", "$options": "i"}}
         )
 
         if not user:
-            logger.warning(f"Login failed: user not found for email {payload.email}")
+            logger.warning(f"Login failed: user not found for email {normalized_email}")
             event_logging_service.log_event(
                 "api_failed",
                 success=False,
                 error_code="INVALID_CREDENTIALS",
-                metadata={"action": "login", "email": payload.email},
+                metadata={"action": "login", "email": normalized_email},
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -483,13 +562,15 @@ def login(payload: LoginRequest):
 
         # Verify password
         if not verify_password(payload.password, user.get("password", "")):
-            logger.warning(f"Login failed: invalid password for email {payload.email}")
+            logger.warning(
+                f"Login failed: invalid password for email {normalized_email}"
+            )
             event_logging_service.log_event(
                 "api_failed",
                 user_id=str(user.get("_id")),
                 success=False,
                 error_code="INVALID_CREDENTIALS",
-                metadata={"action": "login", "email": payload.email},
+                metadata={"action": "login", "email": normalized_email},
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -527,6 +608,79 @@ def login(payload: LoginRequest):
         )
 
 
+@router.post(
+    "/forgot-password",
+    response_model=ForgotPasswordResponse,
+    status_code=status.HTTP_200_OK,
+)
+def forgot_password(payload: ForgotPasswordRequest):
+    """
+    Directly replace a password by email.
+
+    This is a simplified flow for local/demo use and does not verify email
+    ownership with a reset link.
+    """
+    if not env_flag_enabled("ALLOW_INSECURE_EMAIL_ONLY_PASSWORD_RESET", default=False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Self-service password reset is disabled. Configure a verified "
+                "email-based reset flow or explicitly opt into the insecure demo "
+                "reset mode for local development only."
+            ),
+        )
+
+    normalized_email = _normalize_email(str(payload.email))
+
+    try:
+        db = get_db()
+        user = db.users.find_one(
+            {"email": {"$regex": f"^{normalized_email}$", "$options": "i"}}
+        )
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Email is not registered",
+            )
+
+        updated_at = datetime.now(timezone.utc)
+        db.users.update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {
+                    "password": hash_password(payload.new_password),
+                    "updated_at": updated_at,
+                    "password_changed_at": updated_at,
+                }
+            },
+        )
+
+        event_logging_service.log_event(
+            "api_called",
+            user_id=str(user["_id"]),
+            success=True,
+            metadata={
+                "action": "forgot_password_direct_reset",
+                "email": normalized_email,
+            },
+        )
+        logger.info(
+            "Direct forgot-password reset completed for user_id=%s",
+            user["_id"],
+        )
+        return ForgotPasswordResponse()
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Forgot password failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to update password",
+        )
+
+
 def require_admin_user(current_user: dict = Depends(get_current_user)) -> dict:
     """Dependency that only allows admin users to proceed."""
     if resolve_user_role(current_user) != UserRoleEnum.admin.value:
@@ -539,7 +693,8 @@ def require_admin_user(current_user: dict = Depends(get_current_user)) -> dict:
 
 @router.post("/logout", response_model=LogoutResponse, status_code=status.HTTP_200_OK)
 def logout(
-    token: str = Depends(oauth2_scheme), current_user: dict = Depends(get_current_user)
+    token: str = Depends(_extract_bearer_token),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Revoke current JWT token so it cannot be used again.

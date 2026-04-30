@@ -1,11 +1,16 @@
 {
-  "devDependencies": {
-    "eslint": "^10.1.0"
-  },
+  "name": "personalized-learning-path-ai",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Repository scripts for the Personalized Learning Path AI project",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "lint": "eslint .",
-    "format": "prettier --write ."
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "lint": "npm --prefix frontend run lint",
+    "type-check": "npm --prefix frontend run type-check",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build",
+    "frontend:lint": "npm --prefix frontend run lint",
+    "frontend:type-check": "npm --prefix frontend run type-check"
   }
 }

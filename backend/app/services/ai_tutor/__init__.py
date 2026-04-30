@@ -17,7 +17,7 @@ __all__ = [
 
 def __getattr__(name):
     if name in {"RAGPipeline", "USE_LLM"}:
-        from .rag import RAGPipeline, USE_LLM
+        from .context_retrieval import RAGPipeline, USE_LLM
 
         exports = {
             "RAGPipeline": RAGPipeline,

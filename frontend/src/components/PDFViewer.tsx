@@ -7,8 +7,8 @@ interface PDFViewerProps {
   initialPage?: number;
   isPinned?: boolean;
   onClose: () => void;
-  onPageChange?: (page: number) => void;
-  onTogglePin?: (page: number) => void;
+  onPageChange?: (value: number) => void;
+  onTogglePin?: (value: number) => void;
 }
 
 export default function PDFViewer({

@@ -303,17 +303,6 @@ const mapNextStepToLegacyRecommendation = (
 });
 
 export const adaptiveService = {
-  async trackEvent(payload: {
-    event_type: string;
-    resource_id?: string;
-    lesson_id?: string;
-    path_id?: string;
-    concept_ids?: string[];
-    metadata?: Record<string, unknown>;
-  }) {
-    return apiClient.post('/adaptive/events', payload);
-  },
-
   async getNextBestAction(params?: {
     user_id?: string;
     path_id?: string;

@@ -7,7 +7,7 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from backend.app.utils.gemini import get_gemini_client
+from backend.app.utils.gemini import get_gemini_client, get_gemini_client_manager
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,13 @@ class YouTubeSummaryService:
     def _call_with_retry(self, prompt: str) -> Optional[str]:
         if not self.client:
             return None
+        scope_wait = self._scope_retry_after_seconds()
+        if scope_wait > 0:
+            logger.info(
+                "Summary generation skipped because Gemini scope is cooling down for %.1fs.",
+                scope_wait,
+            )
+            return None
         for attempt in range(1, SUMMARY_MAX_RETRIES + 1):
             try:
                 response = self.client.models.generate_content(
@@ -75,6 +82,12 @@ class YouTubeSummaryService:
                 )
                 time.sleep(min(attempt, 3))
         return None
+
+    @staticmethod
+    def _scope_retry_after_seconds() -> float:
+        manager = get_gemini_client_manager()
+        status = manager.get_scope_status(scope=f"generate_content:{GEMINI_MODEL}")
+        return max(0.0, float(status.get("retry_after_seconds", 0.0) or 0.0))
 
     @staticmethod
     def _fallback_template(*, video_title: str, topic: str, level: str) -> str:

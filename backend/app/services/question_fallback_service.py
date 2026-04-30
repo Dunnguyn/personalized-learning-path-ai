@@ -9,6 +9,9 @@ from typing import Any, Dict, List, Sequence
 from backend.app.services.concept_normalization_service import (
     concept_normalization_service,
 )
+from backend.app.services.question_generation.noise_filter import (
+    assess_question_generation_noise,
+)
 from backend.app.services.question_nlp_service import question_nlp_service
 from backend.app.services.question_template_service import QuestionTemplateService
 
@@ -60,12 +63,22 @@ class QuestionFallbackService:
             chunks=chunks,
             target_concepts=scoring_targets,
         )
+        candidate_chunks = [
+            chunk
+            for chunk in chunks
+            if not bool(
+                chunk_profiles.get(str(chunk.get("_id") or ""), {}).get("resource_noise")
+            )
+        ] or list(chunks)
 
         for attempt in range(attempts):
             if len(candidates) >= target_count:
                 break
 
-            retry_chunks = self._select_retry_chunks(chunks=chunks, attempt=attempt)
+            retry_chunks = self._select_retry_chunks(
+                chunks=candidate_chunks,
+                attempt=attempt,
+            )
             retry_chunks = self._prioritize_retry_chunks(
                 chunks=retry_chunks,
                 attempt=attempt,
@@ -626,6 +639,14 @@ class QuestionFallbackService:
                     flags=re.IGNORECASE,
                 )
             )
+            noise_signals = assess_question_generation_noise(
+                content=content,
+                metadata=metadata,
+                strict_keywords=target_concepts,
+                broad_keywords=target_concepts,
+                target_concepts=target_concepts,
+                covered_concepts=covered_concepts,
+            )
             claim_scores = [
                 self._score_claim(
                     claim=claim,
@@ -678,6 +699,9 @@ class QuestionFallbackService:
                 priority_score += 0.2
             elif estimated_read_time >= 8:
                 priority_score -= 0.1
+            priority_score -= float(noise_signals.get("noise_score", 0.0) or 0.0) * 4.2
+            if noise_signals.get("resource_noise") and not target_match:
+                priority_score -= 2.4
 
             profiles[chunk_id] = {
                 "chunk_id": chunk_id,
@@ -692,6 +716,9 @@ class QuestionFallbackService:
                 "target_lexical_score": round(target_lexical_score, 4),
                 "keyword_overlap_terms": list(keyword_overlap_terms),
                 "claim_count": len(claim_scores),
+                "resource_noise": bool(noise_signals.get("resource_noise")),
+                "resource_noise_score": float(noise_signals.get("noise_score", 0.0) or 0.0),
+                "relevance_score": float(noise_signals.get("relevance_score", 0.0) or 0.0),
                 "priority_score": priority_score,
             }
 

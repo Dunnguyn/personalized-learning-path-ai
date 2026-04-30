@@ -6,9 +6,15 @@ import DashboardLayout from '../components/layout/DashboardLayout';
 import PageHero from '../components/ui/PageHero';
 import StatusPanel from '../components/ui/StatusPanel';
 import { useAuth } from '../contexts/AuthContext';
+import { useSubjects } from '../hooks/useSubjects';
 import { apiClient } from '../utils/apiClient';
-import { SUBJECTS } from '../utils/subjects';
 import { learningPathService } from '../services';
+import {
+  buildSubjectGoal,
+  findSubjectById,
+  matchSubjectByGoalPrefix,
+  stripSubjectPrefixFromGoal,
+} from '../utils/subjects';
 
 interface Message {
   id: string;
@@ -178,6 +184,7 @@ const clearStoredMessages = (userId: string, subjectKey: string, goalKey: string
 
 export default function AITutor() {
   const { user } = useAuth();
+  const { subjects } = useSubjects();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -186,7 +193,7 @@ export default function AITutor() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [goal, setGoal] = useState('');
-  const [subjectId, setSubjectId] = useState(SUBJECTS[0]?.id ?? '');
+  const [subjectId, setSubjectId] = useState('');
   const [goalDetail, setGoalDetail] = useState('');
   const [level, setLevel] = useState<'beginner' | 'intermediate' | 'advanced'>('beginner');
   const [tutorMode, setTutorMode] = useState<TutorMode>('explain');
@@ -199,6 +206,36 @@ export default function AITutor() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const autoStartedRef = useRef(false);
+  const currentSubject =
+    findSubjectById(subjects, subjectId) ||
+    matchSubjectByGoalPrefix(subjects, searchParams.get('goal')) ||
+    matchSubjectByGoalPrefix(subjects, goal) ||
+    subjects[0] ||
+    null;
+  const activeSubjectId = currentSubject?.id || '';
+  const subjectGoalContext = goal || searchParams.get('goal') || '';
+  const activeSubjectGoalDetail = stripSubjectPrefixFromGoal(
+    subjects,
+    currentSubject?.id || activeSubjectId,
+    subjectGoalContext,
+  );
+  const formatSubjectOptionLabel = (label: string, detail?: string) => {
+    const normalizedDetail = (detail || '').trim();
+    return normalizedDetail ? `${label} - ${normalizedDetail}` : label;
+  };
+  const subjectOptions = subjects.map((subject) => ({
+    id: subject.id,
+    label: formatSubjectOptionLabel(
+      subject.label,
+      currentSubject?.id === subject.id ? activeSubjectGoalDetail : '',
+    ),
+  }));
+
+  useEffect(() => {
+    if (!subjectId && subjects[0]?.id) {
+      setSubjectId(subjects[0].id);
+    }
+  }, [subjectId, subjects]);
 
   const renderMessageContent = (text: string) => (
     <ReactMarkdown
@@ -293,10 +330,17 @@ export default function AITutor() {
     const goalParam = searchParams.get('goal');
     const levelParam = searchParams.get('level');
     const subjectParam = searchParams.get('subject');
-    const subjectKey = subjectParam || subjectId;
+    const resolvedSubject =
+      (subjectParam ? findSubjectById(subjects, subjectParam) : null) ||
+      matchSubjectByGoalPrefix(subjects, goalParam) ||
+      findSubjectById(subjects, subjectId) ||
+      matchSubjectByGoalPrefix(subjects, goal) ||
+      subjects[0] ||
+      null;
+    const subjectKey = resolvedSubject?.id || subjectId;
     const goalKey = goalParam || '';
-    if (subjectParam) {
-      setSubjectId(subjectParam);
+    if (resolvedSubject?.id && resolvedSubject.id !== subjectId) {
+      setSubjectId(resolvedSubject.id);
     }
     if (levelParam === 'beginner' || levelParam === 'intermediate' || levelParam === 'advanced') {
       setLevel(levelParam);
@@ -321,7 +365,7 @@ export default function AITutor() {
         loadHistory();
       }
     }
-  }, [user, navigate, searchParams]);
+  }, [goal, navigate, searchParams, subjectId, subjects, user]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
@@ -329,9 +373,9 @@ export default function AITutor() {
   }, [messages]);
 
   useEffect(() => {
-    if (!user || showGoalInput || !subjectId || !goal || messages.length === 0) return;
-    saveStoredMessages(user.user_id, subjectId, goal, messages);
-  }, [messages, user, showGoalInput, subjectId, goal]);
+    if (!user || showGoalInput || !activeSubjectId || !goal || messages.length === 0) return;
+    saveStoredMessages(user.user_id, activeSubjectId, goal, messages);
+  }, [activeSubjectId, messages, user, showGoalInput, goal]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -408,28 +452,8 @@ export default function AITutor() {
     setShowHistory(false);
   };
 
-  const buildGoal = (selectedSubjectId: string, detail: string) => {
-    const subject = SUBJECTS.find((item) => item.id === selectedSubjectId);
-    const baseGoal = subject?.goal ?? '';
-    const trimmedDetail = detail.trim();
-
-    if (!baseGoal && !trimmedDetail) {
-      return '';
-    }
-
-    if (!baseGoal) {
-      return trimmedDetail;
-    }
-
-    if (!trimmedDetail) {
-      return baseGoal;
-    }
-
-    return `${baseGoal} - ${trimmedDetail}`;
-  };
-
   const handleStartChat = () => {
-    const nextGoal = buildGoal(subjectId, goalDetail);
+    const nextGoal = buildSubjectGoal(subjects, activeSubjectId, goalDetail);
     if (!nextGoal) {
       setError('Vui lòng chọn môn học');
       return;
@@ -438,7 +462,7 @@ export default function AITutor() {
     setShowGoalInput(false);
     setError(null);
     if (user) {
-      const cachedMessages = loadStoredMessages(user.user_id, subjectId, nextGoal);
+      const cachedMessages = loadStoredMessages(user.user_id, activeSubjectId, nextGoal);
       if (cachedMessages.length > 0) {
         setMessages(cachedMessages);
       } else {
@@ -469,7 +493,7 @@ export default function AITutor() {
 
     if (!goal) return;
 
-    clearStoredMessages(user.user_id, subjectId, goal);
+    clearStoredMessages(user.user_id, activeSubjectId, goal);
     setMessages([]);
     if (goal) {
       addMessage(
@@ -504,7 +528,7 @@ export default function AITutor() {
 
       const data = (await apiClient.post('/ask/', {
         user_id: user.user_id,
-        subject_id: subjectId || undefined,
+        subject_id: activeSubjectId || undefined,
         question: userQuestion,
         goal: goal,
         level: level,
@@ -582,7 +606,6 @@ export default function AITutor() {
     setMessages((prev) => [...prev, newMessage]);
   };
 
-  const currentSubject = SUBJECTS.find((subject) => subject.id === subjectId);
   const currentLevelMeta = LEVEL_META[level];
   const activeTutorMode = TUTOR_MODE_META[tutorMode];
   const sessionQuestionCount = messages.filter((message) => message.role === 'user').length;
@@ -761,11 +784,11 @@ export default function AITutor() {
                 <label className="space-y-2">
                   <span className="text-[12px] font-medium text-[#6f5260]">Môn học</span>
                   <select
-                    value={subjectId}
+                    value={activeSubjectId}
                     onChange={(e) => setSubjectId(e.target.value)}
                     className="theme-input rounded-[18px]"
                   >
-                    {SUBJECTS.map((subject) => (
+                    {subjectOptions.map((subject) => (
                       <option key={subject.id} value={subject.id}>
                         {subject.label}
                       </option>

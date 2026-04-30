@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { accountIcon, settingIcon } from '../assets';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import PageHero from '../components/ui/PageHero';
 import { useAuth } from '../contexts/AuthContext';
@@ -235,14 +234,6 @@ export default function Settings() {
     [form.level],
   );
 
-  const onboardingSummary = useMemo(
-    () => ({
-      profileCompleted: profile?.onboarding_status?.profile_completed ?? false,
-      diagnosticCompleted: profile?.onboarding_status?.diagnostic_completed ?? false,
-    }),
-    [profile],
-  );
-
   const activeSignalSummary = useMemo(
     () => [
       {
@@ -458,59 +449,7 @@ export default function Settings() {
               {saving ? 'Đang lưu...' : 'Lưu thay đổi'}
             </button>
           }
-          metrics={[
-            {
-              label: 'Bạn muốn học gì',
-              value: onboardingSummary.profileCompleted ? 'Đã đủ dữ liệu' : 'Còn thiếu',
-              detail: onboardingSummary.profileCompleted
-                ? 'Mục tiêu, đầu ra và quỹ thời gian đã đủ để hệ thống đề xuất chính xác hơn.'
-                : 'Bổ sung mục tiêu hoặc đầu ra mong muốn để giảm gợi ý quá chung.',
-            },
-            {
-              label: 'Hệ thống đang hiểu bạn',
-              value: onboardingSummary.diagnosticCompleted ? 'Đã chẩn đoán' : 'Chưa có',
-              detail: diagnosticResult?.completed
-                ? `${getSubjectLabel(diagnosticResult.subject_id)} đang ở mức ${getLevelLabel(
-                    diagnosticResult.recommended_level,
-                  )}.`
-                : 'Chạy chẩn đoán để hệ thống hiểu mức nền tảng của bạn theo từng môn.',
-            },
-            {
-              label: 'Cách bạn muốn học',
-              value: getResourcePreferenceLabel(form.preferredResourceType),
-              detail: `${form.timeBudgetValue} phút/${form.timeBudgetUnit === 'daily' ? 'ngày' : 'tuần'} • nhịp ${getPaceLabel(form.learningPace)}`,
-            },
-          ]}
-        >
-          <div className="hero-visual-grid md:grid-cols-2">
-            <article className="hero-visual-card">
-              <span className="hero-visual-icon">
-                <img src={accountIcon} alt="" className="h-7 w-7 object-contain" />
-              </span>
-              <div>
-                <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/55">
-                  Bạn muốn học gì
-                </p>
-                <p className="mt-2 text-[16px] font-semibold text-[#17141a]">
-                  Mục tiêu, vai trò mong muốn và đầu ra học tập được dùng để sắp thứ tự path.
-                </p>
-              </div>
-            </article>
-            <article className="hero-visual-card">
-              <span className="hero-visual-icon">
-                <img src={settingIcon} alt="" className="h-7 w-7 object-contain" />
-              </span>
-              <div>
-                <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#8c3451]/55">
-                  Hệ thống đang hiểu bạn ra sao
-                </p>
-                <p className="mt-2 text-[16px] font-semibold text-[#17141a]">
-                  Diagnostic và prior knowledge theo môn giúp recommendation tránh quá dễ hoặc quá khó.
-                </p>
-              </div>
-            </article>
-          </div>
-        </PageHero>
+        />
         {error && (
           <div className="white-panel mb-6 border border-red-200 px-5 py-4 text-[14px] text-red-700">
             {error}

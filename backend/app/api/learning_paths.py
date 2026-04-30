@@ -97,7 +97,7 @@ def generate_learning_path(
         event_logging_service.log_event(
             "learning_path_generated",
             user_id=user_id,
-            subject_id=payload.subject_id.value,
+            subject_id=subject_id,
             success=False,
             error_code="VALUE_ERROR",
             metadata={"detail": str(exc)},

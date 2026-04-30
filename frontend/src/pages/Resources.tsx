@@ -163,32 +163,6 @@ const computeResourceRelevanceScore = (
   return Math.max(0.3, Math.min(score, 0.99));
 };
 
-const buildResourceWhyRecommended = (
-  resource: Resource,
-  query: string,
-  levelFilter: string,
-  sourceFilter: string,
-) => {
-  const reasons: string[] = [];
-  if (query.trim()) {
-    reasons.push(`Khớp với truy vấn "${query.trim()}".`);
-  }
-  if (levelFilter && resource.level === levelFilter) {
-    reasons.push(`Phù hợp với mức ${RESOURCE_LEVEL_LABELS[levelFilter] || levelFilter}.`);
-  }
-  if (sourceFilter && resource.source === sourceFilter) {
-    reasons.push(`Thuộc đúng nguồn ${RESOURCE_SOURCE_LABELS[sourceFilter] || sourceFilter}.`);
-  }
-  if (resource.topic) {
-    reasons.push(`Bám theo chủ đề ${resource.topic}.`);
-  }
-  if (resource.source === 'youtube' && resource.video_metadata?.channel) {
-    reasons.push(`Nguồn video từ ${resource.video_metadata.channel}.`);
-  }
-
-  return reasons[0] || 'Được ưu tiên vì phù hợp với ngữ cảnh học hiện tại của bạn.';
-};
-
 const formatPdfTitle = (value: string): string =>
   value
     .replace(/\.pdf$/i, '')
@@ -251,7 +225,7 @@ export default function Resources() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalResults, setTotalResults] = useState(0);
-  const pageSize = 12;
+  const pageSize = 4;
 
   const [filters, setFilters] = useState({
     level: '',
@@ -265,7 +239,7 @@ export default function Resources() {
     filters.level ? `Cấp độ: ${RESOURCE_LEVEL_LABELS[filters.level] || filters.level}` : null,
     filters.source ? `Nguồn: ${RESOURCE_SOURCE_LABELS[filters.source] || filters.source}` : null,
     sortOption !== 'relevance'
-      ? `Sáº¯p xáº¿p: ${RESOURCE_SORT_OPTIONS.find((option) => option.value === sortOption)?.label}`
+      ? `Sắp xếp: ${RESOURCE_SORT_OPTIONS.find((option) => option.value === sortOption)?.label}`
       : null,
   ].filter(Boolean) as string[];
 
@@ -310,12 +284,6 @@ export default function Resources() {
         filters.source,
       ),
       estimatedMinutes: estimateResourceMinutes(resource),
-      whyRecommended: buildResourceWhyRecommended(
-        resource,
-        trimmedSearchQuery,
-        filters.level,
-        filters.source,
-      ),
     }));
 
     return decorated
@@ -973,7 +941,7 @@ export default function Resources() {
           </div>
         </PageHero>
 
-        {canManageResources && aiHealth && false ? (
+        {canManageResources && aiHealth && import.meta.env.DEV ? (
           <StatusPanel
             className="mb-6"
             tone={
@@ -1002,7 +970,7 @@ export default function Resources() {
           />
         ) : null}
 
-        {canManageResources && aiHealthError && false ? (
+        {canManageResources && aiHealthError && import.meta.env.DEV ? (
           <StatusPanel className="mb-6" tone="error" title="AI embedding stack" description={aiHealthError} />
         ) : null}
 
@@ -1461,7 +1429,7 @@ export default function Resources() {
           <>
             <div className="mb-[40px] grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-              {displayedResources.map(({ resource, relevanceScore, whyRecommended }) => {
+              {displayedResources.map(({ resource, relevanceScore }) => {
                 const sourceTheme = getSourceTheme(resource.source);
                 const resourceId = getResourceIdentifier(resource);
                 const displayTitle = getDisplayTitle(resource);
@@ -1538,10 +1506,6 @@ export default function Resources() {
                       <p className="line-clamp-2 min-h-[48px] break-words text-[13px] leading-5 text-[#6a625d] sm:text-[14px]">
                         {previewText}
                       </p>
-                      <details className="mt-3 text-[12px] text-[#2563eb]">
-                        <summary className="cursor-pointer list-none font-semibold">Vì sao?</summary>
-                        <p className="mt-2 leading-5 text-[#334155]">{whyRecommended}</p>
-                      </details>
                     </div>
 
                     <button
@@ -1567,7 +1531,7 @@ export default function Resources() {
                     Các gợi ý này được sắp theo mức phù hợp với truy vấn, nguồn và cấp độ đang xem.
                   </p>
                 </div>
-                {featuredResources.map(({ resource, relevanceScore, whyRecommended }) => (
+                {featuredResources.map(({ resource, relevanceScore }) => (
                   <div
                     key={`featured-${getResourceIdentifier(resource) || resource.title}`}
                     className="white-panel p-5"
@@ -1588,10 +1552,6 @@ export default function Resources() {
                         {getLevelLabel(resource.level)}
                       </span>
                     </div>
-                    <details className="mt-4 text-[12px] text-[#2563eb]">
-                      <summary className="cursor-pointer list-none font-semibold">Vì sao?</summary>
-                      <p className="mt-2 leading-5 text-[#334155]">{whyRecommended}</p>
-                    </details>
                     <button
                       type="button"
                       onClick={() => handleOpenResource(resource)}

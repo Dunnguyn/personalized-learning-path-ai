@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import AuthShell from './AuthShell';
-import illustrationLearning from '../../assets/tải xuống (1).jpg';
-import { brandLogo } from '../../assets';
+import AuthStepIndicator from './AuthStepIndicator';
+import authHeroImage from '../../assets/tải xuống (1).jpg';
 import { useAuth } from '../../contexts/AuthContext';
 import { authService } from '../../services/authService';
 import { learnerProfileService } from '../../services/learnerProfileService';
@@ -55,14 +55,7 @@ const LEVEL_OPTIONS: Array<{ value: LearnerLevel; label: string }> = [
   { value: 'advanced', label: 'Muốn học chuyên sâu' },
 ];
 
-const introVisual = (
-  <div className="flex flex-col items-center">
-    <div className="flex h-18 w-18 items-center justify-center rounded-full bg-[#fff4f8] shadow-[0_14px_32px_rgba(162,94,121,0.12)]">
-      <img src={brandLogo} alt="Learning brand" className="h-11 w-11 rounded-full object-cover" />
-    </div>
-    <div className="mt-4 text-[14px] font-semibold tracking-[0.38em] text-[#8c3451]/56">02</div>
-  </div>
-);
+const introVisual = <AuthStepIndicator activeStep={2} />;
 
 export default function SignupStep2() {
   const navigate = useNavigate();
@@ -140,20 +133,19 @@ export default function SignupStep2() {
 
   return (
     <AuthShell
-      badge="Thiết lập hồ sơ"
       title="Bắt đầu ngay"
       description="Chọn mục tiêu của bạn để hệ thống tạo điểm khởi đầu phù hợp."
       mediaAlt="Minh họa học tập"
-      mediaSrc={illustrationLearning}
+      mediaSrc={authHeroImage}
       sideLabel=""
       sideTitle=""
       sideCopy=""
       showSideContent={false}
       introVisual={introVisual}
       centerContent
-      titleClassName="mt-2 text-[42px] font-semibold leading-[1.02] tracking-[-0.05em] text-[#8c3451] md:text-[46px]"
-      descriptionClassName="text-[14px] leading-6 text-[#6d655f]"
-      formShellClassName="mt-8 w-full max-w-[410px] border-0 bg-transparent p-0 shadow-none"
+      titleClassName="mt-7 text-[42px] font-semibold leading-[1.02] tracking-[-0.05em] text-[#8c3451] md:text-[46px]"
+      descriptionClassName="text-[15px] leading-7 text-[#6d655f]"
+      formShellClassName="mt-10 w-full max-w-[410px] border-0 bg-transparent p-0 shadow-none"
       footerClassName="text-[13px] text-[#6d655f]"
       footer={
         <p>

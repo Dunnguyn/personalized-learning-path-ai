@@ -9,6 +9,7 @@ import SectionIntro from '../components/ui/SectionIntro';
 import StatTile from '../components/ui/StatTile';
 import StatusPanel from '../components/ui/StatusPanel';
 import { useAuth } from '../contexts/AuthContext';
+import { useSubjects } from '../hooks/useSubjects';
 import { adaptiveService } from '../services/adaptiveService';
 import { dashboardService } from '../services/dashboardService';
 import { learningPathService } from '../services/learningPathService';
@@ -29,7 +30,11 @@ import type {
 import type { LearningPath, StudySummary } from '../types/learningPath';
 import type { PathRefinementAction } from '../types/pathRefinement';
 import type { RecommendationFeedbackType } from '../types/recommendation';
-import { SUBJECTS } from '../utils/subjects';
+import {
+  getSubjectLabel,
+  matchSubjectByGoalPrefix,
+  type SubjectOption,
+} from '../utils/subjects';
 
 type ResourceRecommendationMode =
   | 'continue_learning'
@@ -163,7 +168,7 @@ const getResourceSourceLabel = (source?: string | null) => {
     .split('/')[0];
 };
 
-const formatConceptDisplay = (concept?: string | null) => {
+const formatConceptDisplay = (concept?: string | null, subjects: SubjectOption[] = []) => {
   if (!concept) {
     return null;
   }
@@ -173,11 +178,18 @@ const formatConceptDisplay = (concept?: string | null) => {
     return null;
   }
 
-  const matchedSubject = SUBJECTS.find(
+  const matchedSubject = subjects.find(
     (subject) =>
       normalized === subject.id ||
+      normalized === (subject.slug || '').toLowerCase() ||
       normalized.includes(subject.id) ||
-      normalized.includes(subject.label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '_')),
+      normalized.includes(
+        subject.label
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/\s+/g, '_'),
+      ),
   );
 
   if (matchedSubject) {
@@ -237,7 +249,10 @@ const getLearningGainLabel = (value?: number | null) => {
   return `Tăng ích dự kiến ${normalized}%`;
 };
 
-const buildRecommendationReasons = (resource: RecommendedResourceItem): string[] => {
+const buildRecommendationReasons = (
+  resource: RecommendedResourceItem,
+  subjects: SubjectOption[],
+): string[] => {
   const reasons: string[] = [];
 
   if (resource.why_selected.length > 0) {
@@ -248,7 +263,7 @@ const buildRecommendationReasons = (resource: RecommendedResourceItem): string[]
     reasons.push(
       `Ho tro truc tiep cho ${resource.supports_concepts
         .slice(0, 2)
-        .map((concept) => formatConceptDisplay(concept) || concept)
+        .map((concept) => formatConceptDisplay(concept, subjects) || concept)
         .join(', ')}.`,
     );
   }
@@ -405,6 +420,7 @@ const getAdaptiveModeGuidance = (action?: AdaptiveNextAction['next_best_action']
 const buildWeakConcepts = (
   snapshot?: LearnerStateSnapshot | null,
   explanation?: AdaptiveExplanationResponse | null,
+  subjects: SubjectOption[] = [],
 ): AdaptiveInsightConcept[] => {
   const focusConcepts = explanation?.target_concepts || snapshot?.current_focus_concepts || [];
   const conceptPool = new Set<string>(focusConcepts);
@@ -426,7 +442,7 @@ const buildWeakConcepts = (
           : null;
       return {
         key: concept,
-        label: formatConceptDisplay(concept) || concept,
+        label: formatConceptDisplay(concept, subjects) || concept,
         mastery,
         confidence,
       };
@@ -510,6 +526,7 @@ const getWeekdayLabel = (date: Date) => {
 
 function LearnerDashboard() {
   const { user } = useAuth();
+  const { subjects } = useSubjects();
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
@@ -851,7 +868,7 @@ function LearnerDashboard() {
   const handleAskAIForGoal = (goal: string, level?: string) => {
     const goalParam = encodeURIComponent(goal || '');
     const levelParam = level ? `&level=${encodeURIComponent(level)}` : '';
-    const subjectMatch = SUBJECTS.find((subject) => goal?.startsWith(subject.goal));
+    const subjectMatch = matchSubjectByGoalPrefix(subjects, goal);
     const subjectParam = subjectMatch ? `&subject=${encodeURIComponent(subjectMatch.id)}` : '';
     navigate(`/ai-tutor?goal=${goalParam}${levelParam}${subjectParam}`);
   };
@@ -883,7 +900,7 @@ function LearnerDashboard() {
   };
 
   const getSubjectDisplay = (path: LearningPath) =>
-    SUBJECTS.find((subject) => subject.id === path.subject_id)?.label || path.goal || 'Khóa học';
+    getSubjectLabel(subjects, path.subject_id, path.goal || 'Khóa học');
 
   if (loading) {
     return (
@@ -954,7 +971,7 @@ function LearnerDashboard() {
       ? (adaptiveRecommendation.items[0] as Record<string, unknown>)
       : null;
   const adaptiveSnapshot = adaptiveExplanation?.snapshot || null;
-  const weakConcepts = buildWeakConcepts(adaptiveSnapshot, adaptiveExplanation);
+  const weakConcepts = buildWeakConcepts(adaptiveSnapshot, adaptiveExplanation, subjects);
   const latestRefinement = getLatestRefinementForPath(
     refinementActions,
     adaptiveExplanation?.path_id || null,
@@ -963,7 +980,7 @@ function LearnerDashboard() {
   const sideCourses = learningPaths.slice(0, 3);
   const alternativeResourceRecommendations = personalizedResources.slice(1, 5);
   const topResourceReasons = topResourceRecommendation
-    ? buildRecommendationReasons(topResourceRecommendation)
+    ? buildRecommendationReasons(topResourceRecommendation, subjects)
     : [];
   const adaptiveExplanationDetails = Array.from(
     new Set(
@@ -1584,7 +1601,7 @@ function LearnerDashboard() {
                           {nextBestAction.target_concepts
                             .map((concept) => ({
                               key: concept,
-                              label: formatConceptDisplay(concept),
+                              label: formatConceptDisplay(concept, subjects),
                             }))
                             .filter(
                               (concept): concept is { key: string; label: string } => Boolean(concept.label),
@@ -1640,7 +1657,7 @@ function LearnerDashboard() {
                       <button
                         onClick={() =>
                           handleAskAIForGoal(
-                            formatConceptDisplay(nextBestAction.target_concepts[0]) ||
+                            formatConceptDisplay(nextBestAction.target_concepts[0], subjects) ||
                               nextBestAction.target_concepts[0] ||
                               resourceRecommendationGoal ||
                               'adaptive learning',
@@ -1778,7 +1795,7 @@ function LearnerDashboard() {
                         {nextBestAction.target_concepts
                           .map((concept) => ({
                             key: concept,
-                            label: formatConceptDisplay(concept),
+                            label: formatConceptDisplay(concept, subjects),
                           }))
                           .filter(
                             (concept): concept is { key: string; label: string } => Boolean(concept.label),
@@ -1802,7 +1819,7 @@ function LearnerDashboard() {
                       <button
                         onClick={() =>
                           handleAskAIForGoal(
-                            formatConceptDisplay(nextBestAction.target_concepts[0]) ||
+                            formatConceptDisplay(nextBestAction.target_concepts[0], subjects) ||
                               nextBestAction.target_concepts[0] ||
                               resourceRecommendationGoal ||
                               'adaptive learning',
@@ -1926,7 +1943,7 @@ function LearnerDashboard() {
                             {topResourceRecommendation.primary_concepts
                               .map((concept) => ({
                                 key: concept,
-                                label: formatConceptDisplay(concept),
+                                label: formatConceptDisplay(concept, subjects),
                               }))
                               .filter(
                                 (concept): concept is { key: string; label: string } =>
@@ -2070,9 +2087,9 @@ function LearnerDashboard() {
                           <p className="dashboard-line-clamp-3 mt-2 text-[12px] leading-5 text-[#706963]">
                             {resource.reason}
                           </p>
-                          {buildRecommendationReasons(resource)[0] ? (
+                          {buildRecommendationReasons(resource, subjects)[0] ? (
                             <p className="mt-2 text-[12px] leading-5 text-[#8f6075]">
-                              Vì sao gợi ý: {buildRecommendationReasons(resource)[0]}
+                              Vì sao gợi ý: {buildRecommendationReasons(resource, subjects)[0]}
                             </p>
                           ) : null}
                           <div className="mt-3 flex flex-wrap gap-2">
@@ -2085,7 +2102,7 @@ function LearnerDashboard() {
                             {resource.primary_concepts
                               .map((concept) => ({
                                 key: concept,
-                                label: formatConceptDisplay(concept),
+                                label: formatConceptDisplay(concept, subjects),
                               }))
                               .filter(
                                 (concept): concept is { key: string; label: string } =>

@@ -1,5 +1,6 @@
 import type {
   CurrentUserResponse,
+  ForgotPasswordResponse,
   LoginResponse,
   SignupResponse,
   StoredUser,
@@ -23,7 +24,7 @@ export const normalizeStoredUser = (value: unknown): StoredUser => {
   return {
     user_id: typeof record.user_id === 'string' ? record.user_id : undefined,
     _id: typeof record._id === 'string' ? record._id : undefined,
-    name: asString(record.name, 'Nguoi hoc'),
+    name: asString(record.name, 'Người học'),
     email: asString(record.email),
     level: typeof record.level === 'string' ? record.level : undefined,
     role: asUserRole(record.role),
@@ -39,7 +40,7 @@ export const normalizeLoginResponse = (value: unknown): LoginResponse => {
     token_type: asString(record.token_type, 'bearer'),
     user_id: asString(record.user_id),
     email: asString(record.email),
-    name: asString(record.name, 'Nguoi hoc'),
+    name: asString(record.name, 'Người học'),
     role: asUserRole(record.role),
   };
 };
@@ -53,7 +54,7 @@ export const normalizeSignupResponse = (value: unknown): SignupResponse => {
     user: {
       user_id: asString(user.user_id),
       email: asString(user.email),
-      name: asString(user.name, 'Nguoi hoc'),
+      name: asString(user.name, 'Người học'),
       level: asString(user.level, 'beginner'),
       role: asUserRole(user.role),
       created_at: asString(user.created_at),
@@ -63,6 +64,15 @@ export const normalizeSignupResponse = (value: unknown): SignupResponse => {
 
 export const normalizeCurrentUserResponse = (value: unknown): CurrentUserResponse =>
   normalizeStoredUser(value);
+
+export const normalizeForgotPasswordResponse = (value: unknown): ForgotPasswordResponse => {
+  const record = asRecord(value);
+
+  return {
+    success: typeof record.success === 'boolean' ? record.success : true,
+    message: asString(record.message, 'Đặt lại mật khẩu thành công'),
+  };
+};
 
 export const parseStoredUser = (value: string | null): StoredUser | null => {
   if (!value) {

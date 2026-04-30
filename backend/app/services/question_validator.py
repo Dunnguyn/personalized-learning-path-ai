@@ -278,6 +278,19 @@ class LessonScopedQuestionValidator:
                 f"Câu hỏi được suy ra từ đoạn trích: {source_excerpt[:180]}".strip()
             )
 
+        if self._normalize_text(correct_answer) in self._normalize_text(question):
+            raise ValueError("answer_leaked_in_stem")
+        metadata["reasoning_pattern"] = self._normalize_reasoning_pattern(
+            metadata.get("reasoning_pattern")
+        )
+        metadata["distractor_rationale"] = self._normalize_metadata_list(
+            metadata.get("distractor_rationale"),
+            limit=3 if question_type == "multiple_choice" else 0,
+        )
+        metadata["evidence_terms"] = self._normalize_metadata_list(
+            metadata.get("evidence_terms"),
+            limit=4,
+        )
         return ValidatedLessonQuestion(
             question_type=question_type,
             question=question,
@@ -466,6 +479,39 @@ class LessonScopedQuestionValidator:
         if isinstance(raw_value, str) and raw_value.strip():
             return [raw_value.strip()]
         return []
+
+    @classmethod
+    def _normalize_metadata_list(cls, value: Any, *, limit: int) -> List[str]:
+        if limit <= 0:
+            return []
+        items = value if isinstance(value, list) else [value] if value else []
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for item in items:
+            text = str(item or "").strip()
+            key = cls._normalize_text(text)
+            if not text or not key or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(text[:160])
+            if len(normalized) >= limit:
+                break
+        return normalized
+
+    @classmethod
+    def _normalize_reasoning_pattern(cls, value: Any) -> str:
+        normalized = cls._normalize_text(str(value or ""))
+        allowed = {
+            "definition",
+            "classification",
+            "cause_effect",
+            "compare_contrast",
+            "worked_example",
+            "decision_rule",
+            "error_detection",
+            "workflow_step",
+        }
+        return normalized if normalized in allowed else ""
 
     def _infer_chunk_ids(
         self,

@@ -497,7 +497,11 @@ class AITutorService:
         subject_id: Optional[str],
         learning_mode: str,
     ) -> List[Dict]:
-        """Generate learning path adapted to learning mode"""
+        """Return recommendations from an existing path only.
+
+        AI Tutor must not generate new learning paths or mutate the subject catalog
+        as a side effect of answering a question.
+        """
         try:
             recommended_path = learning_path_service.recommend_next_concepts(
                 user_id=str(user_id),
@@ -505,6 +509,7 @@ class AITutorService:
                 level=level,
                 subject_id=subject_id,
                 limit=15,
+                allow_generate=False,
             )
 
             # Apply adaptive filtering by learning mode
@@ -525,7 +530,7 @@ class AITutorService:
             return recommended_path
 
         except Exception as e:
-            logger.exception(f"Learning path generation error: {e}")
+            logger.exception(f"Learning path recommendation error: {e}")
             return []
 
 
