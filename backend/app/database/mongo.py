@@ -10,9 +10,9 @@ logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BACKEND_DIR.parent
 
-# Preserve injected environment values; dotenv files only fill missing values.
-load_dotenv(BACKEND_DIR / ".env")
+# Preserve injected environment values, then prefer repo-root dotenv values.
 load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(BACKEND_DIR / ".env")
 
 if not os.getenv("MONGODB_URI") and os.getenv("MONGO_URI"):
     os.environ["MONGODB_URI"] = os.getenv("MONGO_URI")

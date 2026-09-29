@@ -23,9 +23,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # Environment variables injected by Docker or the process take precedence.
-# Local dotenv files only fill missing values (backend first, then repo root).
-load_dotenv(BACKEND_DIR / ".env")
+# Local dotenv files only fill missing values (repo root first, then backend).
 load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(BACKEND_DIR / ".env")
 
 # Normalize Mongo env naming so startup validation and DB access stay consistent.
 if not os.getenv("MONGODB_URI") and os.getenv("MONGO_URI"):
