@@ -1,11 +1,9 @@
-version: '3.8'
-
 services:
   # =========================================================================
   # MongoDB - NoSQL Database
   # =========================================================================
   mongodb:
-    image: mongo:7.0-alpine
+    image: mongo:7.0
     container_name: learning_path_mongodb
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:-mongodb}
@@ -34,10 +32,13 @@ services:
       dockerfile: Dockerfile
     container_name: learning_path_backend
     environment:
-      MONGODB_URI: mongodb://${MONGO_USERNAME:-mongodb}:${MONGO_PASSWORD:-mongodb_password}@mongodb:27017/learning_path_ai
+      MONGODB_URI: mongodb://${MONGO_USERNAME:-mongodb}:${MONGO_PASSWORD:-mongodb_password}@mongodb:27017/learning_path_ai?authSource=admin
       DB_NAME: learning_path_ai
-      SECRET_KEY: ${SECRET_KEY:-CHANGE_THIS_SECRET_KEY}
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      SECRET_KEY: ${SECRET_KEY:?Set a random SECRET_KEY of at least 32 characters in .env}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_API_KEYS: ${GEMINI_API_KEYS:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-gemini}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       ALLOW_INSECURE_EMAIL_ONLY_PASSWORD_RESET: ${ALLOW_INSECURE_EMAIL_ONLY_PASSWORD_RESET:-false}
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       ENVIRONMENT: ${ENVIRONMENT:-development}

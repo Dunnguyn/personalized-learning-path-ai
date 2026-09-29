@@ -43,7 +43,7 @@ class RecommendationRepository:
             self.event_logs.create_index(
                 [("lesson_id", 1), ("timestamp", -1), ("event_type", 1)]
             )
-            self.lesson_recommended_chunks.create_index([("lesson_id", 1)])
+            self.lesson_recommended_chunks.create_index([("lesson_id", 1)], unique=True)
             self.lesson_recommended_chunks.create_index([("resource_ids", 1)])
             self.lesson_study_time.create_index(
                 [("user_id", 1), ("updated_at", -1), ("lesson_id", 1)]

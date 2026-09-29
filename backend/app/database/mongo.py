@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BACKEND_DIR.parent
 
-# Load backend/.env first, then allow the repo root .env to override it.
+# Preserve injected environment values; dotenv files only fill missing values.
 load_dotenv(BACKEND_DIR / ".env")
 load_dotenv(PROJECT_ROOT / ".env")
 

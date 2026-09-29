@@ -5168,59 +5168,33 @@ class LessonScopedQuestionGenerationService:
             question_type = "multiple_choice"
             bloom_level = selected_bloom_levels[index % len(selected_bloom_levels)]
 
-            if question_type == "multiple_choice":
+            distractors = self._build_distractors(
+                answer=focus,
+                excerpt=excerpt_norm,
+                keywords=strict_keywords or broad_keywords,
+                category=self._classify_term(focus),
+                relaxed_mode=False,
+            )
+            if len(distractors) < 3:
                 distractors = self._build_distractors(
                     answer=focus,
                     excerpt=excerpt_norm,
                     keywords=strict_keywords or broad_keywords,
                     category=self._classify_term(focus),
-                    relaxed_mode=False,
+                    relaxed_mode=True,
                 )
-                if len(distractors) < 3:
-                    distractors = self._build_distractors(
-                        answer=focus,
-                        excerpt=excerpt_norm,
-                        keywords=strict_keywords or broad_keywords,
-                        category=self._classify_term(focus),
-                        relaxed_mode=True,
-                    )
-                if len(distractors) < 3:
-                    continue
-                mc_templates = [
-                    f"Theo đoạn trích của bài '{lesson_title}', thuật ngữ nào được nhắc đến như một trọng tâm nội dung?",
-                    f"Dựa trên đoạn trích của bài '{lesson_title}', khái niệm nào xuất hiện trực tiếp trong nội dung?",
-                    f"Theo nội dung bài '{lesson_title}', đáp án nào khớp nhất với thuật ngữ đã nêu trong đoạn trích?",
-                ]
-                question_text = self._build_reinforcement_mc_prompt(
-                    lesson_title=lesson_title,
-                    instruction_role=str(chunk.get("instruction_role") or "explanation"),
-                    index=index,
-                )
-                correct_answer = focus
-                distractors = distractors[:3]
-                explanation = (
-                    f"Đoạn trích có nhắc trực tiếp '{focus}', vì vậy đây là đáp án phù hợp nhất trong các lựa chọn."
-                )
-            else:
-                statement = self._clean_true_false_statement(
-                    self._summarize_excerpt(excerpt=excerpt, focus_term=focus)
-                )
-                if not self._is_reinforcement_true_false_safe(
-                    statement=statement,
-                    focus=focus,
-                ):
-                    continue
-                tf_templates = [
-                    f"Phát biểu sau là đúng hay sai theo đoạn trích của bài '{lesson_title}'? \"{statement}\"",
-                    f"Theo nội dung bài '{lesson_title}', mệnh đề sau đúng hay sai? \"{statement}\"",
-                ]
-                question_text = tf_templates[index % len(tf_templates)]
-                correct_answer = "True"
-                distractors = ["False"]
-                explanation = (
-                    "Phát biểu được giữ từ nội dung chunk đã chọn, nên được xem là đúng theo ngữ cảnh bài học."
-                )
-                used_true_false += 1
+            if len(distractors) < 3:
+                continue
+            question_text = self._build_reinforcement_mc_prompt(
+                lesson_title=lesson_title,
+                instruction_role=str(chunk.get("instruction_role") or "explanation"),
+                index=index,
+            )
+            correct_answer = focus
+            distractors = distractors[:3]
+            explanation = (
+                f"Đoạn trích có nhắc trực tiếp '{focus}', vì vậy đây là đáp án phù hợp nhất trong các lựa chọn."
+            )
 
             chunk_concepts = lesson_assessment_sizing_service._normalize_concepts(
                 chunk.get("covered_concepts")

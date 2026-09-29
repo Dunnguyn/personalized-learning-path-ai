@@ -12,6 +12,8 @@ This repository includes a development-oriented Docker Compose setup for the bac
 
 ```bash
 copy .env.example .env
+# Edit .env: set SECRET_KEY (32+ random characters) and local MongoDB passwords.
+docker compose config --quiet
 docker compose up --build
 ```
 
@@ -34,6 +36,11 @@ Mongo Express:
 - Username: value of `MONGO_EXPRESS_USERNAME`
 - Password: value of `MONGO_EXPRESS_PASSWORD`
 
+The frontend uses Node 22 and installs the locked dependency set with `npm ci`.
+MongoDB uses the official `mongo:7.0` image; the backend authenticates the root
+user against `admin`. Process/Compose variables take precedence over local `.env`
+files. Backend tests are local-only and are not included in a fresh clone.
+
 ## Important security notes
 
 - Set a real `SECRET_KEY` in `.env` before starting the backend
@@ -46,7 +53,6 @@ Mongo Express:
 ```bash
 docker compose logs -f backend
 docker compose logs -f frontend
-docker compose exec backend python -m pytest backend/tests -q
 docker compose exec frontend npm run build
 docker compose down
 ```

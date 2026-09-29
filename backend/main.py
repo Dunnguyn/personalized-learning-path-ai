@@ -22,11 +22,10 @@ PROJECT_ROOT = BACKEND_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Load backend/.env first, then project-level .env so the repo root file wins.
-# `override=True` ensures stale variables already present in the terminal session
-# do not keep masking values updated in .env files.
-load_dotenv(BACKEND_DIR / ".env", override=True)
-load_dotenv(PROJECT_ROOT / ".env", override=True)
+# Environment variables injected by Docker or the process take precedence.
+# Local dotenv files only fill missing values (backend first, then repo root).
+load_dotenv(BACKEND_DIR / ".env")
+load_dotenv(PROJECT_ROOT / ".env")
 
 # Normalize Mongo env naming so startup validation and DB access stay consistent.
 if not os.getenv("MONGODB_URI") and os.getenv("MONGO_URI"):

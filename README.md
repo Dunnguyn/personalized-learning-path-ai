@@ -51,7 +51,7 @@ Current limitations:
 ### Prerequisites
 
 - Python 3.12 (used by the backend Docker image and local verification environment)
-- Node.js 20.19+ or 22.12+ (required by the locked Vite version; the frontend package engine declaration is older)
+- Node.js 20.19+ or 22.13+ (Docker uses Node 22)
 - MongoDB 7 or newer
 
 ### 1. Backend setup
@@ -122,7 +122,7 @@ Optional development profile with Mongo Express:
 docker compose --profile dev up --build
 ```
 
-See [DOCKER.md](DOCKER.md) for details. Compose uses development settings, fallback passwords, reload, and host-published database ports; deployment hardening and a clean Docker startup still need manual verification. The frontend Dockerfile currently uses Node 18, which does not meet the locked Vite requirement; review that runtime change before relying on Docker.
+See [DOCKER.md](DOCKER.md) for details. Compose uses development settings, fallback passwords, reload, and host-published database ports; deployment hardening and a clean Docker startup still need manual verification.
 
 ## Environment Variables
 
