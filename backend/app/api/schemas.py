@@ -922,6 +922,8 @@ class LessonQuestionGenerationResponse(BaseModel):
     valid_target_concepts: List[str] = Field(default_factory=list)
     rejected_target_concepts: List[str] = Field(default_factory=list)
     concept_coverage_status: Optional[str] = None
+    verification_diagnostics: Optional[Dict[str, Any]] = None
+    final_question_diagnostics: Optional[Dict[str, Any]] = None
     next_action: Dict[str, Any] = Field(default_factory=dict)
     message: str = ""
 
@@ -1276,6 +1278,14 @@ class GeneratedLearningPathLessonResponse(BaseModel):
     adaptation_metadata: Dict[str, Any] = Field(default_factory=dict)
     refinement: Dict[str, Any] = Field(default_factory=dict)
     recommended_chunk_ids: List[str] = Field(default_factory=list)
+    recommended_resource_ids: List[str] = Field(default_factory=list)
+    missing_prerequisites: List[str] = Field(default_factory=list)
+    readiness_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    personalization_score: Optional[float] = Field(default=None, ge=0.0)
+    reason: Optional[str] = None
+    explanation: Optional[str] = None
+    recommendation_reason: Optional[str] = None
+    degraded_mode: bool = False
     status: Optional[str] = None
     last_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     confidence_updated_at: Optional[datetime] = None
@@ -1291,6 +1301,11 @@ class LearningPathGenerateRequest(BaseModel):
     subject_id: str
     goal: Optional[str] = Field(default=None, min_length=3, max_length=500)
     level: Optional[LevelEnum] = None
+    curriculum_depth: Optional[
+        Literal["quality_optimized", "compact", "standard", "comprehensive"]
+    ] = None
+    target_chapter_count: Optional[int] = Field(default=None, ge=4, le=7)
+    target_lesson_count: Optional[int] = Field(default=None, ge=8, le=21)
 
 
 class GeneratedLearningPathResponse(BaseModel):
@@ -1305,6 +1320,18 @@ class GeneratedLearningPathResponse(BaseModel):
     mastery_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     curriculum_source: str = "fallback"
     llm_status: Optional[LLMStatusResponse] = None
+    generation_status: Optional[
+        Literal["generating", "completed", "failed"]
+    ] = "completed"
+    learner_model_version: Optional[str] = None
+    personalization_summary: Dict[str, Any] = Field(default_factory=dict)
+    path_explanations: List[str] = Field(default_factory=list)
+    degraded_mode: bool = False
+    curriculum_size_policy: Dict[str, Any] = Field(default_factory=dict)
+    total_lessons: Optional[int] = Field(default=None, ge=0)
+    total_chapters: Optional[int] = Field(default=None, ge=0)
+    curriculum_depth: Optional[str] = None
+    sizing_reason: Optional[str] = None
     message: str = ""
 
 
@@ -1687,6 +1714,9 @@ class LessonStudyTimeUpdate(BaseModel):
     seconds_spent: int = Field(
         ..., ge=1, le=86400, description="Accumulated study time in seconds"
     )
+    tracked_date: Optional[date] = Field(
+        default=None, description="Client-local date for the tracked study session"
+    )
 
 
 class LessonStudyTimeResponse(BaseModel):
@@ -2011,6 +2041,7 @@ class AskResponse(BaseModel):
     concept_detected: Optional[AskConceptDetectedResponse] = None
     adaptive_info: Optional[AskAdaptiveInfoResponse] = None
     progress_updated: bool = False
+    processing_metrics: Optional[Dict[str, float]] = None
 
 
 # =========================

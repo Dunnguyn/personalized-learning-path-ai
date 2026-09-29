@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import ModalPortal from './ui/ModalPortal';
 
 interface PDFViewerProps {
   isOpen: boolean;
@@ -99,6 +100,7 @@ export default function PDFViewer({
   };
 
   return (
+    <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
       <div className="flex h-[90vh] w-full max-w-5xl flex-col rounded-[10px] bg-white shadow-xl">
         <div className="flex items-start justify-between gap-4 border-b border-[#e4b6d0] p-4">
@@ -294,5 +296,6 @@ export default function PDFViewer({
         </div>
       </div>
     </div>
+    </ModalPortal>
   );
 }

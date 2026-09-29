@@ -18,6 +18,7 @@ import DesktopPageGrid from '../components/layout/DesktopPageGrid';
 import StickyInsightRail from '../components/layout/StickyInsightRail';
 import PDFViewer from '../components/PDFViewer';
 import FeatureCallout from '../components/ui/FeatureCallout';
+import ModalPortal from '../components/ui/ModalPortal';
 import PageHero from '../components/ui/PageHero';
 import PanelHeader from '../components/ui/PanelHeader';
 import SectionIntro from '../components/ui/SectionIntro';
@@ -126,8 +127,10 @@ const DIFFICULTY_OPTIONS: Array<{ value: LearningLevel; label: string }> = [
   { value: 'intermediate', label: 'Trung bình' },
   { value: 'advanced', label: 'Nâng cao' },
 ];
-const STUDY_TIME_MIN_SECONDS = 10;
-const STUDY_TIME_FLUSH_INTERVAL_MS = 15000;
+const STUDY_TIME_MIN_SECONDS = 5;
+const STUDY_TIME_FLUSH_INTERVAL_MS = 5000;
+const formatStudyDateKey = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
 interface MapLessonNodeData {
   lesson: LessonNode;
@@ -267,6 +270,13 @@ const getLessonBadges = (lesson?: LearningPathLesson | null): LessonBadgeMeta[] 
       key: 'locked',
       label: 'Locked by prerequisite',
       className: 'bg-slate-100 text-slate-700',
+    });
+  }
+  if (lesson.degraded_mode) {
+    badges.push({
+      key: 'degraded',
+      label: 'Limited resources',
+      className: 'bg-amber-100 text-amber-700',
     });
   }
   if (suggestedMode === 'reinforce_weaknesses' || weakConcepts.length > 0) {
@@ -681,6 +691,56 @@ const extractLessonResourceTerms = (lesson?: LessonNode | null) => {
   });
 
   return Array.from(tokens).slice(0, 8);
+};
+
+const isMongoObjectId = (value: string) => /^[a-f\d]{24}$/i.test(value.trim());
+
+const getLessonRecommendationResourceIds = (lesson?: LessonNode | null) => {
+  const ids = lesson?.recommended_resource_ids?.length
+    ? lesson.recommended_resource_ids
+    : lesson?.resources || [];
+
+  return Array.from(
+    new Set(
+      ids
+        .map((item) => String(item || '').trim())
+        .filter((item) => item && isMongoObjectId(item)),
+    ),
+  );
+};
+
+const getLessonRecommendationConcepts = (lesson?: LessonNode | null) => {
+  const concepts = [
+    ...(lesson?.target_concepts || []),
+    ...(lesson?.objectives || []),
+    ...extractLessonResourceTerms(lesson),
+  ];
+
+  return Array.from(
+    new Set(
+      concepts
+        .map((item) => cleanLessonTitle(String(item || '')).trim())
+        .filter((item) => item.length >= 3),
+    ),
+  ).slice(0, 8);
+};
+
+const buildLessonChunkRecommendationPayload = (
+  lesson: LessonNode,
+  source: string,
+) => {
+  const concepts = getLessonRecommendationConcepts(lesson);
+
+  return {
+    max_chunks: 6,
+    resource_ids: getLessonRecommendationResourceIds(lesson),
+    metadata: {
+      source,
+      required_concepts: concepts.slice(0, 6),
+      target_concepts: concepts,
+      current_focus_concepts: lesson.target_concepts || concepts.slice(0, 6),
+    },
+  };
 };
 
 const buildQuestionChoices = (question: LessonQuestion) => {
@@ -1138,6 +1198,7 @@ export default function LearningPathDetail() {
   const studyTrackingStartedAtRef = useRef<number | null>(null);
   const trackedLessonIdRef = useRef<string | null>(null);
   const trackedPathIdRef = useRef<string | null>(null);
+  const studySessionSyncedSecondsRef = useRef(0);
   const quizSubmitInFlightRef = useRef(false);
 
   const statePath = (location.state as PathState | null)?.path;
@@ -1361,7 +1422,12 @@ export default function LearningPathDetail() {
           return matched;
         }
       }
-      return lessons.find((lesson) => lesson.status === 'in_progress') || lessons[0];
+      return (
+        lessons.find((lesson) => lesson.status === 'in_progress' && !lesson.is_locked) ||
+        lessons.find((lesson) => lesson.status !== 'complete' && !lesson.is_locked) ||
+        lessons.find((lesson) => !lesson.is_locked) ||
+        lessons[0]
+      );
     });
   }, [lessons]);
 
@@ -1461,10 +1527,10 @@ export default function LearningPathDetail() {
         }
       } catch {
         try {
-          const generated = await learningPathService.recommendLessonChunks(lessonId, {
-            max_chunks: 6,
-            metadata: { source: 'learning_path_detail' },
-          });
+          const generated = await learningPathService.recommendLessonChunks(
+            lessonId,
+            buildLessonChunkRecommendationPayload(selectedLesson, 'learning_path_detail'),
+          );
           if (active) {
             setLessonRecommendedChunks(generated);
             setLessonResourcesError(null);
@@ -1835,10 +1901,10 @@ export default function LearningPathDetail() {
 
     try {
       setLessonResourcesLoading(true);
-      const result = await learningPathService.recommendLessonChunks(selectedLesson.lesson_id, {
-        max_chunks: 6,
-        metadata: { source: 'learning_path_detail_retry' },
-      });
+      const result = await learningPathService.recommendLessonChunks(
+        selectedLesson.lesson_id,
+        buildLessonChunkRecommendationPayload(selectedLesson, 'learning_path_detail_retry'),
+      );
       setLessonRecommendedChunks(result);
       setLessonResourcesError(null);
     } catch (error) {
@@ -2285,6 +2351,16 @@ export default function LearningPathDetail() {
     setScreenMode('lesson');
   }, []);
 
+  const firstActionableLesson = useMemo(
+    () =>
+      lessons.find((lesson) => lesson.status === 'in_progress' && !lesson.is_locked) ||
+      lessons.find((lesson) => lesson.status !== 'complete' && !lesson.is_locked) ||
+      lessons.find((lesson) => !lesson.is_locked) ||
+      lessons[0] ||
+      null,
+    [lessons],
+  );
+
   const handleMapLessonSelect = useCallback(
     (lesson: LessonNode) => {
       if (selectedLesson?.lesson_id === lesson.lesson_id && !lesson.is_locked) {
@@ -2299,7 +2375,11 @@ export default function LearningPathDetail() {
   const mapNodes = useMemo<Node[]>(() => {
     const visibleChapters = chapters
       .map((chapter, chapterIndex) => ({ chapter, chapterIndex }))
-      .filter(({ chapter }) => !collapsedChapterIds.includes(chapter.chapter_id));
+      .filter(
+        ({ chapter }) =>
+          !collapsedChapterIds.includes(chapter.chapter_id) &&
+          (!mapFocusedChapterId || chapter.chapter_id === mapFocusedChapterId),
+      );
 
     const chapterNodes: Node<MapChapterNodeData>[] = visibleChapters.map(
       ({ chapter, chapterIndex }, visibleIndex) => ({
@@ -2357,8 +2437,7 @@ export default function LearningPathDetail() {
           isSelected: selectedLesson?.lesson_id === lesson.lesson_id,
           isInPath:
             selectedLessonVisibleIndex >= 0 &&
-            mapLessons.findIndex((item) => item.lesson_id === lesson.lesson_id) <=
-              selectedLessonVisibleIndex,
+            index <= selectedLessonVisibleIndex,
           onSelect: handleMapLessonSelect,
           onOpenLesson: openLessonScreen,
           onHoverLesson: setHoveredLesson,
@@ -2383,6 +2462,7 @@ export default function LearningPathDetail() {
     collapsedChapterIds,
     handleMapLessonSelect,
     mapLayoutMode,
+    mapFocusedChapterId,
     mapLessons,
     openLessonScreen,
     selectedLesson?.lesson_id,
@@ -2723,7 +2803,7 @@ export default function LearningPathDetail() {
     handleFitCurrentChapter,
   ]);
 
-  const flushTrackedStudyTime = useCallback(async (keepTracking = false) => {
+  const flushTrackedStudyTime = useCallback(async (keepTracking = false, keepalive = false) => {
     const trackedPathId = trackedPathIdRef.current;
     const trackedLessonId = trackedLessonIdRef.current;
     const startedAt = studyTrackingStartedAtRef.current;
@@ -2734,31 +2814,40 @@ export default function LearningPathDetail() {
 
     const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
     if (elapsedSeconds < STUDY_TIME_MIN_SECONDS) {
-      if (keepTracking) {
-        studyTrackingStartedAtRef.current = Date.now();
-      } else {
+      if (!keepTracking) {
         studyTrackingStartedAtRef.current = null;
         trackedLessonIdRef.current = null;
         trackedPathIdRef.current = null;
+        studySessionSyncedSecondsRef.current = 0;
       }
       return;
     }
 
+    if (!keepTracking) {
+      studyTrackingStartedAtRef.current = null;
+      trackedLessonIdRef.current = null;
+      trackedPathIdRef.current = null;
+      studySessionSyncedSecondsRef.current = 0;
+    }
+
+    let didSync = false;
     try {
       await learningPathService.recordLessonStudyTime({
         path_id: trackedPathId,
         lesson_id: trackedLessonId,
         seconds_spent: elapsedSeconds,
+        tracked_date: formatStudyDateKey(new Date()),
+        keepalive,
       });
+      didSync = true;
+      if (keepTracking) {
+        studySessionSyncedSecondsRef.current += elapsedSeconds;
+      }
     } catch (trackingError) {
       console.error('Failed to record lesson study time:', trackingError);
     } finally {
-      if (keepTracking) {
+      if (keepTracking && didSync) {
         studyTrackingStartedAtRef.current = Date.now();
-      } else {
-        studyTrackingStartedAtRef.current = null;
-        trackedLessonIdRef.current = null;
-        trackedPathIdRef.current = null;
       }
     }
   }, []);
@@ -2777,7 +2866,7 @@ export default function LearningPathDetail() {
         trackedLessonId !== activeLessonId ||
         trackedPathId !== activePathId)
     ) {
-      void flushTrackedStudyTime(false);
+      void flushTrackedStudyTime(false, true);
     }
 
     if (
@@ -2790,13 +2879,14 @@ export default function LearningPathDetail() {
       trackedPathIdRef.current = activePathId;
       trackedLessonIdRef.current = activeLessonId;
       studyTrackingStartedAtRef.current = Date.now();
+      studySessionSyncedSecondsRef.current = 0;
     }
   }, [flushTrackedStudyTime, path?.path_id, screenMode, selectedLesson?.lesson_id]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        void flushTrackedStudyTime(false);
+        void flushTrackedStudyTime(false, true);
         return;
       }
 
@@ -2807,6 +2897,10 @@ export default function LearningPathDetail() {
       ) {
         studyTrackingStartedAtRef.current = Date.now();
       }
+    };
+
+    const handlePageHide = () => {
+      void flushTrackedStudyTime(false, true);
     };
 
     const intervalId = window.setInterval(() => {
@@ -2820,10 +2914,12 @@ export default function LearningPathDetail() {
     }, STUDY_TIME_FLUSH_INTERVAL_MS);
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
     return () => {
       window.clearInterval(intervalId);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      void flushTrackedStudyTime(false);
+      window.removeEventListener('pagehide', handlePageHide);
+      void flushTrackedStudyTime(false, true);
     };
   }, [flushTrackedStudyTime]);
 
@@ -3354,10 +3450,8 @@ export default function LearningPathDetail() {
           </button>
           <button
             onClick={() => {
-              const firstActiveLesson =
-                lessons.find((lesson) => lesson.status === 'in_progress') || lessons[0];
-              if (firstActiveLesson) {
-                openLessonScreen(firstActiveLesson);
+              if (firstActionableLesson) {
+                openLessonScreen(firstActionableLesson);
               }
             }}
             className="theme-button px-5 py-3 text-[14px]"
@@ -3532,7 +3626,8 @@ export default function LearningPathDetail() {
             Học liệu gợi ý
           </p>
           <div className="space-y-3">
-            {mapResources.map((resource, index) => (
+            {mapResources.length > 0 ? (
+              mapResources.map((resource, index) => (
               <div
                 key={`${resource.label}-${index}`}
                 className="white-panel flex items-start justify-between gap-3 px-4 py-4"
@@ -3547,7 +3642,12 @@ export default function LearningPathDetail() {
                   {index + 1}
                 </span>
               </div>
-            ))}
+              ))
+            ) : (
+              <div className="rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-4 text-[13px] leading-6 text-amber-900">
+                Chưa có học liệu gợi ý cho bài này. Bạn vẫn có thể mở lesson và tạo quiz bằng fallback nội dung lesson.
+              </div>
+            )}
           </div>
 
           <div className="mt-5 flex flex-col gap-3">
@@ -4270,9 +4370,12 @@ export default function LearningPathDetail() {
             className="mt-5 rounded-[22px] border-[#efdfeb] bg-white shadow-[0_14px_30px_rgba(114,62,83,0.06)]"
             kicker="Vì sao là bài này"
             title={
-              typeof selectedLesson.adaptation_metadata['why_this_lesson_now'] === 'string'
+              selectedLesson.reason ||
+              selectedLesson.explanation ||
+              selectedLesson.recommendation_reason ||
+              (typeof selectedLesson.adaptation_metadata['why_this_lesson_now'] === 'string'
                 ? String(selectedLesson.adaptation_metadata['why_this_lesson_now'])
-                : 'Thứ tự bài học đang được điều chỉnh theo trạng thái học hiện tại của bạn.'
+                : 'Thứ tự bài học đang được điều chỉnh theo trạng thái học hiện tại của bạn.')
             }
             description={
               Array.isArray(selectedLesson.adaptation_metadata['priority_reasons']) &&
@@ -4280,10 +4383,27 @@ export default function LearningPathDetail() {
                 ? selectedLesson.adaptation_metadata['priority_reasons']
                     .map((reason) => String(reason))
                     .join(' • ')
+                : selectedLesson.missing_prerequisites?.length
+                  ? `Cần củng cố prerequisite: ${selectedLesson.missing_prerequisites.join(', ')}.`
                 : 'Path planner đang cân bằng mức vững kiến thức, concept yếu, nhịp học và quỹ thời gian cho bài này.'
             }
             badges={
               <>
+                {typeof selectedLesson.readiness_score === 'number' ? (
+                  <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#8c3451]">
+                    Readiness {Math.round(selectedLesson.readiness_score * 100)}%
+                  </span>
+                ) : null}
+                {typeof selectedLesson.personalization_score === 'number' ? (
+                  <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#8c3451]">
+                    Cá nhân hóa {selectedLesson.personalization_score.toFixed(2)}
+                  </span>
+                ) : null}
+                {selectedLesson.degraded_mode ? (
+                  <span className="rounded-full bg-amber-50 px-3 py-1 text-[11px] font-semibold text-amber-800">
+                    {selectedLesson.degraded_reason || 'Thiếu học liệu gợi ý'}
+                  </span>
+                ) : null}
                 {typeof selectedLesson.adaptation_metadata['priority_score'] === 'number' ? (
                   <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#8c3451]">
                     Ưu tiên {selectedLesson.adaptation_metadata['priority_score'].toFixed(2)}
@@ -4758,6 +4878,11 @@ export default function LearningPathDetail() {
                 {currentGenerationSummary?.fallback_used ? (
                   <span className="rounded-full border border-[#f2d4a8] bg-[#fff6e7] px-3 py-1 text-[11px] font-semibold text-[#8b5f2b]">
                     Có fallback cục bộ
+                  </span>
+                ) : null}
+                {currentGenerationSummary?.degraded_mode ? (
+                  <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-semibold text-amber-800">
+                    {currentGenerationSummary.degraded_reason || 'Đang chạy degraded mode'}
                   </span>
                 ) : null}
                 {currentGenerationSummary?.reused_existing ? (
@@ -5426,6 +5551,7 @@ export default function LearningPathDetail() {
       </div>
 
       {pendingDeletePath && path?.path_id && (
+        <ModalPortal>
         <div
           className="fixed inset-0 z-[90] flex items-center justify-center bg-[#2a1522]/20 px-4 py-6 backdrop-blur-sm"
           onClick={() => {
@@ -5467,6 +5593,7 @@ export default function LearningPathDetail() {
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </DashboardLayout>
   );

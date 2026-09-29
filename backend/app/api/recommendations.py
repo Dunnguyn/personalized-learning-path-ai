@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Query, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
-from datetime import datetime
 import logging
 
 from backend.app.api.schemas import LevelEnum
@@ -17,6 +16,7 @@ from backend.app.services.adaptive_learning_loop_service import (
     adaptive_learning_loop_service,
 )
 from backend.app.services.learner_profile_service import learner_profile_service
+from backend.app.services.recommendation.normalization import normalize_resource_key
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,9 @@ router = APIRouter(prefix="/recommendations", tags=["Recommendations"])
 # =========================
 class ResourceItem(BaseModel):
     resource_id: str | int
+    canonical_resource_key: Optional[str] = None
+    raw_resource_id: Optional[str] = None
+    mongo_id: Optional[str] = None
     title: str
     source: str
     level: str
@@ -38,6 +41,7 @@ class ResourceItem(BaseModel):
     supports_concepts: List[str] = Field(default_factory=list)
     fit_level: Optional[str] = None
     relevance_score: float = Field(ge=0, le=1)
+    score_breakdown: Optional[dict] = None
     estimated_time: Optional[int] = None
     primary_concepts: List[str] = Field(default_factory=list)
     quality_score: Optional[float] = Field(default=None, ge=0, le=1)
@@ -49,6 +53,15 @@ class ResourceItem(BaseModel):
     matched_chunk_preview: Optional[str] = None
     matched_chunk_terms: List[str] = Field(default_factory=list)
     supporting_chunk_count: Optional[int] = None
+    personalization_confidence: Optional[str] = None
+    cold_start: Optional[bool] = None
+    filter_stage_used: Optional[str] = None
+    original_rank: Optional[int] = None
+    rerank_rank: Optional[int] = None
+    rerank_displacement: Optional[int] = None
+    diversity_reason: Optional[str] = None
+    relevance_preserved: Optional[bool] = None
+    resource_key_aliases: List[str] = Field(default_factory=list)
 
 
 class PersonalizedRecommendationResponse(BaseModel):
@@ -62,6 +75,8 @@ class PersonalizedRecommendationResponse(BaseModel):
     progress_percentage: float
     message: str
     reranking_metadata: Optional[dict] = None
+    cold_start: Optional[bool] = None
+    personalization_confidence: Optional[str] = None
 
 
 class ConceptProgressItem(BaseModel):
@@ -129,6 +144,22 @@ def _resolve_requested_user_id(
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
+def _resource_event_payload(payload: RecommendationInteractionRequest | RecommendationFeedbackRequest) -> tuple[object, dict]:
+    metadata = dict(payload.metadata or {})
+    raw_resource_id = payload.resource_id
+    canonical_key = str(
+        metadata.get("canonical_resource_key")
+        or metadata.get("mongo_id")
+        or normalize_resource_key(raw_resource_id)
+    ).strip()
+    if canonical_key:
+        metadata.setdefault("canonical_resource_key", canonical_key)
+    if raw_resource_id is not None:
+        metadata.setdefault("raw_resource_id", str(raw_resource_id))
+    metadata.setdefault("mongo_id", metadata.get("canonical_resource_key"))
+    return (canonical_key or raw_resource_id), metadata
+
+
 # =========================
 # GET PERSONALIZED RECOMMENDATIONS
 # =========================
@@ -182,6 +213,10 @@ def get_personalized_resources(
         )
 
         recommended = result.get("recommended", [])
+        if not include_breakdown:
+            recommended = [dict(item) for item in recommended]
+            for item in recommended:
+                item.pop("score_breakdown", None)
 
         progress_pct = float(result.get("progress_percentage", 0.0) or 0.0)
 
@@ -231,6 +266,8 @@ def get_personalized_resources(
             "progress_percentage": round(progress_pct, 1),
             "message": f"Found {len(recommended)} adaptive recommendations. Progress: {progress_pct:.1f}%",
             "reranking_metadata": result.get("reranking", {}),
+            "cold_start": result.get("cold_start", False),
+            "personalization_confidence": result.get("personalization_confidence"),
         }
 
     except Exception as e:
@@ -260,6 +297,7 @@ def debug_personalized_resources(
     ),
     level: Optional[LevelEnum] = Query(None, description="Current level"),
     limit: int = Query(10, ge=1, le=50, description="Max recommendations"),
+    mode: str = Query("continue_learning", description="Adaptive recommendation mode"),
     enable_reranking: bool = Query(
         True, description="Enable diversity-aware reranking"
     ),
@@ -282,6 +320,7 @@ def debug_personalized_resources(
             level=level_str,
             limit=limit,
             enable_reranking=enable_reranking,
+            mode=mode,
         )
         event_logging_service.log_event(
             "recommendation_debug_viewed",
@@ -409,43 +448,44 @@ def track_recommendation_click(
     current_user=Depends(get_current_user),
 ):
     user_id = str(current_user.get("_id", ""))
+    resource_event_id, event_metadata = _resource_event_payload(payload)
     event_logging_service.log_event(
         "recommendation_clicked",
         user_id=user_id,
         lesson_id=payload.lesson_id,
         concept_id=payload.concept_id,
-        resource_id=payload.resource_id,
+        resource_id=resource_event_id,
         success=True,
         metadata={
             "recommendation_id": payload.recommendation_id,
             "goal": payload.goal,
             "level": payload.level,
-            **(payload.metadata or {}),
+            **event_metadata,
         },
     )
     if payload.resource_id is not None:
         adaptive_learning_loop_service.ingest_learning_event(
             user_id=user_id,
             event_type="recommendation_clicked",
-            resource_id=str(payload.resource_id),
+            resource_id=str(resource_event_id),
             lesson_id=payload.lesson_id,
             concept_ids=[str(payload.concept_id)] if payload.concept_id is not None else [],
             metadata={
                 "goal": payload.goal,
                 "level": payload.level,
-                **(payload.metadata or {}),
+                **event_metadata,
             },
         )
         adaptive_learning_loop_service.ingest_learning_event(
             user_id=user_id,
             event_type="resource_opened",
-            resource_id=str(payload.resource_id),
+            resource_id=str(resource_event_id),
             lesson_id=payload.lesson_id,
             concept_ids=[str(payload.concept_id)] if payload.concept_id is not None else [],
             metadata={
                 "goal": payload.goal,
                 "level": payload.level,
-                **(payload.metadata or {}),
+                **event_metadata,
             },
         )
         event_logging_service.log_event(
@@ -453,13 +493,13 @@ def track_recommendation_click(
             user_id=user_id,
             lesson_id=payload.lesson_id,
             concept_id=payload.concept_id,
-            resource_id=payload.resource_id,
+            resource_id=resource_event_id,
             success=True,
             metadata={
                 "recommendation_id": payload.recommendation_id,
                 "goal": payload.goal,
                 "level": payload.level,
-                **(payload.metadata or {}),
+                **event_metadata,
             },
         )
         feedback_service.process_implicit_feedback(
@@ -467,12 +507,12 @@ def track_recommendation_click(
             signal_type="resource_clicked",
             lesson_id=payload.lesson_id,
             concept_id=payload.concept_id,
-            resource_id=payload.resource_id,
+            resource_id=resource_event_id,
             value=0.35,
             metadata={
                 "goal": payload.goal,
                 "level": payload.level,
-                **(payload.metadata or {}),
+                **event_metadata,
             },
         )
         knowledge_tracing_service.update_from_interaction(
@@ -491,16 +531,17 @@ def track_resource_completed(
     current_user=Depends(get_current_user),
 ):
     user_id = str(current_user.get("_id", ""))
+    resource_event_id, event_metadata = _resource_event_payload(payload)
     adaptive_learning_loop_service.ingest_learning_event(
         user_id=user_id,
         event_type="resource_completed",
-        resource_id=str(payload.resource_id) if payload.resource_id is not None else None,
+        resource_id=str(resource_event_id) if resource_event_id is not None else None,
         lesson_id=payload.lesson_id,
         concept_ids=[str(payload.concept_id)] if payload.concept_id is not None else [],
         metadata={
             "goal": payload.goal,
             "level": payload.level,
-            **(payload.metadata or {}),
+            **event_metadata,
         },
     )
     event_logging_service.log_event(
@@ -508,13 +549,13 @@ def track_resource_completed(
         user_id=user_id,
         lesson_id=payload.lesson_id,
         concept_id=payload.concept_id,
-        resource_id=payload.resource_id,
+        resource_id=resource_event_id,
         success=True,
         metadata={
             "recommendation_id": payload.recommendation_id,
             "goal": payload.goal,
             "level": payload.level,
-            **(payload.metadata or {}),
+            **event_metadata,
         },
     )
     feedback_service.process_implicit_feedback(
@@ -522,12 +563,12 @@ def track_resource_completed(
         signal_type="resource_completed",
         lesson_id=payload.lesson_id,
         concept_id=payload.concept_id,
-        resource_id=payload.resource_id,
+        resource_id=resource_event_id,
         value=0.65,
         metadata={
             "goal": payload.goal,
             "level": payload.level,
-            **(payload.metadata or {}),
+            **event_metadata,
         },
     )
     knowledge_tracing_service.update_from_interaction(
@@ -547,20 +588,21 @@ def submit_recommendation_feedback(
     current_user=Depends(get_current_user),
 ):
     user_id = str(current_user.get("_id", ""))
+    resource_event_id, event_metadata = _resource_event_payload(payload)
 
     event_logging_service.log_event(
         "recommendation_feedback",
         user_id=user_id,
         lesson_id=payload.lesson_id,
         concept_id=payload.concept_id,
-        resource_id=payload.resource_id,
+        resource_id=resource_event_id,
         success=True,
         metadata={
             "recommendation_id": payload.recommendation_id,
             "feedback_type": payload.feedback_type,
             "rating": payload.rating,
             "comment": payload.comment,
-            **(payload.metadata or {}),
+            **event_metadata,
         },
     )
 
@@ -571,7 +613,7 @@ def submit_recommendation_feedback(
             user_id=user_id,
             lesson_id=payload.lesson_id,
             concept_id=payload.concept_id,
-            resource_id=payload.resource_id,
+            resource_id=resource_event_id,
             success=True,
             metadata={
                 "source": "explicit_feedback",
@@ -584,7 +626,7 @@ def submit_recommendation_feedback(
             user_id=user_id,
             lesson_id=payload.lesson_id,
             concept_id=payload.concept_id,
-            resource_id=payload.resource_id,
+            resource_id=resource_event_id,
             success=True,
             metadata={
                 "source": "explicit_feedback",
@@ -598,11 +640,11 @@ def submit_recommendation_feedback(
         value=payload.comment or payload.feedback_type,
         lesson_id=payload.lesson_id,
         concept_id=payload.concept_id,
-        resource_id=payload.resource_id,
+        resource_id=resource_event_id,
         metadata={
             "recommendation_id": payload.recommendation_id,
             "rating": payload.rating,
-            **(payload.metadata or {}),
+            **event_metadata,
         },
     )
 

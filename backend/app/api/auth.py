@@ -324,7 +324,11 @@ def get_current_user(token: str = Depends(_extract_bearer_token)) -> dict:
             issued_at = datetime.fromtimestamp(
                 int(issued_at_timestamp), tz=timezone.utc
             )
-            if issued_at < password_changed_at:
+            # JWT iat is stored with second precision while Mongo datetimes may
+            # include microseconds. A token created immediately after signup or
+            # password update can otherwise compare slightly older than the
+            # stored timestamp and be rejected as expired.
+            if issued_at.timestamp() + 2 < password_changed_at.timestamp():
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Session expired. Please sign in again",

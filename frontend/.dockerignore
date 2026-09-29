@@ -1,0 +1,18 @@
+# Compose builds this directory as its own context.
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+*.tsbuildinfo
+*.log
+.eslintcache
+test-results/
+playwright-report/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

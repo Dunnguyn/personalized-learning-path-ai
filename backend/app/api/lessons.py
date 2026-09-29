@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -398,6 +398,7 @@ def get_next_adaptive_quiz(
                 else {}
             ),
             "adaptive_quiz": True,
+            "question_set_kind": "adaptive",
             "path_id": payload.path_id,
             "target_chunk_ids": config.get("target_chunk_ids", []),
             "target_concepts": config.get("target_concepts", []),

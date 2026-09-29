@@ -13,7 +13,6 @@ Logs are created when:
 
 import logging
 from typing import Dict, List, Any, Optional
-from datetime import datetime
 
 from backend.app.database.mongo import get_db
 from backend.app.repositories.exercise_attempt_repository import (

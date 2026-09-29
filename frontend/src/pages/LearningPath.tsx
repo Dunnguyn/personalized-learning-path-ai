@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { activityIcon, learningJourneyIcon } from '../assets';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import ModalPortal from '../components/ui/ModalPortal';
 import PageHero from '../components/ui/PageHero';
 import { useAuth } from '../contexts/AuthContext';
 import { useSubjects } from '../hooks/useSubjects';
@@ -768,6 +769,7 @@ export default function LearningPath() {
       </div>
 
       {pendingDeletePath && (
+        <ModalPortal>
         <div
           className="fixed inset-0 z-[90] flex items-center justify-center bg-[#2a1522]/20 px-4 py-6 backdrop-blur-sm"
           onClick={() => {
@@ -809,6 +811,7 @@ export default function LearningPath() {
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </DashboardLayout>
   );

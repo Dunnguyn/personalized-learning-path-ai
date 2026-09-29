@@ -31,7 +31,9 @@ __pycache__/
 *$py.class
 .Python
 .pytest_cache/
+pytest-cache-files-*/
 backend/pytest-cache-files-*/
+backend/tests/
 .mypy_cache/
 .ruff_cache/
 .pyre/
@@ -63,6 +65,7 @@ frontend/.vite/
 frontend/coverage/
 frontend/test-results/
 frontend/playwright-report/
+frontend/review_tests/
 .npm/
 .pnpm-store/
 .yarn/
@@ -108,6 +111,12 @@ cache/
 .cache/
 downloads/
 
+# Local benchmark outputs may contain resource IDs, queries, and server errors.
+/performance_evaluation/benchmark_results.csv
+/performance_evaluation/benchmark_auth_smoke.csv
+/performance_evaluation/recommendation_precision_at_5.csv
+/performance_evaluation/system_resource_usage.csv
+
 # =========================
 # Project Artifacts / Diagrams
 # =========================
@@ -132,3 +141,9 @@ downloads/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+docs/
+performance_evaluation/
+review_tests/
+# Local editor settings (keep on this machine only)
+/settings.json

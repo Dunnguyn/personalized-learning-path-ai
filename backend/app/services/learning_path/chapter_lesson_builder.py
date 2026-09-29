@@ -6,6 +6,10 @@ from typing import Any, Dict, List
 
 from bson import ObjectId
 
+from backend.app.services.learning_path.curriculum_sizing import (
+    resolve_curriculum_size_policy,
+)
+
 
 def generate_curriculum_outline(
     service: Any,
@@ -16,11 +20,20 @@ def generate_curriculum_outline(
     planner_input: Dict[str, Any],
     fallback: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
+    size_policy = resolve_curriculum_size_policy(
+        subject_id=str(planner_input.get("subject_id") or ""),
+        goal=goal,
+        level=level,
+        planner_input=planner_input,
+    )
     prompt = service._build_learning_path_outline_prompt_helper(
         subject_label,
         goal,
         level,
-        target_chapter_count=max(2, len(fallback) or 3),
+        target_chapter_count=max(
+            int(size_policy.get("min_chapters") or 2),
+            min(int(size_policy.get("target_chapters") or 3), len(fallback) or 3),
+        ),
         planner_input=planner_input,
     )
     payload = service._generate_curriculum_json_payload(
@@ -29,6 +42,8 @@ def generate_curriculum_outline(
     )
     chapter_items = payload.get("chapters", []) if isinstance(payload, dict) else []
     outline: List[Dict[str, Any]] = []
+    lesson_min = int(size_policy.get("lessons_per_chapter_min") or 2)
+    lesson_max = int(size_policy.get("lessons_per_chapter_max") or 4)
     for index, fallback_chapter in enumerate(fallback):
         item = (
             chapter_items[index]
@@ -51,9 +66,9 @@ def generate_curriculum_outline(
                     or fallback_chapter.get("title")
                     or ""
                 ).strip(),
-                "lesson_count": max(2, min(4, lesson_count)),
-            }
-        )
+                    "lesson_count": max(lesson_min, min(lesson_max, lesson_count)),
+                }
+            )
     return outline
 
 
@@ -70,6 +85,14 @@ def generate_curriculum_chapter(
     prior_chapter_titles: List[str],
     fallback_chapter: Dict[str, Any],
 ) -> Dict[str, Any]:
+    size_policy = resolve_curriculum_size_policy(
+        subject_id=str(planner_input.get("subject_id") or ""),
+        goal=goal,
+        level=level,
+        planner_input=planner_input,
+    )
+    lesson_min = int(size_policy.get("lessons_per_chapter_min") or 2)
+    lesson_max = int(size_policy.get("lessons_per_chapter_max") or 4)
     prompt = service._build_learning_path_chapter_prompt_helper(
         subject_label,
         goal,
@@ -81,13 +104,13 @@ def generate_curriculum_chapter(
         chapter_index=chapter_index,
         total_chapters=total_chapters,
         target_lesson_count=max(
-            2,
+            lesson_min,
             min(
-                4,
+                lesson_max,
                 int(
                     outline_item.get("lesson_count")
                     or len(fallback_chapter.get("lessons") or [])
-                    or 3
+                    or lesson_min
                 ),
             ),
         ),

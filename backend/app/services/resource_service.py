@@ -19,6 +19,7 @@ from backend.app.repositories import (
     ResourceChunkRepository,
     ResourceRepository,
 )
+from backend.app.services.recommendation.normalization import extract_resource_keys
 from backend.app.services.embedding_service import embedding_service, semantic_search
 from backend.app.services.ingestion_service import ingestion_service
 from backend.app.services.resource_quality_service import resource_quality_service
@@ -85,13 +86,14 @@ def _get_completed_resource_identifiers(user_id: Optional[str]) -> Set[str]:
         if lesson_identifier and str(lesson_identifier) not in completed_lesson_ids:
             continue
 
-        numeric_resource_id = signal.get("resource_id")
-        if numeric_resource_id is not None:
-            identifiers.add(str(numeric_resource_id))
-
-        resource_identifier = metadata.get("resource_identifier")
-        if resource_identifier:
-            identifiers.add(str(resource_identifier))
+        identifiers.update(
+            extract_resource_keys(
+                {
+                    "resource_id": signal.get("resource_id"),
+                    "metadata": metadata,
+                }
+            )
+        )
 
     return identifiers
 
@@ -102,18 +104,7 @@ def _is_resource_completed(
     if not completed_identifiers:
         return False
 
-    metadata = resource_document.get("metadata") or {}
-    candidate_identifiers = [
-        resource_document.get("_id"),
-        resource_document.get("resource_id"),
-        metadata.get("resource_identifier"),
-    ]
-
-    for identifier in candidate_identifiers:
-        if identifier is not None and str(identifier) in completed_identifiers:
-            return True
-
-    return False
+    return bool(extract_resource_keys(resource_document) & completed_identifiers)
 
 
 def serialize_mongo(document: Dict[str, Any]) -> Dict[str, Any]:

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 from backend.app.repositories.recommendation_repository import RecommendationRepository
+from backend.app.services.recommendation.normalization import extract_resource_keys
 
 
 class ResourceQualityService:
@@ -88,7 +88,10 @@ class ResourceQualityService:
             return 0.74
         return 0.72
 
-    def _engagement_stats(self, resource_key: str) -> Dict[str, float]:
+    def _engagement_stats(self, resource_keys: list[str]) -> Dict[str, float]:
+        keys = [str(item) for item in resource_keys if str(item).strip()]
+        if not keys:
+            return {"engagement_rate": 0.45, "avg_completion_rate": 0.4, "avg_helpfulness": 0.6}
         since = datetime.now(timezone.utc) - timedelta(days=180)
         pipeline = [
             {
@@ -106,7 +109,7 @@ class ResourceQualityService:
                 }
             },
             {"$project": {"resource_key": {"$toString": "$resource_id"}, "event_type": 1, "metadata": 1}},
-            {"$match": {"resource_key": str(resource_key)}},
+            {"$match": {"resource_key": {"$in": keys}}},
             {
                 "$group": {
                     "_id": "$resource_key",
@@ -144,15 +147,15 @@ class ResourceQualityService:
                 }
             },
         ]
-        row = next(iter(self.repository.event_logs.aggregate(pipeline)), None)
-        if not row:
+        rows = list(self.repository.event_logs.aggregate(pipeline))
+        if not rows:
             return {"engagement_rate": 0.45, "avg_completion_rate": 0.4, "avg_helpfulness": 0.6}
 
-        shown = max(self._safe_float(row.get("shown"), 0.0), 1.0)
-        clicked = self._safe_float(row.get("clicked"), 0.0)
-        completed = self._safe_float(row.get("completed"), 0.0)
-        helpful = self._safe_float(row.get("helpful"), 0.0)
-        negative = self._safe_float(row.get("negative"), 0.0)
+        shown = max(sum(self._safe_float(row.get("shown"), 0.0) for row in rows), 1.0)
+        clicked = sum(self._safe_float(row.get("clicked"), 0.0) for row in rows)
+        completed = sum(self._safe_float(row.get("completed"), 0.0) for row in rows)
+        helpful = sum(self._safe_float(row.get("helpful"), 0.0) for row in rows)
+        negative = sum(self._safe_float(row.get("negative"), 0.0) for row in rows)
         engagement_rate = self._clamp((clicked + 1.5 * completed) / (shown + 2.0))
         avg_completion_rate = self._clamp(completed / max(clicked, 1.0))
         helpful_total = helpful + negative
@@ -201,7 +204,9 @@ class ResourceQualityService:
         if chunk_count <= 0:
             chunk_count = 1 if text else 0
 
-        engagement_stats = self._engagement_stats(resource_key)
+        engagement_stats = self._engagement_stats(
+            sorted(extract_resource_keys(resource) or {resource_key})
+        )
         payload = {
             "resource_id": str(resource_key),
             "content_completeness": round(

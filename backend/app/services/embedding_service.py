@@ -198,6 +198,7 @@ def semantic_search(
     min_score: float = 0.35,
     topic: Optional[str] = None,
     level: Optional[str] = None,
+    timings: Optional[Dict[str, float]] = None,
 ) -> List[Dict[str, Any]]:
     """Semantic search over unified chunk storage."""
     return _retrieval_service.search(
@@ -206,4 +207,5 @@ def semantic_search(
         min_score=min_score,
         topic=topic,
         level=level,
+        timings=timings,
     )

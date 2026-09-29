@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { searchIcon } from '../../assets';
 import { useAuth } from '../../contexts/AuthContext';
+import ModalPortal from '../ui/ModalPortal';
 
 const getRouteMeta = (pathname: string) => {
   if (pathname.startsWith('/learning-path/')) {
@@ -193,6 +194,7 @@ export default function Header() {
       </header>
 
       {isLogoutModalOpen && (
+        <ModalPortal>
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[#2f1d24]/35 px-4 backdrop-blur-sm">
           <div className="w-full max-w-[440px] rounded-[28px] border border-[#f0d7e0] bg-white p-6 shadow-[0_24px_56px_rgba(68,29,46,0.25)]">
             <p className="page-kicker mb-2">Kết thúc phiên</p>
@@ -223,6 +225,7 @@ export default function Header() {
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </>
   );

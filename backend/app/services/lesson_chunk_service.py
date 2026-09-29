@@ -29,6 +29,10 @@ from backend.app.services.recommendation_reranking_service import (
     ReRankingConfig,
     RecommendationRerankingService,
 )
+from backend.app.services.recommendation.normalization import (
+    build_concept_match_context,
+    normalize_concept_text,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -117,6 +121,13 @@ class LessonChunkService:
         "glossary",
         "references",
         "bibliography",
+        "copyright",
+        "license",
+        "author bio",
+        "about the author",
+        "navigation",
+        "footer",
+        "header",
     )
 
     def __init__(self) -> None:
@@ -217,7 +228,10 @@ class LessonChunkService:
             title=str(lesson.get("title") or ""),
             summary=str(lesson.get("summary") or ""),
             objectives=[str(item) for item in lesson.get("learning_objectives") or []],
-            keywords=[str(item) for item in lesson.get("keywords") or []],
+            keywords=[
+                *[str(item) for item in lesson.get("target_concepts") or []],
+                *[str(item) for item in lesson.get("keywords") or []],
+            ],
             chapter_title=str(chapter.get("title") or ""),
             chapter_description=str(chapter.get("description") or ""),
             subject_title=str(subject.get("title") or ""),
@@ -233,6 +247,7 @@ class LessonChunkService:
             *payload.get("vietnamese_terms", []),
             str(lesson.get("title") or ""),
             str(lesson.get("summary") or ""),
+            *[str(item) for item in lesson.get("target_concepts") or []],
             *[str(item) for item in lesson.get("learning_objectives") or []],
             *[str(item) for item in lesson.get("keywords") or []],
         ]:
@@ -258,9 +273,10 @@ class LessonChunkService:
         title = str(lesson.get("title") or "").strip()
         summary = str(lesson.get("summary") or "").strip()
         keywords = [str(item) for item in lesson.get("keywords") or []]
+        target_concepts = [str(item) for item in lesson.get("target_concepts") or []]
 
         title_focus = title.split(":", 1)[1] if ":" in title else title
-        for source in [title_focus, *keywords]:
+        for source in [*target_concepts, title_focus, *keywords]:
             cleaned_source = str(source or "").replace("/", ",").replace(";", ",")
             raw_candidates.extend(
                 part.strip() for part in re.split(r",|\band\b|\bvà\b", cleaned_source, flags=re.IGNORECASE)
@@ -322,6 +338,7 @@ class LessonChunkService:
         raw_sources = [
             str(lesson.get("title") or ""),
             str(lesson.get("summary") or ""),
+            *[str(item) for item in lesson.get("target_concepts") or []],
             *[str(item) for item in lesson.get("learning_objectives") or []],
             *[str(item) for item in lesson.get("keywords") or []],
             *payload.get("english_terms", []),
@@ -450,7 +467,19 @@ class LessonChunkService:
             re.findall(r"(?<=[.!?])\s+[A-ZÀ-ỸA-Z]", content or "")
         )
         keyword_noise = float(
-            any(noise in normalized_content for noise in ("table of contents", "glossary", "bibliography"))
+            any(
+                noise in normalized_content
+                for noise in (
+                    "table of contents",
+                    "glossary",
+                    "bibliography",
+                    "references",
+                    "copyright",
+                    "license",
+                    "all rights reserved",
+                    "about the author",
+                )
+            )
             or " index " in f" {normalized_content} "
             or normalized_resource_text.startswith("index")
         )
@@ -466,6 +495,24 @@ class LessonChunkService:
         )
         if sentence_hits >= 2:
             score -= 0.18
+        return round(cls._clamp(score), 4)
+
+    @classmethod
+    def _content_density_score(cls, content: str) -> float:
+        tokens = re.findall(r"\w+", content or "")
+        if not tokens:
+            return 0.0
+        lines = [line.strip() for line in (content or "").splitlines() if line.strip()]
+        empty_bullets = len(
+            re.findall(r"^\s*(?:[-*]|\d+\.)\s*$", content or "", flags=re.MULTILINE)
+        )
+        links = len(re.findall(r"https?://|www\.", content or ""))
+        sentence_hits = len(re.findall(r"(?<=[.!?])\s+", content or ""))
+        score = (
+            0.45 * cls._clamp(len(tokens) / 90.0)
+            + 0.35 * cls._clamp(sentence_hits / 4.0)
+            + 0.20 * (1.0 - cls._clamp((empty_bullets + links) / max(len(lines), 1)))
+        )
         return round(cls._clamp(score), 4)
 
     def _passes_relevance_gate(
@@ -940,25 +987,22 @@ class LessonChunkService:
             anchor_phrases=anchor_phrases,
         )
         normalized_required_concepts = [
-            self._normalize_text(item) for item in required_concepts if self._normalize_text(item)
+            normalize_concept_text(item)
+            for item in required_concepts
+            if normalize_concept_text(item)
         ]
         concept_haystack = self._normalize_text(
             f"{self._resource_text(metadata)} {content}"
         )
-        matched_required_concepts = [
-            concept
-            for concept in normalized_required_concepts
-            if concept in concept_haystack
-        ]
-        required_concept_match_score = round(
-            self._clamp(
-                len(matched_required_concepts)
-                / max(min(len(normalized_required_concepts), 2), 1)
-            ),
-            4,
+        concept_context = build_concept_match_context(
+            normalized_required_concepts,
+            concept_haystack,
         )
+        matched_required_concepts = list(concept_context.get("matched_concepts") or [])
+        required_concept_match_score = round(float(concept_context.get("concept_match_score") or 0.0), 4)
         index_like_score = self._index_like_score(content=content, metadata=metadata)
         structural_noise = self._is_structural_noise_chunk(content=content, metadata=metadata)
+        content_density_score = self._content_density_score(content)
 
         semantic_score = round(self._cosine(query_vector, chunk_vector), 6)
         lexical_score = round(self._lexical_score(query_terms, content), 6)
@@ -984,6 +1028,12 @@ class LessonChunkService:
             "questionability_score": questionability_score,
             "anchor_match_score": anchor_match_score,
             "index_like_score": index_like_score,
+            "content_density_score": content_density_score,
+            "concept_explicitness_score": concept_explicitness_score,
+            "noise_penalty": round(
+                self._clamp(index_like_score * 0.55 + (1.0 - content_density_score) * 0.12),
+                4,
+            ),
         }
         score = self._score_chunk(
             semantic_score=semantic_score,
@@ -998,6 +1048,8 @@ class LessonChunkService:
                 self._clamp(score - min(0.45, index_like_score * 0.55)),
                 6,
             )
+        if content_density_score < 0.22:
+            score = round(self._clamp(score - 0.18), 6)
         if normalized_required_concepts:
             if required_concept_match_score <= 0.0:
                 score = round(self._clamp(score - 0.3), 6)
@@ -1273,6 +1325,35 @@ class LessonChunkService:
                 if concept not in ordered_covered_required_concepts
             ],
         }
+        role_coverage_rate = self._clamp(
+            (len(desired_roles) - len(sequence_metadata["missing_roles"]))
+            / max(len(desired_roles), 1)
+        )
+        concept_coverage_rate = self._clamp(
+            len(ordered_covered_required_concepts)
+            / max(len(normalized_required_concepts), 1)
+        )
+        avg_anchor = (
+            sum(float(item.get("anchor_match_score") or 0.0) for item in finalized)
+            / max(len(finalized), 1)
+        )
+        alignment_score = self._clamp(
+            0.45 * concept_coverage_rate + 0.35 * role_coverage_rate + 0.20 * avg_anchor
+        )
+        sequence_metadata.update(
+            {
+                "alignment_score": round(alignment_score, 4),
+                "concept_coverage_rate": round(concept_coverage_rate, 4),
+                "role_coverage_rate": round(role_coverage_rate, 4),
+                "low_alignment_reason": (
+                    "missing_required_concepts"
+                    if sequence_metadata["missing_required_concepts"]
+                    else "missing_instructional_roles"
+                    if sequence_metadata["missing_roles"]
+                    else None
+                ),
+            }
+        )
         return finalized, sequence_metadata
 
     def _hydrate_resource_metadata(
@@ -1540,6 +1621,22 @@ class LessonChunkService:
             required_concepts=required_concepts,
         )
         hydrated = self._hydrate_resource_metadata(selected)
+        low_alignment = float(sequence_metadata.get("alignment_score") or 0.0) < 0.45
+        low_quality_selection = bool(hydrated) and all(
+            float((item.get("score_breakdown") or {}).get("noise_penalty") or 0.0) >= 0.35
+            or bool(item.get("structural_noise"))
+            for item in hydrated
+        )
+        degraded_mode = low_alignment or low_quality_selection or not hydrated
+        degraded_reason = (
+            "low_quality_chunks"
+            if low_quality_selection
+            else "low_lesson_alignment"
+            if low_alignment
+            else "no_recommended_chunks"
+            if not hydrated
+            else None
+        )
         score_map = {
             item["chunk_id"]: round(float(item.get("score", 0.0)), 6) for item in hydrated
         }
@@ -1585,6 +1682,10 @@ class LessonChunkService:
                         item["chunk_id"]: item.get("cluster_id") for item in hydrated
                     },
                     "sequence_metadata": sequence_metadata,
+                    "alignment_score": sequence_metadata.get("alignment_score"),
+                    "concept_coverage_rate": sequence_metadata.get("concept_coverage_rate"),
+                    "degraded_mode": degraded_mode,
+                    "degraded_reason": degraded_reason,
                 },
                 "sequence_metadata": sequence_metadata,
                 "recommended_chunks": hydrated,

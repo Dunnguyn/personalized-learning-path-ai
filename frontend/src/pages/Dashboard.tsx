@@ -168,39 +168,89 @@ const getResourceSourceLabel = (source?: string | null) => {
     .split('/')[0];
 };
 
+const CONCEPT_DISPLAY_OVERRIDES: Record<string, string> = {
+  l_p_tr_nh_python: 'Lập trình Python',
+  lap_trinh_python: 'Lập trình Python',
+  python_loops: 'Vòng lặp Python',
+  vong_lap_python: 'Vòng lặp Python',
+};
+
+const CONCEPT_TITLE_CASE_OVERRIDES: Record<string, string> = {
+  ai: 'AI',
+  api: 'API',
+  css: 'CSS',
+  fastapi: 'FastAPI',
+  html: 'HTML',
+  js: 'JavaScript',
+  json: 'JSON',
+  oop: 'OOP',
+  python: 'Python',
+  sql: 'SQL',
+  ui: 'UI',
+  ux: 'UX',
+};
+
+const normalizeConceptLookupText = (value?: string | null) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9+#]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_');
+
+const humanizeConceptKey = (value: string) =>
+  value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => {
+      const normalizedWord = word.toLowerCase();
+      return (
+        CONCEPT_TITLE_CASE_OVERRIDES[normalizedWord] ||
+        `${normalizedWord.slice(0, 1).toUpperCase()}${normalizedWord.slice(1)}`
+      );
+    })
+    .join(' ');
+
 const formatConceptDisplay = (concept?: string | null, subjects: SubjectOption[] = []) => {
   if (!concept) {
     return null;
   }
 
-  const normalized = concept.trim().toLowerCase();
+  const trimmedConcept = concept.trim();
+  const normalized = normalizeConceptLookupText(trimmedConcept);
   if (!normalized) {
     return null;
   }
 
-  const matchedSubject = subjects.find(
-    (subject) =>
-      normalized === subject.id ||
-      normalized === (subject.slug || '').toLowerCase() ||
-      normalized.includes(subject.id) ||
-      normalized.includes(
-        subject.label
-          .toLowerCase()
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '')
-          .replace(/\s+/g, '_'),
-      ),
-  );
+  const overrideLabel = CONCEPT_DISPLAY_OVERRIDES[normalized];
+  if (overrideLabel) {
+    return overrideLabel;
+  }
+
+  const matchedSubject = subjects.find((subject) => {
+    const subjectKeys = [
+      subject.id,
+      subject.slug,
+      subject.label,
+      subject.goal,
+    ]
+      .map((value) => normalizeConceptLookupText(value))
+      .filter(Boolean);
+
+    return subjectKeys.some(
+      (key) => normalized === key || normalized.includes(key) || key.includes(normalized),
+    );
+  });
 
   if (matchedSubject) {
     return matchedSubject.label;
   }
 
-  if (/^[a-z](?:_[a-z])+/.test(normalized)) {
-    return null;
-  }
-
-  const cleaned = concept
+  const cleaned = trimmedConcept
     .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -209,7 +259,7 @@ const formatConceptDisplay = (concept?: string | null, subjects: SubjectOption[]
     return null;
   }
 
-  return cleaned.replace(/\b\w/g, (char) => char.toUpperCase());
+  return humanizeConceptKey(cleaned);
 };
 
 const getLevelLabel = (level?: string | null) => {
@@ -294,6 +344,17 @@ const buildRecommendationReasons = (
 
   return Array.from(new Set(reasons)).slice(0, 4);
 };
+
+const buildResourceRecommendationKey = (
+  resource: RecommendedResourceItem,
+  index: number,
+) =>
+  [
+    String(resource.resource_id || 'resource'),
+    String(resource.rank_position ?? index),
+    resource.title || resource.topic || 'untitled',
+    String(index),
+  ].join('-');
 
 interface AdaptiveInsightMetrics {
   targetMastery: number | null;
@@ -516,6 +577,42 @@ const addDays = (date: Date, amount: number) => {
   return nextDate;
 };
 
+const getWeekStart = (date: Date) => {
+  const weekStart = new Date(date);
+  const day = weekStart.getDay();
+  const daysFromMonday = day === 0 ? 6 : day - 1;
+  weekStart.setDate(weekStart.getDate() - daysFromMonday);
+  weekStart.setHours(0, 0, 0, 0);
+  return weekStart;
+};
+
+const getStudyWeekRange = (offset: number) => {
+  const start = addDays(getWeekStart(new Date()), offset * 7);
+  return {
+    start,
+    end: addDays(start, 6),
+  };
+};
+
+const formatDayMonth = (date: Date) =>
+  `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`;
+
+const formatMonthRangeLabel = (start: Date, end: Date) => {
+  const startMonth = start.getMonth() + 1;
+  const endMonth = end.getMonth() + 1;
+  return startMonth === endMonth ? `Thg ${startMonth}` : `Thg ${startMonth}-${endMonth}`;
+};
+
+const getStudyWeekLabel = (offset: number, start: Date, end: Date) => {
+  if (offset === 0) {
+    return 'Tuần này';
+  }
+  if (offset === -1) {
+    return 'Tuần trước';
+  }
+  return `${formatDayMonth(start)} - ${formatDayMonth(end)}`;
+};
+
 const getWeekdayLabel = (date: Date) => {
   const day = date.getDay();
   if (day === 0) {
@@ -550,8 +647,31 @@ function LearnerDashboard() {
     useState<ResourceRecommendationMode>('continue_learning');
   const [learningPaths, setLearningPaths] = useState<LearningPath[]>([]);
   const [studySummary, setStudySummary] = useState<StudySummary | null>(null);
+  const [studyWeekOffset, setStudyWeekOffset] = useState(0);
+  const [isStudySummaryLoading, setIsStudySummaryLoading] = useState(false);
   const [isProgressPanelOpen, setIsProgressPanelOpen] = useState(false);
   const [isSendingRecommendationFeedback, setIsSendingRecommendationFeedback] = useState(false);
+
+  const fetchStudySummary = useCallback(async () => {
+    if (!user) {
+      return;
+    }
+
+    const { start, end } = getStudyWeekRange(studyWeekOffset);
+    try {
+      setIsStudySummaryLoading(true);
+      const studyTimeData = await learningPathService.getStudySummary({
+        startDate: formatDayKey(start),
+        endDate: formatDayKey(end),
+        days: 7,
+      });
+      setStudySummary(studyTimeData);
+    } catch (studySummaryError) {
+      console.error('Error fetching study summary:', studySummaryError);
+    } finally {
+      setIsStudySummaryLoading(false);
+    }
+  }, [studyWeekOffset, user]);
 
   const fetchDashboardData = useCallback(async () => {
     if (!user) {
@@ -562,19 +682,17 @@ function LearnerDashboard() {
       setLoading(true);
       setError(null);
 
-      const [progressData, confidenceData, recommendationsData, pathHistory, studyTimeData] =
+      const [progressData, confidenceData, recommendationsData, pathHistory] =
         await Promise.all([
           dashboardService.getProgressOverview(user.user_id),
           dashboardService.getConfidenceOverview(user.user_id),
           dashboardService.getAdaptiveRecommendations(user.user_id),
           learningPathService.getLearningPathHistory(),
-          learningPathService.getStudySummary(),
         ]);
 
       setProgressOverview(progressData);
       setConfidenceOverview(confidenceData);
       setRecommendations(recommendationsData);
-      setStudySummary(studyTimeData);
 
       let pathsWithDetails: LearningPath[] = [];
       if (pathHistory && pathHistory.length > 0) {
@@ -749,6 +867,14 @@ function LearnerDashboard() {
 
     void fetchDashboardData();
   }, [fetchDashboardData, navigate, user]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    void fetchStudySummary();
+  }, [fetchStudySummary, user]);
 
   const handleViewResources = (query: string, recommendation?: AdaptiveRecommendation) => {
     if (recommendation) {
@@ -963,6 +1089,9 @@ function LearnerDashboard() {
   const weeklyComparison = progressOverview?.weekly_comparison_percent || 0;
   const confidenceLevel = confidenceOverview?.level || 'beginner';
   const topRecommendation = recommendations[0];
+  const topRecommendationConceptLabel =
+    formatConceptDisplay(topRecommendation?.concept_name, subjects) ||
+    topRecommendation?.concept_name;
   const topResourceRecommendation = personalizedResources[0];
   const adaptivePrimaryItem =
     adaptiveRecommendation?.items?.[0] &&
@@ -972,6 +1101,8 @@ function LearnerDashboard() {
       : null;
   const adaptiveSnapshot = adaptiveExplanation?.snapshot || null;
   const weakConcepts = buildWeakConcepts(adaptiveSnapshot, adaptiveExplanation, subjects);
+  const nextLearningFocusLabel =
+    weakConcepts[0]?.label || topRecommendationConceptLabel || 'Tiếp tục lesson hiện tại';
   const latestRefinement = getLatestRefinementForPath(
     refinementActions,
     adaptiveExplanation?.path_id || null,
@@ -1046,13 +1177,14 @@ function LearnerDashboard() {
     : estimatedDailyStudyHours;
   const today = new Date();
   const todayKey = formatDayKey(today);
+  const studyWeekRange = getStudyWeekRange(studyWeekOffset);
   const studyCalendarSeed = Array.from({ length: 7 }, (_, index) => {
-    const date = addDays(today, index - 6);
+    const date = addDays(studyWeekRange.start, index);
     const dayKey = formatDayKey(date);
     return {
       key: dayKey,
       label: getWeekdayLabel(date),
-      dateLabel: `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`,
+      dateLabel: formatDayMonth(date),
       hours: dailyStudyHours[dayKey] || 0,
       intensity: 0,
       isToday: dayKey === todayKey,
@@ -1067,7 +1199,12 @@ function LearnerDashboard() {
         ? Math.max(Math.round((item.hours / maxDailyStudyHours) * 100), 12)
         : 0,
   }));
-  const currentMonthLabel = `Thg ${today.getMonth() + 1}`;
+  const currentMonthLabel = formatMonthRangeLabel(studyWeekRange.start, studyWeekRange.end);
+  const studyWeekLabel = getStudyWeekLabel(
+    studyWeekOffset,
+    studyWeekRange.start,
+    studyWeekRange.end,
+  );
   return (
     <DashboardLayout>
       <DesktopPageGrid className="dashboard-shell-grid desktop-1440-dashboard">
@@ -1118,7 +1255,7 @@ function LearnerDashboard() {
               </div>
               <div className="mt-5 rounded-[22px] border border-[#f0e2e8] bg-[#fff8fb] px-5 py-5">
                 <p className="line-clamp-2 text-[28px] font-semibold tracking-[-0.05em] text-[#141217]">
-                  {weakConcepts[0]?.label || topRecommendation?.concept_name || 'Tiếp tục lesson hiện tại'}
+                  {nextLearningFocusLabel}
                 </p>
                 <p className="mt-2 text-[13px] leading-5 text-[#6f6862]">
                   Tiến độ: {stats.progress}% • {weeklyMomentumLabel}
@@ -1300,17 +1437,63 @@ function LearnerDashboard() {
                       {formatHoursShort(cumulativeStudyHours)}
                     </p>
                   </div>
-                  <button className="theme-button-secondary rounded-full px-5 py-2.5 text-[13px]">
-                    {currentMonthLabel}
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      aria-label="Xem tuần trước"
+                      onClick={() => setStudyWeekOffset((offset) => offset - 1)}
+                      className="flex h-10 w-10 items-center justify-center rounded-full border border-[#f0dfe6] bg-white text-[#8c3451] transition hover:-translate-y-0.5 hover:bg-[#fff6fa]"
+                    >
+                      <svg
+                        viewBox="0 0 20 20"
+                        className="h-4 w-4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M12.5 4.5 7 10l5.5 5.5" />
+                      </svg>
+                    </button>
+                    <span className="theme-button-secondary rounded-full px-5 py-2.5 text-[13px]">
+                      {currentMonthLabel}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Xem tuần sau"
+                      onClick={() => setStudyWeekOffset((offset) => Math.min(offset + 1, 0))}
+                      disabled={studyWeekOffset >= 0}
+                      className="flex h-10 w-10 items-center justify-center rounded-full border border-[#f0dfe6] bg-white text-[#8c3451] transition hover:-translate-y-0.5 hover:bg-[#fff6fa] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:translate-y-0"
+                    >
+                      <svg
+                        viewBox="0 0 20 20"
+                        className="h-4 w-4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M7.5 4.5 13 10l-5.5 5.5" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-5 flex items-center justify-between text-[13px] text-[#6f6862]">
-                  <span>7 ngày học gần đây</span>
-                  <span className="whitespace-nowrap">{formatHoursShort(weeklyStudyHours)}</span>
+                  <span>{studyWeekLabel}</span>
+                  <span className="whitespace-nowrap">
+                    {isStudySummaryLoading ? 'Đang tải' : formatHoursShort(weeklyStudyHours)}
+                  </span>
                 </div>
 
-                <div className="mt-6 flex h-[236px] items-end justify-between gap-3">
+                <div
+                  className={`mt-6 flex h-[236px] items-end justify-between gap-3 transition-opacity ${
+                    isStudySummaryLoading ? 'opacity-60' : 'opacity-100'
+                  }`}
+                  aria-busy={isStudySummaryLoading}
+                >
                   {calendarDays.map((day) => (
                     <div key={day.key} className="flex min-w-0 flex-1 flex-col items-center gap-2.5">
                       <div
@@ -1950,9 +2133,9 @@ function LearnerDashboard() {
                                   Boolean(concept.label),
                               )
                               .slice(0, 3)
-                              .map((concept) => (
+                              .map((concept, conceptIndex) => (
                                 <span
-                                  key={`${topResourceRecommendation.resource_id}-${concept.key}`}
+                                  key={`${buildResourceRecommendationKey(topResourceRecommendation, 0)}-${concept.key}-${conceptIndex}`}
                                   className="demo-pill"
                                 >
                                   {concept.label}
@@ -2007,7 +2190,7 @@ function LearnerDashboard() {
                         <div className="dashboard-resource-highlight">
                           <PanelHeader
                             kicker="Khái niệm nên học tiếp"
-                            title={topRecommendation.concept_name}
+                            title={topRecommendationConceptLabel || topRecommendation.concept_name}
                             titleClassName="dashboard-resource-title mt-3 text-[30px] leading-[1.05] tracking-[-0.05em] text-[#17141b]"
                             description={
                               topRecommendation.reasons?.[0] ||
@@ -2019,7 +2202,10 @@ function LearnerDashboard() {
                         <div className="mt-6 flex flex-wrap gap-3">
                           <button
                             onClick={() =>
-                              handleViewResources(topRecommendation.concept_name, topRecommendation)
+                              handleViewResources(
+                                topRecommendationConceptLabel || topRecommendation.concept_name,
+                                topRecommendation,
+                              )
                             }
                             className="theme-button"
                           >
@@ -2027,7 +2213,10 @@ function LearnerDashboard() {
                           </button>
                           <button
                             onClick={() =>
-                              handleAskAIForGoal(topRecommendation.concept_name, confidenceLevel)
+                              handleAskAIForGoal(
+                                topRecommendationConceptLabel || topRecommendation.concept_name,
+                                confidenceLevel,
+                              )
                             }
                             className="theme-button-secondary"
                           >
@@ -2069,9 +2258,9 @@ function LearnerDashboard() {
                       }
                     />
                     <div className="dashboard-alt-resource-grid mt-3">
-                      {alternativeResourceRecommendations.map((resource) => (
+                      {alternativeResourceRecommendations.map((resource, resourceIndex) => (
                         <button
-                          key={String(resource.resource_id)}
+                          key={buildResourceRecommendationKey(resource, resourceIndex + 1)}
                           type="button"
                           onClick={() => handleViewPersonalizedResource(resource)}
                           className="dashboard-alt-resource-card"
@@ -2109,9 +2298,9 @@ function LearnerDashboard() {
                                   Boolean(concept.label),
                               )
                               .slice(0, 2)
-                              .map((concept) => (
+                              .map((concept, conceptIndex) => (
                                 <span
-                                  key={`${resource.resource_id}-${concept.key}`}
+                                  key={`${buildResourceRecommendationKey(resource, resourceIndex + 1)}-${concept.key}-${conceptIndex}`}
                                   className="rounded-full bg-white px-3 py-1 text-[11px] font-medium text-[#8c3451]"
                                 >
                                   {concept.label}

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict
 
+from backend.app.services.recommendation.normalization import extract_resource_keys
+
 
 def build_explanation(
     service: Any,
@@ -64,6 +66,9 @@ def build_recommendation_payload(
 
     payload = {
         "resource_id": serialized_resource_id,
+        "canonical_resource_key": service.repository.get_resource_key(resource),
+        "raw_resource_id": str(resource.get("resource_id")) if resource.get("resource_id") is not None else None,
+        "mongo_id": str(resource.get("_id")) if resource.get("_id") is not None else None,
         "title": str(resource.get("title") or ""),
         "source": str(resource.get("source") or "unknown"),
         "level": str(resource.get("level") or level),
@@ -76,6 +81,13 @@ def build_recommendation_payload(
         "relevance_score": round(service._clamp(final_score), 4),
         "score_breakdown": components,
         "retrieval_signals": item.get("chunk_signal", {}),
+        "filter_stage_used": item.get("filter_stage_used"),
+        "original_rank": item.get("original_rank"),
+        "rerank_rank": item.get("rerank_rank"),
+        "rerank_displacement": item.get("displacement"),
+        "diversity_reason": item.get("diversity_reason"),
+        "relevance_preserved": item.get("relevance_preserved"),
+        "resource_key_aliases": sorted(extract_resource_keys(resource)),
         "rank_position": rank,
         "recommendation_mode": mode,
         "estimated_time": explanation["estimated_time"],
@@ -116,7 +128,7 @@ def persist_explanation_record(
     service.explanation_collection.update_one(
         {
             "user_id": str(user_id),
-            "resource_key": str(resource_identifier),
+            "resource_key": str(payload.get("canonical_resource_key") or resource_identifier),
             "mode": mode,
         },
         {"$set": {**payload, "updated_at": datetime.utcnow()}},

@@ -7,7 +7,13 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from bson import ObjectId
+
 from backend.app.database.mongo import get_db
+from backend.app.services.learning_path.curriculum_sizing import (
+    normalize_curriculum_size,
+    resolve_curriculum_size_policy,
+)
 
 
 SUBJECT_CATALOG: Dict[str, str] = {
@@ -18,12 +24,64 @@ SUBJECT_CATALOG: Dict[str, str] = {
     "web": "Web Development",
 }
 
+MONGO_OBJECT_ID_RE = re.compile(r"^[a-f0-9]{24}$", re.IGNORECASE)
+
 LEARNING_PATH_GOLDEN_EXAMPLES_ENABLED = (
     os.getenv("LEARNING_PATH_GOLDEN_EXAMPLES_ENABLED", "true").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 
 _GOLDEN_CURRICULUM_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
+    "python_data_analysis": [
+        {
+            "title": "Python Foundations for Data Analysis",
+            "lessons": [
+                {"title": "Set up Python for analysis", "summary": "Prepare Python, notebooks, and packages for data work."},
+                {"title": "Variables and data types for datasets", "summary": "Use Python values and types in small data-processing tasks."},
+                {"title": "Control flow for cleaning logic", "summary": "Apply conditions and loops to inspect and transform data."},
+            ],
+        },
+        {
+            "title": "Working with Tabular Data",
+            "lessons": [
+                {"title": "Lists, dictionaries, and records", "summary": "Represent rows and fields with core Python data structures."},
+                {"title": "Read CSV and text files", "summary": "Load local datasets and handle basic file errors."},
+                {"title": "Clean missing and inconsistent values", "summary": "Prepare raw data for reliable analysis."},
+            ],
+        },
+        {
+            "title": "Pandas DataFrames",
+            "lessons": [
+                {"title": "Create and inspect DataFrames", "summary": "Use pandas to view columns, rows, and dataset shape."},
+                {"title": "Filter, sort, and select data", "summary": "Extract the rows and columns needed for analysis questions."},
+                {"title": "Group and aggregate metrics", "summary": "Summarize data with groupby, counts, and numeric aggregations."},
+            ],
+        },
+        {
+            "title": "Exploratory Data Analysis",
+            "lessons": [
+                {"title": "Ask analysis questions", "summary": "Turn a goal into measurable questions and dataset checks."},
+                {"title": "Compute descriptive statistics", "summary": "Use averages, distributions, and outliers to understand data."},
+                {"title": "Find patterns and segments", "summary": "Compare groups and detect useful trends in the dataset."},
+            ],
+        },
+        {
+            "title": "Data Visualization",
+            "lessons": [
+                {"title": "Choose charts for analysis", "summary": "Match chart types to comparisons, trends, and distributions."},
+                {"title": "Build plots with pandas and matplotlib", "summary": "Create readable charts from DataFrame results."},
+                {"title": "Explain insights with visuals", "summary": "Use chart titles and annotations to communicate findings."},
+            ],
+        },
+        {
+            "title": "Analysis Project",
+            "lessons": [
+                {"title": "Plan a data analysis notebook", "summary": "Define the dataset, questions, cleaning steps, and outputs."},
+                {"title": "Complete an end-to-end analysis", "summary": "Load, clean, analyze, and visualize a realistic dataset."},
+                {"title": "Present conclusions and next steps", "summary": "Summarize findings, limitations, and recommended follow-up work."},
+            ],
+        },
+    ],
     "python_backend": [
         {
             "title": "Python Foundations and Syntax",
@@ -78,6 +136,56 @@ _GOLDEN_CURRICULUM_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
 }
 
 _GOLDEN_CURRICULUM_EXAMPLES_VI: Dict[str, List[Dict[str, Any]]] = {
+    "python_data_analysis": [
+        {
+            "title": "Nen Tang Python Cho Phan Tich Du Lieu",
+            "lessons": [
+                {"title": "Thiet lap moi truong Python phan tich", "summary": "Chuan bi Python, notebook va thu vien can thiet cho cong viec du lieu."},
+                {"title": "Bien va kieu du lieu trong bai toan du lieu", "summary": "Dung gia tri va kieu du lieu Python trong cac tac vu xu ly du lieu nho."},
+                {"title": "Dieu kien va vong lap de lam sach du lieu", "summary": "Ap dung re nhanh va lap de kiem tra, bien doi du lieu."},
+            ],
+        },
+        {
+            "title": "Lam Viec Voi Du Lieu Bang",
+            "lessons": [
+                {"title": "Danh sach, tu dien va ban ghi", "summary": "Bieu dien dong va cot bang cac cau truc du lieu cot loi cua Python."},
+                {"title": "Doc tep CSV va van ban", "summary": "Nap dataset cuc bo va xu ly loi tep co ban."},
+                {"title": "Lam sach gia tri thieu va khong nhat quan", "summary": "Chuan bi du lieu tho de phan tich dang tin cay."},
+            ],
+        },
+        {
+            "title": "Pandas DataFrame",
+            "lessons": [
+                {"title": "Tao va kiem tra DataFrame", "summary": "Dung pandas de xem cot, dong va kich thuoc dataset."},
+                {"title": "Loc, sap xep va chon du lieu", "summary": "Lay dung dong va cot can thiet cho cau hoi phan tich."},
+                {"title": "Nhom va tong hop chi so", "summary": "Tom tat du lieu bang groupby, dem va cac phep tong hop so."},
+            ],
+        },
+        {
+            "title": "Phan Tich Kham Pha Du Lieu",
+            "lessons": [
+                {"title": "Dat cau hoi phan tich", "summary": "Chuyen muc tieu thanh cau hoi do duoc va cac buoc kiem tra dataset."},
+                {"title": "Tinh thong ke mo ta", "summary": "Dung trung binh, phan phoi va ngoai le de hieu du lieu."},
+                {"title": "Tim mau hinh va phan khuc", "summary": "So sanh nhom va phat hien xu huong huu ich trong dataset."},
+            ],
+        },
+        {
+            "title": "Truc Quan Hoa Du Lieu",
+            "lessons": [
+                {"title": "Chon bieu do cho cau hoi phan tich", "summary": "Ghep loai bieu do voi so sanh, xu huong va phan phoi."},
+                {"title": "Ve bieu do bang pandas va matplotlib", "summary": "Tao bieu do de doc tu ket qua DataFrame."},
+                {"title": "Giai thich insight bang truc quan", "summary": "Dung tieu de va chu thich de truyen dat ket luan."},
+            ],
+        },
+        {
+            "title": "Du An Phan Tich Du Lieu",
+            "lessons": [
+                {"title": "Lap ke hoach notebook phan tich", "summary": "Xac dinh dataset, cau hoi, buoc lam sach va dau ra."},
+                {"title": "Hoan thanh quy trinh phan tich", "summary": "Nap, lam sach, phan tich va truc quan hoa mot dataset thuc te."},
+                {"title": "Trinh bay ket luan va buoc tiep theo", "summary": "Tom tat phat hien, gioi han va huong mo rong."},
+            ],
+        },
+    ],
     "python_backend": [
         {
             "title": "Nhập Môn Python và Cú Pháp Cơ Bản",
@@ -410,15 +518,16 @@ def get_subject_label(subject_id: str) -> Optional[str]:
 
     try:
         db = get_db()
+        filters: List[Dict[str, Any]] = [
+            {"slug": normalized},
+            {"subject_id": normalized},
+            {"topic": normalized},
+            {"title": {"$regex": f"^{re.escape(normalized)}$", "$options": "i"}},
+        ]
+        if ObjectId.is_valid(normalized):
+            filters.insert(0, {"_id": ObjectId(normalized)})
         subject = db.subjects.find_one(
-            {
-                "$or": [
-                    {"slug": normalized},
-                    {"subject_id": normalized},
-                    {"topic": normalized},
-                    {"title": {"$regex": f"^{re.escape(normalized)}$", "$options": "i"}},
-                ]
-            },
+            {"$or": filters},
             {"title": 1},
         )
         title = str((subject or {}).get("title") or "").strip()
@@ -426,6 +535,9 @@ def get_subject_label(subject_id: str) -> Optional[str]:
             return title
     except Exception:
         pass
+
+    if MONGO_OBJECT_ID_RE.fullmatch(normalized):
+        return None
 
     return re.sub(r"[_\s]+", " ", normalized).strip().title() or None
 
@@ -462,6 +574,75 @@ def _coerce_float(value: Any, *, default: float = 0.0) -> float:
 
 def _canonical_curriculum_text(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
+
+
+def _infer_known_subject_key(value: Any) -> str:
+    canonical = _canonical_curriculum_text(value)
+    if not canonical:
+        return ""
+    for key, label in SUBJECT_CATALOG.items():
+        label_text = _canonical_curriculum_text(label)
+        if canonical == key or canonical == label_text:
+            return key
+        if key in canonical or label_text in canonical:
+            return key
+    if "c sharp" in canonical or "csharp" in canonical or "dotnet" in canonical:
+        return "csharp"
+    if "c plus plus" in canonical or "cpp" in canonical:
+        return "cpp"
+    return ""
+
+
+def resolve_subject_key(subject_id: Any, *, goal: Any = None) -> Optional[str]:
+    """Resolve API/DB subject identifiers to a stable curriculum subject key."""
+    normalized = str(subject_id or "").strip().lower()
+    if not normalized:
+        return _infer_known_subject_key(goal) or None
+
+    known_key = _infer_known_subject_key(normalized)
+    if known_key:
+        return known_key
+
+    try:
+        db = get_db()
+        filters: List[Dict[str, Any]] = [
+            {"slug": normalized},
+            {"subject_id": normalized},
+            {"topic": normalized},
+            {"title": {"$regex": f"^{re.escape(normalized)}$", "$options": "i"}},
+        ]
+        if ObjectId.is_valid(normalized):
+            filters.insert(0, {"_id": ObjectId(normalized)})
+        subject = db.subjects.find_one(
+            {"$or": filters},
+            {"subject_id": 1, "slug": 1, "topic": 1, "title": 1, "description": 1},
+        )
+    except Exception:
+        subject = None
+
+    if subject:
+        text_candidates = [
+            subject.get("slug"),
+            subject.get("subject_id"),
+            subject.get("topic"),
+            subject.get("title"),
+            subject.get("description"),
+        ]
+        for candidate in text_candidates:
+            known_key = _infer_known_subject_key(candidate)
+            if known_key:
+                return known_key
+        for candidate in text_candidates[:3]:
+            fallback = str(candidate or "").strip().lower()
+            if fallback and not MONGO_OBJECT_ID_RE.fullmatch(fallback):
+                return fallback
+
+    known_key = _infer_known_subject_key(f"{normalized} {goal or ''}")
+    if known_key:
+        return known_key
+    if MONGO_OBJECT_ID_RE.fullmatch(normalized):
+        return None
+    return normalized
 
 
 def _title_tokens(value: Any) -> List[str]:
@@ -596,8 +777,15 @@ def _subject_key_from_prompt_context(
     planner_input: Optional[Dict[str, Any]] = None,
 ) -> str:
     explicit = str((planner_input or {}).get("subject_id") or "").strip().lower()
-    if explicit:
-        return explicit
+    resolved = resolve_subject_key(
+        explicit,
+        goal=(planner_input or {}).get("goal")
+        or (planner_input or {}).get("learning_goal")
+        or (planner_input or {}).get("target_outcome")
+        or subject_label,
+    )
+    if resolved:
+        return resolved
     canonical_label = _canonical_curriculum_text(subject_label)
     for key, label in SUBJECT_CATALOG.items():
         if canonical_label == _canonical_curriculum_text(label):
@@ -614,6 +802,42 @@ def _infer_curriculum_track_key(
     planner_input: Optional[Dict[str, Any]] = None,
 ) -> str:
     normalized_subject = str(subject_key or "").strip().lower()
+    current_goal_text = _canonical_curriculum_text(goal)
+    data_analysis_keywords = (
+        "data analysis",
+        "analysis",
+        "analytics",
+        "data science",
+        "pandas",
+        "numpy",
+        "matplotlib",
+        "visualization",
+        "csv",
+        "dataset",
+        "statistics",
+        "eda",
+        "excel",
+    )
+    backend_keywords = (
+        "backend",
+        "api",
+        "flask",
+        "django",
+        "fastapi",
+        "http",
+        "database",
+        "sql",
+        "server",
+    )
+    if normalized_subject == "python" and any(
+        keyword in current_goal_text for keyword in data_analysis_keywords
+    ):
+        return "python_data_analysis"
+    if normalized_subject == "python" and any(
+        keyword in current_goal_text for keyword in backend_keywords
+    ):
+        return "python_backend"
+
     goal_text = _canonical_curriculum_text(
         " ".join(
             str(item or "")
@@ -626,18 +850,11 @@ def _infer_curriculum_track_key(
         )
     )
     if normalized_subject == "python" and any(
-        keyword in goal_text
-        for keyword in (
-            "backend",
-            "api",
-            "flask",
-            "django",
-            "fastapi",
-            "http",
-            "database",
-            "sql",
-            "server",
-        )
+        keyword in goal_text for keyword in data_analysis_keywords
+    ):
+        return "python_data_analysis"
+    if normalized_subject == "python" and any(
+        keyword in goal_text for keyword in backend_keywords
     ):
         return "python_backend"
     return normalized_subject
@@ -837,6 +1054,40 @@ def _build_path_shape_guidance(
     }
 
 
+def _resolve_prompt_size_policy(
+    *,
+    subject_label: str,
+    goal: str,
+    level: str,
+    planner_input: Optional[Dict[str, Any]] = None,
+    target_chapter_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    subject_key = _subject_key_from_prompt_context(subject_label, planner_input)
+    return resolve_curriculum_size_policy(
+        subject_id=subject_key,
+        goal=goal,
+        level=level,
+        planner_input=planner_input,
+        target_chapter_count=target_chapter_count,
+    )
+
+
+def _compact_size_policy_for_prompt(policy: Dict[str, Any]) -> Dict[str, Any]:
+    keys = (
+        "curriculum_depth",
+        "goal_scope",
+        "min_chapters",
+        "target_chapters",
+        "max_chapters",
+        "min_lessons",
+        "target_lessons",
+        "max_lessons",
+        "lessons_per_chapter_range",
+        "sizing_reason",
+    )
+    return {key: policy.get(key) for key in keys}
+
+
 def _apply_curriculum_defaults(
     chapters: List[Dict[str, Any]],
     *,
@@ -890,6 +1141,16 @@ def _apply_curriculum_defaults(
                 default=1 + min(len(normalized) + len(lessons_out), 9),
             )
             lesson_kind = str(lesson.get("lesson_kind") or "core").strip().lower() or "core"
+            estimated_minutes = max(
+                10,
+                min(60, int(_coerce_float(lesson.get("estimated_minutes"), default=25))),
+            )
+            reason = str(
+                lesson.get("reason")
+                or lesson.get("recommendation_reason")
+                or lesson.get("explanation")
+                or ""
+            ).strip()
 
             lessons_out.append(
                 {
@@ -900,7 +1161,10 @@ def _apply_curriculum_defaults(
                     "target_concepts": target_concepts,
                     "prerequisite_concepts": prerequisite_concepts,
                     "difficulty": difficulty,
+                    "estimated_minutes": estimated_minutes,
                     "lesson_kind": lesson_kind,
+                    "reason": reason
+                    or f"This lesson advances the learner toward {goal}.",
                 }
             )
             previous_lesson_title = title
@@ -932,12 +1196,21 @@ def build_learning_path_prompt(
     )
     compact_context = _compact_learning_path_prompt_context(learner_context)
     compact_guidance = _compact_learning_path_prompt_context(planning_guidance)
+    size_policy = _resolve_prompt_size_policy(
+        subject_label=subject_label,
+        goal=goal,
+        level=level,
+        planner_input=planner_input,
+        target_chapter_count=target_chapter_count,
+    )
+    compact_size_policy = _compact_size_policy_for_prompt(size_policy)
     chapter_count_instruction = (
-        f"- Create exactly {max(2, int(target_chapter_count or 0))} chapters.\n"
+        f"- Create exactly {int(size_policy['target_chapters'])} chapters.\n"
         if target_chapter_count is not None
         else (
-            "- Decide the number of chapters automatically based on goal scope, learner level, and time budget.\n"
-            "- Usually create 3-6 chapters instead of a single oversized chapter.\n"
+            f"- Create about {int(size_policy['target_chapters'])} chapters and {int(size_policy['target_lessons'])} lessons.\n"
+            f"- Keep the curriculum between {int(size_policy['min_chapters'])} and {int(size_policy['max_chapters'])} chapters.\n"
+            f"- Never return fewer than {int(size_policy['min_chapters'])} chapters or {int(size_policy['min_lessons'])} lessons.\n"
         )
     )
     reference_example = _build_prompt_reference_example(
@@ -953,30 +1226,35 @@ def build_learning_path_prompt(
         f"Subject: {subject_label}\n"
         f"Goal: {goal}\n"
         f"Level: {level}\n\n"
-        "Create a concise chapter-and-lesson learning path.\n\n"
+        "Create a complete chapter-and-lesson learning path, not only an overview.\n\n"
         "Requirements:\n"
         "- Align tightly to the goal and learner context.\n"
         "- Sequence lessons by prerequisite concepts from fundamentals to application.\n"
+        "- Cover the full goal breadth, including prerequisite foundations, core workflows, applied practice, and a checkpoint/project when appropriate.\n"
         "- Prefer specific, skill-oriented titles.\n"
         "- Chapter titles must name a concrete topic, workflow, or milestone, not just a phase label.\n"
         "- Each chapter should feel like a distinct phase of progress toward the goal.\n"
         "- Avoid adjacent duplication unless difficulty or application clearly increases.\n"
         f"{chapter_count_instruction}"
-        "- Keep each chapter to 2-4 lessons when possible.\n"
+        f"- Each chapter should have {int(size_policy['lessons_per_chapter_min'])}-{int(size_policy['lessons_per_chapter_max'])} lessons.\n"
         "- Keep every field concise.\n"
         "- Keep summary to one short sentence.\n"
         "- Limit objectives to 2 items, prerequisites to 2 items, concept lists to 3 items.\n"
         "- Use short snake_case ids for target_concepts and prerequisite_concepts.\n"
         "- difficulty must be 1..10 and rise gradually.\n"
         "- lesson_kind must be one of bridge/core/practice/capstone.\n"
+        "- estimated_minutes must be a practical integer from 10 to 60.\n"
+        "- reason must explain why this lesson belongs at this point in the path.\n"
         "- Use at most one capstone near the end only if appropriate.\n\n"
+        "Curriculum size policy:\n"
+        f"{json.dumps(compact_size_policy, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Planning guidance:\n"
         f"{json.dumps(compact_guidance, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Learner context:\n"
         f"{json.dumps(compact_context, ensure_ascii=False, separators=(',', ':'))}\n\n"
         f"{reference_example}"
         "Return valid JSON only:\n"
-        '{"chapters":[{"title":"string","lessons":[{"title":"string","summary":"string","objectives":["string"],"prerequisites":["string"],"target_concepts":["string"],"prerequisite_concepts":["string"],"difficulty":1,"lesson_kind":"core"}]}]}\n\n'
+        '{"chapters":[{"title":"string","lessons":[{"title":"string","summary":"string","objectives":["string"],"prerequisites":["string"],"target_concepts":["string"],"prerequisite_concepts":["string"],"difficulty":1,"estimated_minutes":25,"lesson_kind":"core","reason":"string"}]}]}\n\n'
         "Do not add markdown fences or explanations."
     )
 
@@ -1151,6 +1429,14 @@ def build_learning_path_outline_prompt(
     )
     compact_context = _compact_learning_path_prompt_context(learner_context)
     compact_guidance = _compact_learning_path_prompt_context(planning_guidance)
+    size_policy = _resolve_prompt_size_policy(
+        subject_label=subject_label,
+        goal=goal,
+        level=level,
+        planner_input=planner_input,
+        target_chapter_count=target_chapter_count,
+    )
+    compact_size_policy = _compact_size_policy_for_prompt(size_policy)
     reference_example = _build_prompt_reference_example(
         subject_label=subject_label,
         goal=goal,
@@ -1164,7 +1450,7 @@ def build_learning_path_outline_prompt(
         f"Subject: {subject_label}\n"
         f"Goal: {goal}\n"
         f"Level: {level}\n\n"
-        f"Create exactly {target_chapter_count} chapter outlines for this learner.\n\n"
+        f"Create exactly {int(size_policy['target_chapters'])} chapter outlines for this learner.\n\n"
         "Requirements:\n"
         "- Align to the goal and learner context.\n"
         "- Sequence chapters from fundamentals to applied outcomes.\n"
@@ -1172,7 +1458,10 @@ def build_learning_path_outline_prompt(
         "- Chapter titles must include the concrete topic, workflow, or outcome the learner will cover.\n"
         "- Make each chapter focus distinct.\n"
         "- Return only chapter title, short focus, and lesson_count.\n"
-        "- lesson_count must be an integer from 2 to 4.\n\n"
+        f"- lesson_count must be an integer from {int(size_policy['lessons_per_chapter_min'])} to {int(size_policy['lessons_per_chapter_max'])}.\n"
+        f"- The total outline must support at least {int(size_policy['min_lessons'])} lessons.\n\n"
+        "Curriculum size policy:\n"
+        f"{json.dumps(compact_size_policy, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Planning guidance:\n"
         f"{json.dumps(compact_guidance, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Learner context:\n"
@@ -1205,6 +1494,13 @@ def build_learning_path_chapter_prompt(
     )
     compact_context = _compact_learning_path_prompt_context(learner_context)
     compact_guidance = _compact_learning_path_prompt_context(planning_guidance)
+    size_policy = _resolve_prompt_size_policy(
+        subject_label=subject_label,
+        goal=goal,
+        level=level,
+        planner_input=planner_input,
+    )
+    compact_size_policy = _compact_size_policy_for_prompt(size_policy)
     reference_example = _build_prompt_reference_example(
         subject_label=subject_label,
         goal=goal,
@@ -1235,15 +1531,19 @@ def build_learning_path_chapter_prompt(
         "- Use short snake_case concept ids for target_concepts and prerequisite_concepts.\n"
         "- lesson_kind should be one of: bridge, core, practice, capstone.\n"
         "- difficulty must be 1..10 and should rise within the chapter.\n"
+        "- estimated_minutes must be a practical integer from 10 to 60.\n"
+        "- reason must explain the prerequisite, goal relevance, or practice value of this lesson.\n"
         "- prerequisites should refer to prior lesson titles when needed.\n"
         "- Use practice or capstone only when the chapter content has already built enough foundation.\n\n"
+        "Curriculum size policy:\n"
+        f"{json.dumps(compact_size_policy, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Planning guidance:\n"
         f"{json.dumps(compact_guidance, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Learner context:\n"
         f"{json.dumps(compact_context, ensure_ascii=False, separators=(',', ':'))}\n\n"
         f"{reference_example}"
         "Return valid JSON only:\n"
-        '{"lessons":[{"title":"string","summary":"string","objectives":["string"],"prerequisites":["string"],"target_concepts":["string"],"prerequisite_concepts":["string"],"difficulty":1,"lesson_kind":"core"}]}\n\n'
+        '{"lessons":[{"title":"string","summary":"string","objectives":["string"],"prerequisites":["string"],"target_concepts":["string"],"prerequisite_concepts":["string"],"difficulty":1,"estimated_minutes":25,"lesson_kind":"core","reason":"string"}]}\n\n'
         "Do not add markdown fences or explanations."
     )
 
@@ -1319,10 +1619,27 @@ def normalize_curriculum(
                             limit=5,
                         ),
                         "difficulty": _coerce_difficulty(lesson.get("difficulty")),
+                        "estimated_minutes": max(
+                            10,
+                            min(
+                                60,
+                                int(
+                                    _coerce_float(
+                                        lesson.get("estimated_minutes"), default=25
+                                    )
+                                ),
+                            ),
+                        ),
                         "lesson_kind": str(lesson.get("lesson_kind") or "core")
                         .strip()
                         .lower()
                         or "core",
+                        "reason": str(
+                            lesson.get("reason")
+                            or lesson.get("recommendation_reason")
+                            or lesson.get("explanation")
+                            or ""
+                        ).strip(),
                     }
                 )
         if lessons:
@@ -1342,13 +1659,18 @@ def build_fallback_curriculum(
     planner_input: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Return a deterministic curriculum when the cloud LLM fails."""
-    subject_key = (subject_id or "").strip().lower()
+    subject_key = resolve_subject_key(subject_id, goal=goal) or "python"
+    size_policy = resolve_curriculum_size_policy(
+        subject_id=subject_key,
+        goal=goal,
+        level=level,
+        planner_input=planner_input,
+    )
     use_vietnamese = _prefers_vietnamese(
         goal,
         (planner_input or {}).get("learning_goal"),
         (planner_input or {}).get("target_outcome"),
     )
-    fallback_catalog = _FALLBACK_TEMPLATES_VI if use_vietnamese else _FALLBACK_TEMPLATES
     chapters = _resolve_curriculum_seed_chapters(
         subject_key=subject_key,
         goal=goal,
@@ -1356,7 +1678,7 @@ def build_fallback_curriculum(
         use_vietnamese=use_vietnamese,
     )
     if not chapters:
-        return _apply_curriculum_defaults(
+        fallback = _apply_curriculum_defaults(
             [
                 {
                     "title": "Lộ Trình Nền Tảng" if use_vietnamese else "Foundational Path",
@@ -1404,9 +1726,25 @@ def build_fallback_curriculum(
             goal=goal,
             planner_input=planner_input,
         )
+        expanded, _ = normalize_curriculum_size(
+            fallback,
+            policy=size_policy,
+            subject_id=subject_key,
+            goal=goal,
+            level=level,
+        )
+        return expanded
 
-    return _apply_curriculum_defaults(
+    fallback = _apply_curriculum_defaults(
         chapters,
         goal=goal,
         planner_input=planner_input,
     )
+    expanded, _ = normalize_curriculum_size(
+        fallback,
+        policy=size_policy,
+        subject_id=subject_key,
+        goal=goal,
+        level=level,
+    )
+    return expanded

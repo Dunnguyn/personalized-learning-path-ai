@@ -19,7 +19,6 @@ All endpoints include:
 from fastapi import APIRouter, Body, HTTPException, status, Depends, Query
 from datetime import datetime, timezone
 import logging
-import uuid
 
 from backend.app.api.schemas import (
     AskRequest,
@@ -250,7 +249,12 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
 
         answer_payload = response.get("answer", {}) or {}
         concept_detected = response.get("concept_detected") or {}
-        latency_ms = int(answer_payload.get("latency_ms", 0) or 0)
+        processing_metrics = response.get("processing_metrics") or {}
+        latency_ms = int(
+            processing_metrics.get("total_ai_response_ms")
+            or answer_payload.get("latency_ms", 0)
+            or 0
+        )
         llm_model = str(
             answer_payload.get("model") or response.get("model") or "unknown"
         )
@@ -266,7 +270,11 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
             llm_model=llm_model,
             latency_ms=latency_ms,
             success=bool(response.get("success", False)),
-            metadata={"goal": request.goal[:100], "level": _scalar_request_value(request.level)},
+            metadata={
+                "goal": request.goal[:100],
+                "level": _scalar_request_value(request.level),
+                "processing_metrics": processing_metrics,
+            },
         )
         event_logging_service.log_event(
             "ai_response_generated",
@@ -277,6 +285,7 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
             metadata={
                 "question_length": len(request.question or ""),
                 "sources": len(answer_payload.get("sources", []) or []),
+                "processing_metrics": processing_metrics,
             },
         )
 
@@ -323,6 +332,7 @@ def ask_ai(request: AskRequest, current_user: dict = Depends(get_current_user)):
             concept_detected=concept_detected or None,
             adaptive_info=response.get("adaptive_info"),
             progress_updated=response.get("progress_updated", False),
+            processing_metrics=processing_metrics or None,
         )
 
     except HTTPException:

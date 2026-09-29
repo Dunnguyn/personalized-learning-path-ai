@@ -151,13 +151,36 @@ export const learningPathService = {
     path_id: string;
     lesson_id: string;
     seconds_spent: number;
+    tracked_date?: string;
+    keepalive?: boolean;
   }): Promise<LessonStudyTimeResponse> {
-    const response = await apiClient.post('/learning-paths/study-time', data);
+    const { keepalive, ...payload } = data;
+    const response = await apiClient.post('/learning-paths/study-time', payload, {
+      keepalive,
+    });
     return normalizeLessonStudyTimeResponse(response, data);
   },
 
-  async getStudySummary(): Promise<StudySummary> {
-    const response = await apiClient.get('/learning-paths/study-summary');
+  async getStudySummary(params?: {
+    startDate?: string;
+    endDate?: string;
+    days?: number;
+  }): Promise<StudySummary> {
+    const query = new URLSearchParams();
+    if (params?.startDate) {
+      query.set('start_date', params.startDate);
+    }
+    if (params?.endDate) {
+      query.set('end_date', params.endDate);
+    }
+    if (params?.days) {
+      query.set('days', String(params.days));
+    }
+
+    const endpoint = query.size
+      ? `/learning-paths/study-summary?${query.toString()}`
+      : '/learning-paths/study-summary';
+    const response = await apiClient.get(endpoint);
     return normalizeStudySummary(response);
   },
 

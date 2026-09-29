@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from enum import Enum
 import logging
 import os
@@ -486,7 +486,7 @@ def rank_resources_by_adaptiveness(
             score += 15
 
         # 3. Recency (20%)
-        from datetime import datetime, timedelta
+        from datetime import datetime
 
         created_at = r.get("created_at")
         if created_at:

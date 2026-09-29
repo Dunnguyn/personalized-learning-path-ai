@@ -2,6 +2,7 @@ import logging
 import os
 import time
 import sys
+from time import perf_counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -121,7 +122,7 @@ def get_ai_stack_snapshot():
 # =========================
 async def logging_middleware(request: Request, call_next):
     """Log request/response with timing."""
-    start_time = time.time()
+    start_time = perf_counter()
     path = f"{request.method} {request.url.path}"
     request_path = request.url.path
 
@@ -145,7 +146,7 @@ async def logging_middleware(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        duration = time.time() - start_time
+        duration = perf_counter() - start_time
         event_logging_service.log_api_event(
             event_type="api_failed",
             method=request.method,
@@ -158,8 +159,9 @@ async def logging_middleware(request: Request, call_next):
         )
         raise
 
-    duration = time.time() - start_time
+    duration = perf_counter() - start_time
     status_code = response.status_code
+    response.headers["X-Process-Time"] = f"{duration:.6f}"
 
     if status_code >= 500:
         level = "ERROR"
@@ -170,7 +172,7 @@ async def logging_middleware(request: Request, call_next):
 
     logger.log(
         getattr(logging, level),
-        "%s | Status: %s | Time: %.3fs",
+        "%s | status_code=%s | response_time=%.3fs",
         path,
         status_code,
         duration,

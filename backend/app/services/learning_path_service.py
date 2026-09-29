@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import json
 import logging
 import os
@@ -891,6 +891,7 @@ class HybridLearningPathService:
         user_id: str,
         lesson_id: str,
         seconds_spent: int,
+        tracked_date: Optional[date] = None,
     ) -> Dict[str, Any]:
         """Persist aggregated lesson study time for the current day."""
         document = self.learning_path_repository.get_by_path_id(path_id)
@@ -909,7 +910,7 @@ class HybridLearningPathService:
 
         clamped_seconds = max(1, min(int(seconds_spent), 86400))
         now = datetime.utcnow()
-        tracked_date = now.date()
+        tracked_day = tracked_date or now.date()
         study_collection = self.learning_path_repository.db["lesson_study_time"]
         study_collection.create_index(
             [("user_id", 1), ("tracked_date", 1), ("path_id", 1), ("lesson_id", 1)],
@@ -920,7 +921,7 @@ class HybridLearningPathService:
         study_collection.update_one(
             {
                 "user_id": user_id,
-                "tracked_date": tracked_date.isoformat(),
+                "tracked_date": tracked_day.isoformat(),
                 "path_id": path_id,
                 "lesson_id": lesson_id,
             },
@@ -943,7 +944,7 @@ class HybridLearningPathService:
         for item in study_collection.find(
             {
                 "user_id": user_id,
-                "tracked_date": tracked_date.isoformat(),
+                "tracked_date": tracked_day.isoformat(),
             },
             {"seconds_spent": 1},
         ):
@@ -954,19 +955,34 @@ class HybridLearningPathService:
             "lesson_id": lesson_id,
             "seconds_spent": clamped_seconds,
             "total_seconds": day_total,
-            "tracked_date": tracked_date,
+            "tracked_date": tracked_day,
             "updated_at": now,
         }
 
-    def get_study_summary(self, *, user_id: str, days: int = 7) -> Dict[str, Any]:
+    def get_study_summary(
+        self,
+        *,
+        user_id: str,
+        days: int = 7,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> Dict[str, Any]:
         """Return total study time and a recent daily calendar for the user."""
         safe_days = max(1, min(int(days), 90))
         study_collection = self.learning_path_repository.db["lesson_study_time"]
         study_collection.create_index([("user_id", 1), ("tracked_date", -1)])
 
         now = datetime.utcnow()
-        today = now.date()
-        range_start = today - timedelta(days=safe_days - 1)
+        range_end = end_date or now.date()
+        if start_date:
+            range_start = start_date
+            requested_days = (range_end - range_start).days + 1
+            if requested_days <= 0:
+                raise ValueError("start_date must be before or equal to end_date")
+            if requested_days > 90:
+                range_start = range_end - timedelta(days=89)
+        else:
+            range_start = range_end - timedelta(days=safe_days - 1)
 
         total_seconds = 0
         last_updated: Optional[datetime] = None
@@ -986,7 +1002,7 @@ class HybridLearningPathService:
                 "user_id": user_id,
                 "tracked_date": {
                     "$gte": range_start.isoformat(),
-                    "$lte": today.isoformat(),
+                    "$lte": range_end.isoformat(),
                 },
             },
             {"tracked_date": 1, "seconds_spent": 1},
@@ -997,7 +1013,8 @@ class HybridLearningPathService:
             )
 
         last_7_days: List[Dict[str, Any]] = []
-        for offset in range(safe_days):
+        visible_days = (range_end - range_start).days + 1
+        for offset in range(visible_days):
             day = range_start + timedelta(days=offset)
             day_key = day.isoformat()
             seconds = seconds_by_day.get(day_key, 0)

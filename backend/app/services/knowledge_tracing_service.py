@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-import math
 from typing import Any, Dict, List, Optional
 
 from backend.app.database.mongo import get_db

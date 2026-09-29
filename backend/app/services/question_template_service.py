@@ -48,6 +48,7 @@ class QuestionTemplateService:
         "lesson",
         "more",
         "most",
+        "necessarily",
         "same",
         "source",
         "that",
@@ -57,6 +58,7 @@ class QuestionTemplateService:
         "this",
         "those",
         "through",
+        "understand",
         "using",
         "when",
         "where",
@@ -86,6 +88,7 @@ class QuestionTemplateService:
         "string",
         "module",
         "class",
+        "classes",
     ]
     _BLOOM_TEMPLATES = {
         "remember": {
@@ -438,10 +441,23 @@ class QuestionTemplateService:
             r"\b[a-zA-Z][a-zA-Z0-9_]{3,}\b",
             f"{excerpt} {content}".lower(),
         )
-        for term in terms:
+        scored_terms: List[tuple[float, int, str]] = []
+        for index, term in enumerate(terms):
             if not self._is_meaningful_focus_term(term):
                 continue
-            return term
+            score = 0.0
+            if term in self._DISTRACTOR_FALLBACK:
+                score += 1.0
+            if term in {"class", "classes"}:
+                score += 1.4
+            if re.search(rf"\b(set|group|collection)\s+of\s+{re.escape(term)}\b", excerpt.lower()):
+                score += 1.0
+            if term.endswith("s") and term not in {"this"}:
+                score += 0.2
+            scored_terms.append((score, -index, term))
+        if scored_terms:
+            scored_terms.sort(reverse=True)
+            return scored_terms[0][2]
         return ""
 
     def _build_candidate(

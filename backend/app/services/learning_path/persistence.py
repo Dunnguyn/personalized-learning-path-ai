@@ -23,6 +23,30 @@ def serialize_learning_path(
         (document.get("metadata") or {}).get("mastery_threshold"),
         service.PREREQUISITE_MASTERY_THRESHOLD,
     )
+    metadata = document.get("metadata") if isinstance(document.get("metadata"), dict) else {}
+    payload["generation_status"] = str(document.get("generation_status") or "completed")
+    payload["learner_model_version"] = str(
+        metadata.get("learner_model_version")
+        or ((metadata.get("profile_analysis") or {}).get("learner_model") or {}).get(
+            "learner_model_version"
+        )
+        or "v1"
+    )
+    payload["personalization_summary"] = dict(
+        metadata.get("personalization_summary") or {}
+    )
+    payload["path_explanations"] = list(metadata.get("path_explanations") or [])
+    payload["degraded_mode"] = bool(metadata.get("degraded_mode", False))
+    size_policy = dict(metadata.get("curriculum_size_policy") or {})
+    payload["curriculum_size_policy"] = size_policy
+    payload["total_chapters"] = int(
+        size_policy.get("actual_chapters") or metadata.get("chapter_count") or 0
+    )
+    payload["total_lessons"] = int(
+        size_policy.get("actual_lessons") or metadata.get("lesson_count") or 0
+    )
+    payload["curriculum_depth"] = size_policy.get("curriculum_depth")
+    payload["sizing_reason"] = size_policy.get("sizing_reason")
     return payload
 
 
@@ -65,6 +89,19 @@ def normalize_chapters(
                         str(item)
                         for item in lesson.get("recommended_chunk_ids", []) or []
                     ],
+                    "recommended_resource_ids": [
+                        str(item)
+                        for item in lesson.get("recommended_resource_ids", []) or []
+                    ],
+                    "missing_prerequisites": list(
+                        lesson.get("missing_prerequisites") or []
+                    ),
+                    "readiness_score": lesson.get("readiness_score"),
+                    "personalization_score": lesson.get("personalization_score"),
+                    "reason": lesson.get("reason") or lesson.get("explanation"),
+                    "explanation": lesson.get("explanation") or lesson.get("reason"),
+                    "recommendation_reason": lesson.get("recommendation_reason"),
+                    "degraded_mode": bool(lesson.get("degraded_mode", False)),
                     "status": lesson_progress.get(
                         lesson_id, lesson.get("status", "not_started")
                     ),
@@ -140,6 +177,12 @@ def build_recommended_path(service: Any, path: Dict[str, Any]) -> List[Dict[str,
                         lesson.get("recommended_resources") or []
                     ),
                     "adaptation_metadata": adaptation_metadata,
+                    "reason": lesson.get("reason") or lesson.get("explanation"),
+                    "readiness_score": lesson.get("readiness_score"),
+                    "personalization_score": lesson.get("personalization_score"),
+                    "missing_prerequisites": list(
+                        lesson.get("missing_prerequisites") or []
+                    ),
                 }
             )
     items.sort(

@@ -5,11 +5,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import math
 import re
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List
 
 from bson import ObjectId
 
 from backend.app.database.mongo import get_db
+from backend.app.services.recommendation.normalization import (
+    extract_goal_terms,
+    extract_resource_keys,
+    normalize_resource_key,
+)
 
 
 class RecommendationRepository:
@@ -121,7 +126,9 @@ class RecommendationRepository:
         if direct_matches:
             return direct_matches
 
-        tokens = [token for token in re.findall(r"\w+", normalized_goal) if len(token) >= 3]
+        tokens = extract_goal_terms(normalized_goal) or [
+            token for token in re.findall(r"\w+", normalized_goal) if len(token) >= 3
+        ]
         if not tokens:
             return []
 
@@ -211,7 +218,9 @@ class RecommendationRepository:
         if not normalized_goal:
             return []
 
-        tokens = [token for token in re.findall(r"\w+", normalized_goal) if len(token) >= 3]
+        tokens = extract_goal_terms(normalized_goal) or [
+            token for token in re.findall(r"\w+", normalized_goal) if len(token) >= 3
+        ]
         level_query = {
             "$or": [
                 {"level": {"$in": preferred_levels}},
@@ -310,7 +319,7 @@ class RecommendationRepository:
                     "event_type": "resource_completed",
                     "resource_id": {"$exists": True, "$ne": None},
                 },
-                {"resource_id": 1},
+                {"resource_id": 1, "metadata": 1},
             )
             .sort("timestamp", -1)
             .limit(max(limit, 1))
@@ -318,11 +327,17 @@ class RecommendationRepository:
         completed: List[str] = []
         seen: set[str] = set()
         for row in rows:
-            resource_key = str(row.get("resource_id"))
-            if not resource_key or resource_key in seen:
-                continue
-            seen.add(resource_key)
-            completed.append(resource_key)
+            keys = extract_resource_keys(
+                {
+                    "resource_id": row.get("resource_id"),
+                    "metadata": row.get("metadata") or {},
+                }
+            )
+            for resource_key in keys:
+                if not resource_key or resource_key in seen:
+                    continue
+                seen.add(resource_key)
+                completed.append(resource_key)
         return completed
 
     def get_recent_lesson_context(self, user_id: str | int) -> Dict[str, Any]:
@@ -402,9 +417,11 @@ class RecommendationRepository:
 
     @staticmethod
     def get_resource_key(resource: Dict[str, Any]) -> str:
-        if resource.get("resource_id") is not None:
-            return str(resource.get("resource_id"))
-        return str(resource.get("_id"))
+        return normalize_resource_key(resource)
+
+    @staticmethod
+    def get_resource_aliases(resource: Dict[str, Any]) -> List[str]:
+        return list(extract_resource_keys(resource))
 
     def get_resource_popularity(
         self, resource_keys: Iterable[str], days: int = 60
@@ -506,7 +523,13 @@ class RecommendationRepository:
             {"resource_id": 1, "event_type": 1, "metadata": 1, "duration_ms": 1},
         )
         for row in direct_events:
-            resource_key = str(row.get("resource_id"))
+            aliases = extract_resource_keys(
+                {
+                    "resource_id": row.get("resource_id"),
+                    "metadata": row.get("metadata") or {},
+                }
+            )
+            resource_key = normalize_resource_key(row.get("resource_id"))
             event_type = str(row.get("event_type"))
             score = float(direct_weights.get(event_type, 0.0))
 
@@ -526,7 +549,8 @@ class RecommendationRepository:
                 score += min(duration_ms / 300000.0, 1.0) * 0.6
 
             if score != 0.0:
-                self._append_weight(interactions, resource_key, score)
+                for alias in aliases or {resource_key}:
+                    self._append_weight(interactions, alias, score)
 
         lesson_events = list(
             self.event_logs.find(
@@ -866,13 +890,64 @@ class RecommendationRepository:
                     },
                     "resource_id": {"$exists": True, "$ne": None},
                 },
-                {"resource_id": 1},
+                {"resource_id": 1, "metadata": 1},
             )
             .sort("timestamp", -1)
             .limit(max(limit, 1))
         )
-        return [
-            str(item.get("resource_id"))
-            for item in rows
-            if item.get("resource_id") is not None
-        ]
+        seen: List[str] = []
+        seen_set: set[str] = set()
+        for item in rows:
+            keys = extract_resource_keys(
+                {
+                    "resource_id": item.get("resource_id"),
+                    "metadata": item.get("metadata") or {},
+                }
+            )
+            for key in keys:
+                if key and key not in seen_set:
+                    seen_set.add(key)
+                    seen.append(key)
+        return seen
+
+    def get_recent_resource_feedback(
+        self,
+        user_id: str | int,
+        *,
+        days: int = 90,
+        limit: int = 100,
+    ) -> Dict[str, Dict[str, Any]]:
+        since = datetime.now(timezone.utc) - timedelta(days=max(days, 1))
+        rows = list(
+            self.event_logs.find(
+                {
+                    "user_id": {"$in": self._user_variants(user_id)},
+                    "timestamp": {"$gte": since},
+                    "event_type": {"$in": ["recommendation_feedback", "recommendation_hidden"]},
+                    "resource_id": {"$exists": True, "$ne": None},
+                },
+                {"resource_id": 1, "event_type": 1, "metadata": 1, "timestamp": 1},
+            )
+            .sort("timestamp", -1)
+            .limit(max(limit, 1))
+        )
+        feedback: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            metadata = row.get("metadata") or {}
+            feedback_type = str(metadata.get("feedback_type") or "").lower()
+            if str(row.get("event_type")) == "recommendation_hidden":
+                feedback_type = feedback_type or "hide"
+            keys = extract_resource_keys(
+                {"resource_id": row.get("resource_id"), "metadata": metadata}
+            )
+            for key in keys:
+                if not key or key in feedback:
+                    continue
+                feedback[key] = {
+                    "feedback_type": feedback_type,
+                    "rating": metadata.get("rating"),
+                    "timestamp": row.get("timestamp"),
+                    "negative": feedback_type in {"not_helpful", "hide"},
+                    "positive": feedback_type in {"helpful", "save_for_later"},
+                }
+        return feedback

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Sequence
+
+from backend.app.services.recommendation.normalization import concept_match_score
 
 
 def concept_gap_fit(
@@ -18,8 +21,9 @@ def concept_gap_fit(
     concepts = metadata.get("primary_concepts") or metadata.get("covered_concepts") or []
     concept_text = " ".join([topic, *(str(item).lower() for item in concepts if item)])
     focus_bonus = 0.0
-    if any(str(concept).lower() in concept_text for concept in focus_concepts):
-        focus_bonus = 0.18
+    alias_match = concept_match_score(focus_concepts, concept_text)
+    if alias_match > 0.0:
+        focus_bonus = min(0.24, 0.12 + 0.12 * alias_match)
     gap = 1.0 - ((mastery + confidence) / 2.0)
     return service._clamp(0.82 * gap + focus_bonus)
 
@@ -77,6 +81,8 @@ def compute_final_score(
         + weights.chunk_match_score * components["chunk_match_score"]
         + weights.chunk_coverage_score * components["chunk_coverage_score"]
         + weights.concept_gap_fit * components["concept_gap_fit"]
+        + getattr(weights, "target_concept_match", 0.0) * components.get("target_concept_match", 0.0)
+        + getattr(weights, "lesson_context_match", 0.0) * components.get("lesson_context_match", 0.0)
         + weights.difficulty_fit * components["difficulty_fit"]
         + weights.goal_fit * components["goal_fit"]
         + weights.resource_type_fit * components["resource_type_fit"]
@@ -86,4 +92,6 @@ def compute_final_score(
         + weights.expected_learning_gain * components["expected_learning_gain"]
         - weights.fatigue_penalty * components["fatigue_penalty"]
     )
+    if not math.isfinite(score):
+        return 0.0
     return service._clamp(score)

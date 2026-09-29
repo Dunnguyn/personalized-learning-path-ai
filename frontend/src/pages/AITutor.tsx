@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import ModalPortal from '../components/ui/ModalPortal';
 import PageHero from '../components/ui/PageHero';
 import StatusPanel from '../components/ui/StatusPanel';
 import { useAuth } from '../contexts/AuthContext';
@@ -1063,6 +1064,7 @@ export default function AITutor() {
 
         {/* History Modal */}
         {showHistory && (
+          <ModalPortal>
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-[#2a121b]/35 p-4 backdrop-blur-sm"
             onClick={() => setShowHistory(false)}
@@ -1154,6 +1156,7 @@ export default function AITutor() {
               </div>
             </div>
           </div>
+          </ModalPortal>
         )}
 
         <div className="grid min-h-0 flex-1 gap-6">

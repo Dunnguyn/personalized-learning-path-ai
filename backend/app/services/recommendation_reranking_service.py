@@ -13,6 +13,9 @@ class ReRankingConfig:
     enabled: bool = True
     lambda_relevance: float = 0.75
     exploration_weight: float = 0.03
+    min_relevance_for_diversity: float = 0.55
+    max_rerank_displacement: int = 4
+    preserve_top_k: int = 1
 
 
 class RecommendationRerankingService:
@@ -85,6 +88,8 @@ class RecommendationRerankingService:
             key=lambda item: float(item.get("final_base_score", 0.0)),
             reverse=True,
         )
+        for rank, item in enumerate(sorted_candidates, start=1):
+            item["original_rank"] = rank
 
         if not self.config.enabled:
             return {
@@ -92,8 +97,9 @@ class RecommendationRerankingService:
                 "metadata": {"strategy": "disabled", "diversity_ratio": 0.0},
             }
 
-        selected: List[Dict[str, Any]] = []
-        remaining = list(sorted_candidates)
+        preserve_count = max(0, min(self.config.preserve_top_k, top_limit, len(sorted_candidates)))
+        selected: List[Dict[str, Any]] = list(sorted_candidates[:preserve_count])
+        remaining = list(sorted_candidates[preserve_count:])
 
         while remaining and len(selected) < top_limit:
             best_idx = 0
@@ -105,7 +111,7 @@ class RecommendationRerankingService:
                 exploration = self.config.exploration_weight * novelty
 
                 max_similarity = 0.0
-                if selected:
+                if selected and relevance >= self.config.min_relevance_for_diversity:
                     max_similarity = max(
                         self._item_similarity(candidate, chosen) for chosen in selected
                     )
@@ -123,6 +129,47 @@ class RecommendationRerankingService:
             chosen = remaining.pop(best_idx)
             chosen["rerank_score"] = round(best_score, 6)
             selected.append(chosen)
+
+        best_relevance_item = sorted_candidates[0]
+        if (
+            float(best_relevance_item.get("final_base_score", 0.0) or 0.0)
+            >= self.config.min_relevance_for_diversity
+            and best_relevance_item not in selected[:3]
+        ):
+            selected = [best_relevance_item] + [
+                item
+                for item in selected
+                if item.get("original_rank") != best_relevance_item.get("original_rank")
+            ]
+            selected = selected[:top_limit]
+
+        by_original_rank = {int(item.get("original_rank") or 0): item for item in sorted_candidates}
+        guarded: List[Dict[str, Any]] = []
+        used_ranks: set[int] = set()
+        for rerank_rank, item in enumerate(selected, start=1):
+            original_rank = int(item.get("original_rank") or rerank_rank)
+            if (
+                original_rank - rerank_rank > self.config.max_rerank_displacement
+                and original_rank in by_original_rank
+            ):
+                replacement_rank = max(1, rerank_rank)
+                replacement = by_original_rank.get(replacement_rank)
+                if replacement is not None and replacement_rank not in used_ranks:
+                    item = replacement
+                    original_rank = replacement_rank
+            used_ranks.add(original_rank)
+            item["rerank_rank"] = rerank_rank
+            item["displacement"] = original_rank - rerank_rank
+            item["diversity_reason"] = (
+                "preserved_relevance"
+                if rerank_rank <= preserve_count or original_rank <= preserve_count
+                else "mmr_diversity"
+            )
+            item["relevance_preserved"] = (
+                original_rank <= preserve_count or item is best_relevance_item
+            )
+            guarded.append(item)
+        selected = guarded[:top_limit]
 
         distinct_sources = {
             str(item.get("source") or "") for item in selected if item.get("source")
@@ -147,6 +194,9 @@ class RecommendationRerankingService:
                 "strategy": "mmr",
                 "lambda_relevance": self.config.lambda_relevance,
                 "exploration_weight": self.config.exploration_weight,
+                "min_relevance_for_diversity": self.config.min_relevance_for_diversity,
+                "max_rerank_displacement": self.config.max_rerank_displacement,
+                "preserve_top_k": self.config.preserve_top_k,
                 "distinct_sources": len(distinct_sources),
                 "distinct_topics": len(distinct_topics),
                 "distinct_formats": len(distinct_formats),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from time import perf_counter
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -47,9 +48,18 @@ class SemanticRetrievalService:
         min_score: float = 0.35,
         topic: Optional[str] = None,
         level: Optional[str] = None,
+        timings: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
         """Return best matching chunks grouped by parent resource."""
+        search_started = perf_counter()
+        embedding_started = perf_counter()
         query_embedding = self.embedding_service.embed_text(query)
+        if timings is not None:
+            timings["semantic_search_embedding_ms"] = round(
+                float(timings.get("semantic_search_embedding_ms", 0.0))
+                + (perf_counter() - embedding_started) * 1000.0,
+                3,
+            )
         where: Dict[str, Any] = {}
         if topic:
             where["topic"] = topic
@@ -80,6 +90,7 @@ class SemanticRetrievalService:
             min_score=min_score * 0.8,
             topic=topic,
             level=level,
+            timings=timings,
         )
         candidates: List[Dict[str, Any]] = []
         for item in ranked_candidates:
@@ -130,6 +141,12 @@ class SemanticRetrievalService:
                 }
 
         results = sorted(grouped.values(), key=lambda item: item["score"], reverse=True)
+        if timings is not None:
+            timings["semantic_search_total_ms"] = round(
+                float(timings.get("semantic_search_total_ms", 0.0))
+                + (perf_counter() - search_started) * 1000.0,
+                3,
+            )
         return results[:k]
 
     @staticmethod

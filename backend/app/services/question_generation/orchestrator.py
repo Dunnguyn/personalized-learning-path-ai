@@ -85,7 +85,7 @@ from backend.app.services.question_validator import (
 logger = logging.getLogger(__name__)
 
 LOW_COUNT_REGEN_RETRY_ENABLED = (
-    os.getenv("LESSON_QUESTION_LOW_COUNT_RETRY_ENABLED", "true").strip().lower()
+    os.getenv("LESSON_QUESTION_LOW_COUNT_RETRY_ENABLED", "false").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 LOW_COUNT_REGEN_RETRY_DELAY_SECONDS = float(
@@ -137,13 +137,13 @@ QUESTION_SEMANTIC_DEDUP_LOOKBACK = int(
     os.getenv("LESSON_QUESTION_SEMANTIC_DEDUP_LOOKBACK", "180")
 )
 PREFER_LLM_FILL_BEFORE_TEMPLATE_ENABLED = (
-    os.getenv("LESSON_QUESTION_PREFER_LLM_FILL_BEFORE_TEMPLATE_ENABLED", "true")
+    os.getenv("LESSON_QUESTION_PREFER_LLM_FILL_BEFORE_TEMPLATE_ENABLED", "false")
     .strip()
     .lower()
     in {"1", "true", "yes", "on"}
 )
 LLM_FILL_MAX_ATTEMPTS = int(
-    os.getenv("LESSON_QUESTION_LLM_FILL_MAX_ATTEMPTS", "2")
+    os.getenv("LESSON_QUESTION_LLM_FILL_MAX_ATTEMPTS", "1")
 )
 DEGRADED_LOCAL_STATUSES = {
     "cooldown",
@@ -267,6 +267,7 @@ class LessonScopedQuestionGenerationService:
         "string",
         "module",
         "class",
+        "classes",
         "boolean",
     ]
     _WEAK_DISTRACTOR_TERMS = {
@@ -274,6 +275,8 @@ class LessonScopedQuestionGenerationService:
         "class",
         "value",
         "values",
+        "answer",
+        "answers",
         "item",
         "items",
         "type",
@@ -301,6 +304,10 @@ class LessonScopedQuestionGenerationService:
         "these",
         "this",
         "those",
+        "necessarily",
+        "obvious",
+        "easier",
+        "understand",
         "very",
         "what",
         "when",
@@ -446,6 +453,8 @@ class LessonScopedQuestionGenerationService:
         "float",
         "string",
         "method",
+        "class",
+        "classes",
         "loop",
         "conditional",
     }
@@ -614,11 +623,22 @@ class LessonScopedQuestionGenerationService:
                     "trigger": "question_generation_scope_recovery",
                 },
             )
-            recommendation, chunk_ids, chunks = self._load_generation_scope(
-                lesson_id=lesson_id,
-                context=context,
-                recommendation=recommendation,
-            )
+            try:
+                recommendation, chunk_ids, chunks = self._load_generation_scope(
+                    lesson_id=lesson_id,
+                    context=context,
+                    recommendation=recommendation,
+                )
+            except ValueError:
+                recommendation, chunk_ids, chunks = (
+                    self._build_local_context_generation_scope(
+                        lesson_id=lesson_id,
+                        context=context,
+                    )
+                )
+                metadata["degraded_mode"] = True
+                metadata["degraded_reason"] = "no_recommended_chunks"
+                allow_llm = False
         chunks = self._enrich_chunks_with_recommendation_metadata(
             chunks=chunks,
             recommendation=recommendation,
@@ -645,7 +665,10 @@ class LessonScopedQuestionGenerationService:
             allow_llm=allow_llm,
             llm_debug_status=llm_debug_status,
         )
-        degraded_mode = llm_status_code in DEGRADED_LOCAL_STATUSES
+        scope_degraded = str(metadata.get("degraded_reason") or "") == (
+            "no_recommended_chunks"
+        )
+        degraded_mode = (llm_status_code in DEGRADED_LOCAL_STATUSES) or scope_degraded
         usable_chunk_count = self._estimate_usable_chunk_count(chunks)
         grounded_content_volume = self._estimate_grounded_content_volume(chunks)
         declared_lesson_size = assessment_plan.lesson_size
@@ -661,6 +684,11 @@ class LessonScopedQuestionGenerationService:
                 if target_count is not None
                 else assessment_plan.target_count_auto
             ),
+        )
+        bloom_levels = self._resolve_bloom_levels_for_difficulty(
+            difficulty=effective_difficulty,
+            bloom_levels=bloom_levels,
+            target_count=original_target_count,
         )
         runtime_target_count = max(
             1,
@@ -682,7 +710,9 @@ class LessonScopedQuestionGenerationService:
                 mappable_concept_count=len(valid_target_concepts),
                 llm_available=False,
             )
-            degraded_reason = llm_status_code
+            degraded_reason = (
+                "no_recommended_chunks" if scope_degraded else llm_status_code
+            )
         target_count = degraded_target_count if degraded_mode else runtime_target_count
         assessment_plan = replace(
             assessment_plan,
@@ -692,9 +722,10 @@ class LessonScopedQuestionGenerationService:
                 target_count=target_count,
                 mastery=mastery,
             ),
-            bloom_distribution=lesson_assessment_sizing_service.compute_bloom_distribution(
+            bloom_distribution=self._build_bloom_distribution(
                 target_count=target_count,
                 lesson_size=runtime_effective_lesson_size,
+                bloom_levels=bloom_levels,
             ),
         )
         metadata = self._decorate_generation_metadata(
@@ -726,6 +757,11 @@ class LessonScopedQuestionGenerationService:
         )
 
         if not overwrite and existing_questions:
+            existing_coverage = self._estimate_existing_concept_coverage(
+                questions=existing_questions,
+                valid_target_concepts=valid_target_concepts,
+            )
+            existing_mix = self._summarize_existing_question_mix(existing_questions)
             source_stats["existing_reuse"] = len(existing_questions)
             return {
                 "lesson_id": lesson_id,
@@ -760,12 +796,18 @@ class LessonScopedQuestionGenerationService:
                 "degraded_mode": degraded_mode,
                 "degraded_reason": degraded_reason,
                 "llm_status": llm_status_code,
-                "difficulty_mix": assessment_plan.difficulty_distribution,
-                "bloom_mix": assessment_plan.bloom_distribution,
-                "concept_coverage_rate": None,
+                "difficulty_mix": existing_mix.get(
+                    "difficulty_mix", assessment_plan.difficulty_distribution
+                ),
+                "bloom_mix": existing_mix.get(
+                    "bloom_mix", assessment_plan.bloom_distribution
+                ),
+                "concept_coverage_rate": existing_coverage.get("coverage_rate"),
                 "valid_target_concepts": list(valid_target_concepts),
                 "rejected_target_concepts": list(rejected_target_concepts),
-                "concept_coverage_status": "reused_existing",
+                "concept_coverage_status": existing_coverage.get(
+                    "status", "reused_existing"
+                ),
                 "next_action": {},
                 "message": (
                     "Giữ lại bộ câu hỏi hiện có của lesson vì yêu cầu không cho phép ghi đè."
@@ -1047,9 +1089,10 @@ class LessonScopedQuestionGenerationService:
                         target_count=target_count,
                         mastery=mastery,
                     ),
-                    bloom_distribution=lesson_assessment_sizing_service.compute_bloom_distribution(
+                    bloom_distribution=self._build_bloom_distribution(
                         target_count=target_count,
                         lesson_size=runtime_effective_lesson_size,
+                        bloom_levels=bloom_levels,
                     ),
                 )
             refreshed = None
@@ -1343,9 +1386,9 @@ class LessonScopedQuestionGenerationService:
         for question in finalized_questions:
             question_resource_ids = sorted(
                 {
-                    str(chunk_map[chunk_id]["resource_id"])
+                    str(chunk_map[chunk_id].get("resource_id"))
                     for chunk_id in question.chunk_ids
-                    if chunk_id in chunk_map
+                    if chunk_id in chunk_map and chunk_map[chunk_id].get("resource_id")
                 }
             )
             question_page_numbers = sorted(
@@ -1390,9 +1433,9 @@ class LessonScopedQuestionGenerationService:
                         if chunk_id in chunk_map
                     ],
                     "resource_ids": [
-                        chunk_map[chunk_id]["resource_id"]
+                        chunk_map[chunk_id].get("resource_id")
                         for chunk_id in question.chunk_ids
-                        if chunk_id in chunk_map
+                        if chunk_id in chunk_map and chunk_map[chunk_id].get("resource_id")
                     ],
                     "question_type": question.question_type,
                     "question": question.question,
@@ -1419,9 +1462,59 @@ class LessonScopedQuestionGenerationService:
                         **metadata,
                         **question.metadata,
                         "generation_source": str(
-                            question.metadata.get("generation_source")
-                            or question.metadata.get("generation_mode")
+                            (
+                                "local_fallback"
+                                if str(
+                                    question.metadata.get("generation_source")
+                                    or question.metadata.get("generation_mode")
+                                    or ""
+                                ).strip()
+                                == "local_fill"
+                                else (
+                                    question.metadata.get("generation_source")
+                                    or question.metadata.get("generation_mode")
+                                )
+                            )
                             or "llm"
+                        ),
+                        "source": str(
+                            (
+                                "local_fallback"
+                                if str(
+                                    question.metadata.get("generation_source")
+                                    or question.metadata.get("generation_mode")
+                                    or ""
+                                ).strip()
+                                == "local_fill"
+                                else (
+                                    question.metadata.get("generation_source")
+                                    or question.metadata.get("generation_mode")
+                                )
+                            )
+                            or "llm"
+                        ),
+                        "lesson_id": lesson_id,
+                        "question_set_kind": question_set_kind,
+                        "chunk_id": (
+                            str(question.chunk_ids[0]) if question.chunk_ids else None
+                        ),
+                        "resource_id": (
+                            question_resource_ids[0] if question_resource_ids else None
+                        ),
+                        "target_concepts": list(
+                            question.metadata.get("target_concepts")
+                            or metadata.get("target_concepts")
+                            or []
+                        ),
+                        "bloom_level": question.bloom_level,
+                        "difficulty": question.difficulty,
+                        "quality_score": float(
+                            question.metadata.get("quality_score") or 0.0
+                        ),
+                        "generation_reason": str(
+                            metadata.get("generation_reason")
+                            or question.metadata.get("generation_reason")
+                            or "lesson_question_generation"
                         ),
                         "tracked_bloom_level": question.bloom_level,
                         "tracked_difficulty": question.difficulty,
@@ -2032,12 +2125,36 @@ class LessonScopedQuestionGenerationService:
         generation_metadata["semantic_filtered_count"] = int(
             generation_metadata.get("semantic_filtered_count", 0) or 0
         ) + int(semantic_filtered_count or 0)
+        pre_verification_pool = list(candidate_pool)
         candidate_pool, verification_filtered_count, verification_diagnostics = self._verify_candidate_questions(
             questions=candidate_pool,
             target_concepts=required_target_concepts,
             requested_bloom_levels=bloom_levels,
             chunk_map=chunk_map,
         )
+        if not candidate_pool and pre_verification_pool:
+            salvaged_pool = self._extend_with_salvageable_local_questions(
+                current_questions=[],
+                source_questions=pre_verification_pool,
+                target_count=target_count,
+            )
+            if salvaged_pool:
+                candidate_pool = [
+                    replace(
+                        item,
+                        metadata={
+                            **dict(item.metadata or {}),
+                            "verification_salvaged": True,
+                            "verification_pass": False,
+                            "verification_hard_fail": False,
+                        },
+                    )
+                    for item in salvaged_pool
+                ]
+                verification_diagnostics = {
+                    **verification_diagnostics,
+                    "salvaged_count": len(candidate_pool),
+                }
         generation_metadata["verification_filtered_count"] = int(
             generation_metadata.get("verification_filtered_count", 0) or 0
         ) + int(verification_filtered_count or 0)
@@ -2740,6 +2857,71 @@ class LessonScopedQuestionGenerationService:
             "total_concepts": len(normalized_targets),
             "is_valid": coverage_rate >= 0.8,
             "status": status,
+        }
+
+    def _estimate_existing_concept_coverage(
+        self,
+        *,
+        questions: Sequence[Dict[str, Any]],
+        valid_target_concepts: Sequence[str],
+    ) -> Dict[str, Any]:
+        normalized_targets = lesson_assessment_sizing_service._normalize_concepts(
+            valid_target_concepts or []
+        )
+        if not normalized_targets:
+            return {"coverage_rate": None, "status": "reused_existing"}
+        covered: set[str] = set()
+        for question in questions or []:
+            metadata = (
+                question.get("metadata")
+                if isinstance(question.get("metadata"), dict)
+                else {}
+            )
+            candidates = [
+                question.get("concept_id"),
+                metadata.get("concept_focus"),
+                metadata.get("question_focus"),
+                *(metadata.get("target_concepts") or []),
+                *(metadata.get("matched_target_concepts") or []),
+            ]
+            normalized_candidates = set(
+                lesson_assessment_sizing_service._normalize_concepts(candidates)
+            )
+            covered.update(
+                concept
+                for concept in normalized_targets
+                if concept in normalized_candidates
+            )
+        coverage_rate = len(covered) / max(1, len(normalized_targets))
+        if coverage_rate >= 0.8:
+            status = "reused_existing_covered"
+        elif coverage_rate >= 0.5:
+            status = "reused_existing_partial_coverage"
+        else:
+            status = "reused_existing_insufficient_coverage"
+        return {
+            "coverage_rate": round(coverage_rate, 4),
+            "status": status,
+            "covered_concepts": sorted(covered),
+            "missing_concepts": [
+                concept for concept in normalized_targets if concept not in covered
+            ],
+        }
+
+    @staticmethod
+    def _summarize_existing_question_mix(
+        questions: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        difficulty_counts: Dict[str, int] = {}
+        bloom_counts: Dict[str, int] = {}
+        for question in questions or []:
+            difficulty = str(question.get("difficulty") or "unknown").strip().lower()
+            bloom = str(question.get("bloom_level") or "unknown").strip().lower()
+            difficulty_counts[difficulty] = difficulty_counts.get(difficulty, 0) + 1
+            bloom_counts[bloom] = bloom_counts.get(bloom, 0) + 1
+        return {
+            "difficulty_mix": {"counts": difficulty_counts},
+            "bloom_mix": {"counts": bloom_counts},
         }
 
     def _question_covers_canonical_concept(
@@ -4297,6 +4479,148 @@ class LessonScopedQuestionGenerationService:
             chunks = [chunk_map[item] for item in chunk_ids if item in chunk_map]
         return recommendation, chunk_ids, chunks
 
+    def _build_local_context_generation_scope(
+        self,
+        *,
+        lesson_id: str,
+        context: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], List[str], List[Dict[str, Any]]]:
+        lesson = context.get("lesson") or {}
+        metadata = (
+            lesson.get("metadata") if isinstance(lesson.get("metadata"), dict) else {}
+        )
+        local_chunk_id = f"local_context_{lesson_id}"
+        target_concepts = list(
+            metadata.get("target_concepts")
+            or metadata.get("covered_concepts")
+            or lesson.get("keywords")
+            or []
+        )
+        content = " ".join(
+            str(item or "").strip()
+            for item in [
+                lesson.get("title"),
+                lesson.get("summary"),
+                " ".join(
+                    str(value) for value in lesson.get("learning_objectives") or []
+                ),
+                " ".join(str(value) for value in target_concepts),
+            ]
+            if str(item or "").strip()
+        )
+        if not content:
+            content = "Lesson context is unavailable; generate a basic review question."
+        chunk = {
+            "_id": local_chunk_id,
+            "resource_id": None,
+            "chunk_index": 0,
+            "content": content,
+            "covered_concepts": target_concepts,
+            "matched_required_concepts": target_concepts,
+            "questionability_score": 0.25,
+            "metadata": {
+                "source": "lesson_local_context",
+                "covered_concepts": target_concepts,
+                "degraded_mode": True,
+                "degraded_reason": "no_recommended_chunks",
+            },
+        }
+        recommendation = {
+            "_id": f"local_recommendation_{lesson_id}",
+            "lesson_id": lesson.get("_id") or lesson_id,
+            "chunk_ids": [local_chunk_id],
+            "resource_ids": [],
+            "selection_strategy": "local_context_no_chunks_v1",
+            "metadata": {
+                "source": "local_context_fallback",
+                "degraded_mode": True,
+                "degraded_reason": "no_recommended_chunks",
+                "selected_count": 1,
+            },
+            "sequence_metadata": {
+                "required_concepts": target_concepts,
+                "covered_required_concepts": target_concepts,
+                "missing_required_concepts": [],
+            },
+            "recommended_chunks": [
+                {
+                    "chunk_id": local_chunk_id,
+                    "resource_id": None,
+                    "chunk_index": 0,
+                    "covered_concepts": target_concepts,
+                    "matched_required_concepts": target_concepts,
+                    "questionability_score": 0.25,
+                    "estimated_read_time": 1,
+                    "score": 0.0,
+                }
+            ],
+        }
+        logger.warning(
+            "lesson_question_generation_no_chunks_local_context | lesson_id=%s",
+            lesson_id,
+        )
+        return recommendation, [local_chunk_id], [chunk]
+
+    @staticmethod
+    def _resolve_bloom_levels_for_difficulty(
+        *,
+        difficulty: str,
+        bloom_levels: Sequence[str],
+        target_count: int,
+    ) -> List[str]:
+        requested = [
+            str(item or "").strip().lower()
+            for item in bloom_levels or []
+            if str(item or "").strip()
+        ]
+        level = str(difficulty or "beginner").strip().lower()
+        if level == "advanced":
+            preferred = ["analyze", "evaluate", "create", "apply"]
+        elif level == "intermediate":
+            preferred = ["understand", "apply", "analyze"]
+        else:
+            preferred = ["remember", "understand", "apply"]
+        merged: List[str] = []
+        for item in [*requested, *preferred]:
+            if item and item not in merged:
+                merged.append(item)
+        minimum_diversity = min(max(1, int(target_count or 1)), len(preferred))
+        for item in preferred:
+            if len(merged) >= minimum_diversity:
+                break
+            if item not in merged:
+                merged.append(item)
+        return merged or preferred[:minimum_diversity]
+
+    @staticmethod
+    def _build_bloom_distribution(
+        *,
+        target_count: int,
+        lesson_size: str,
+        bloom_levels: Sequence[str],
+    ) -> Dict[str, Any]:
+        normalized = [
+            str(item or "").strip().lower()
+            for item in bloom_levels or []
+            if str(item or "").strip()
+        ]
+        if not normalized:
+            return lesson_assessment_sizing_service.compute_bloom_distribution(
+                target_count=target_count,
+                lesson_size=lesson_size,
+            )
+        bounded_target = max(1, int(target_count or 1))
+        counts = {level: 0 for level in normalized}
+        for index in range(bounded_target):
+            counts[normalized[index % len(normalized)]] += 1
+        return {
+            "ratios": {
+                level: round(count / bounded_target, 4)
+                for level, count in counts.items()
+            },
+            "counts": counts,
+        }
+
     @staticmethod
     def _enrich_chunks_with_recommendation_metadata(
         *,
@@ -4376,14 +4700,14 @@ class LessonScopedQuestionGenerationService:
         chunk_payload = [
             {
                 "chunk_id": str(chunk["_id"]),
-                "resource_id": str(chunk["resource_id"]),
+                "resource_id": str(chunk.get("resource_id") or ""),
                 "chunk_index": int(chunk.get("chunk_index", 0)),
                 "page_number": self.lesson_chunk_service._resolve_page_number(chunk),
                 "resource_title": str(
-                    resource_map.get(str(chunk["resource_id"]), {}).get("title") or ""
+                    resource_map.get(str(chunk.get("resource_id") or ""), {}).get("title") or ""
                 ),
                 "resource_source": str(
-                    resource_map.get(str(chunk["resource_id"]), {}).get("source") or ""
+                    resource_map.get(str(chunk.get("resource_id") or ""), {}).get("source") or ""
                 ),
                 "score": float(
                     context.get("recommendation_scores", {}).get(str(chunk["_id"]), 0.0)
@@ -5837,6 +6161,8 @@ class LessonScopedQuestionGenerationService:
             return "method"
         if normalized in {"string", "integer", "float", "boolean", "variable", "value"}:
             return "data_type"
+        if normalized in {"class", "classes"}:
+            return "class"
         if normalized in {
             "operator",
             "arithmetic",

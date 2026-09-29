@@ -9,9 +9,8 @@ The repository is structured as a modular monolith:
 - `backend/app/ai_module/`: LLM, embeddings, and retrieval integrations
 - `backend/app/services/`: domain orchestration for learning paths, lessons, recommendations, adaptive logic, and tutoring
 - `backend/app/repositories/`: MongoDB access layer
-- `docs/`: release-facing architecture and contributor documentation
 
-## Features
+## Main Features
 
 - JWT-based authentication and learner profile management
 - AI-generated learning paths by subject, goal, and level
@@ -25,12 +24,12 @@ The repository is structured as a modular monolith:
 ## Tech Stack
 
 - Frontend: React, TypeScript, Vite, Tailwind CSS, React Router
-- Backend: FastAPI, Pydantic, PyMongo, python-jose, passlib
-- AI: Google Gemini, sentence-transformers, BM25 retrieval
+- Backend: FastAPI, Pydantic, PyMongo, PyJWT, passlib
+- AI: Google Gemini, BM25 retrieval; optional sentence-transformers and Chroma integrations
 - Data: MongoDB
 - Tooling: ESLint, TypeScript, pytest, Docker Compose
 
-## Architecture Summary
+## Architecture
 
 The backend follows a service-oriented layered architecture inside one deployable application. API routers handle transport concerns, services own domain workflows, repositories isolate persistence, and AI modules encapsulate model and embedding integrations. The frontend consumes the REST API through typed service modules.
 
@@ -43,34 +42,28 @@ Strengths:
 Current limitations:
 
 - Several backend services and frontend pages are very large and hard to reason about
-- Test coverage is minimal
+- Current tests focus on selected curriculum, adaptive-learning, and recommendation workflows; they do not establish end-to-end coverage
 - Runtime configuration is distributed across multiple files
 - The codebase still contains traces of local/demo workflows that should stay disabled in public deployments
-
-More detail: [docs/ARCHITECTURE.md](/e:/Hocccc/Project/personalized-learning-path-ai/docs/ARCHITECTURE.md)
 
 ## Getting Started
 
 ### Prerequisites
 
-- Python 3.11 or newer
-- Node.js 18 or newer
+- Python 3.12 (used by the backend Docker image and local verification environment)
+- Node.js 20.19+ or 22.12+ (required by the locked Vite version; the frontend package engine declaration is older)
 - MongoDB 7 or newer
 
 ### 1. Backend setup
 
-```bash
+```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
 ```
 
-Optional local embeddings:
-
-```bash
-pip install -r requirements-local-embeddings.txt
-```
+The default requirements do not include `sentence-transformers`, `chromadb`, or spaCy. These integrations load optionally at runtime. A tested optional dependency set still needs manual completion; there is no separate local-embeddings requirements file in this repository.
 
 Required backend variables:
 
@@ -80,6 +73,8 @@ DB_NAME=learning_path_ai
 SECRET_KEY=replace-with-a-random-secret-at-least-32-characters-long
 ```
 
+Replace `SECRET_KEY` with a newly generated random value of at least 32 characters. Configure `GEMINI_API_KEY` or `GEMINI_API_KEYS` for provider-backed AI features. Never put secrets in `VITE_*` variables: those values are exposed to the browser.
+
 Start the API:
 
 ```bash
@@ -88,9 +83,9 @@ python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
 ### 2. Frontend setup
 
-```bash
+```powershell
 cd frontend
-npm install
+npm ci
 copy .env.example .env
 npm run dev
 ```
@@ -127,7 +122,7 @@ Optional development profile with Mongo Express:
 docker compose --profile dev up --build
 ```
 
-See [DOCKER.md](/e:/Hocccc/Project/personalized-learning-path-ai/DOCKER.md) for details.
+See [DOCKER.md](DOCKER.md) for details. Compose uses development settings, fallback passwords, reload, and host-published database ports; deployment hardening and a clean Docker startup still need manual verification. The frontend Dockerfile currently uses Node 18, which does not meet the locked Vite requirement; review that runtime change before relying on Docker.
 
 ## Environment Variables
 
@@ -155,32 +150,40 @@ The checked-in `.env.example` files intentionally keep insecure demo-only option
 Backend:
 
 ```bash
-python -m pytest backend/tests -q
-python -m compileall backend
+python -m compileall -q backend/app backend/main.py
+python -m flake8 backend --select F401,F841,F821,E9
 ```
+
+The local test suite and benchmark scripts are excluded from this repository. If available locally, run backend tests with `python -m pytest backend/tests -q` using a disposable database; imports can initialize MongoDB indexes.
 
 Frontend:
 
 ```bash
 cd frontend
+npm run lint
 npm run type-check
 npm run build
 ```
 
-## Release Notes
+## API / Main Modules
 
-Before publishing this repository publicly:
+- Interactive API documentation: `http://localhost:8000/api/docs`
+- OpenAPI schema: `http://localhost:8000/api/openapi.json`
+- Liveness and readiness: `/api/health` and `/api/ready` (these inspect dependencies)
+- Routers under `backend/app/api/` cover authentication, learning paths, resources, lessons, questions, progress, recommendations, analytics, and tutoring.
+- `backend/app/jobs/` contains explicit batch/backfill entry points; review their database effects before running.
 
-- Generate a real `SECRET_KEY`
-- Keep all `.env` files untracked
-- Review CORS origins for your deployment
-- Keep `ALLOW_INSECURE_EMAIL_ONLY_PASSWORD_RESET` disabled
-- Remove local build artifacts and dependency folders from the working tree
+## Project Structure
 
-## Contributing
+```text
+backend/                 FastAPI entry point and application modules
+frontend/                React application and build configuration
+requirements.txt         Pinned Python dependencies and quality tools
+docker-compose.yml       Local development services
+```
 
-See [CONTRIBUTING.md](/e:/Hocccc/Project/personalized-learning-path-ai/CONTRIBUTING.md).
+## Known Limitations
 
-## License
-
-This project is released under the [MIT License](/e:/Hocccc/Project/personalized-learning-path-ai/LICENSE).
+- Automated checks do not establish safe production authentication, authorization, or deployment.
+- Optional AI backends and provider availability affect retrieval and generation quality.
+- Local uploaded books and benchmark results are excluded from version control; review ownership and privacy before sharing any copies.

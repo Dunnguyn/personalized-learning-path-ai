@@ -13,10 +13,13 @@ import math
 import os
 import re
 from collections import Counter
-from typing import Iterable, List, Sequence
+from time import perf_counter
+from typing import Dict, List, Optional, Sequence
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+from backend.app.utils.performance import add_timing
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +123,13 @@ class QuestionNLPService:
                 break
         return phrases
 
-    def semantic_similarity(self, text: str, targets: Sequence[str]) -> float:
+    def semantic_similarity(
+        self,
+        text: str,
+        targets: Sequence[str],
+        *,
+        timings: Optional[Dict[str, float]] = None,
+    ) -> float:
         normalized_text = self._normalize_text(text)
         normalized_targets = [self._normalize_text(item) for item in targets if item]
         normalized_targets = [item for item in normalized_targets if item]
@@ -129,6 +138,7 @@ class QuestionNLPService:
 
         if self._sentence_transformer is not None:
             try:
+                started_at = perf_counter()
                 embeddings = self._sentence_transformer.encode(
                     [normalized_text, *normalized_targets],
                     convert_to_numpy=True,
@@ -139,13 +149,20 @@ class QuestionNLPService:
                 for target in embeddings[1:]:
                     similarity = float(cosine_similarity(source, target.reshape(1, -1))[0][0])
                     score = max(score, similarity)
+                add_timing(timings, "sentence_transformers_embedding_ms", perf_counter() - started_at)
                 return round(max(0.0, min(score, 1.0)), 4)
             except Exception as exc:
                 logger.debug("SentenceTransformer similarity failed: %s", exc)
 
         return self.tfidf_similarity(normalized_text, normalized_targets)
 
-    def lexical_relevance(self, text: str, targets: Sequence[str]) -> float:
+    def lexical_relevance(
+        self,
+        text: str,
+        targets: Sequence[str],
+        *,
+        timings: Optional[Dict[str, float]] = None,
+    ) -> float:
         normalized_text = self._normalize_text(text)
         normalized_targets = [self._normalize_text(item) for item in targets if item]
         normalized_targets = [item for item in normalized_targets if item]
@@ -154,6 +171,7 @@ class QuestionNLPService:
 
         if self._bm25_class is not None:
             try:
+                started_at = perf_counter()
                 corpus = [
                     re.findall(r"\w+", normalized_text),
                     *[re.findall(r"\w+", target) for target in normalized_targets],
@@ -162,6 +180,7 @@ class QuestionNLPService:
                 query_tokens = [token for target in normalized_targets for token in re.findall(r"\w+", target)]
                 scores = bm25.get_scores(query_tokens)
                 score = float(scores[0]) if len(scores) else 0.0
+                add_timing(timings, "bm25_retrieval_ms", perf_counter() - started_at)
                 return round(max(0.0, math.tanh(score / 6.0)), 4)
             except Exception as exc:
                 logger.debug("BM25 lexical relevance failed: %s", exc)

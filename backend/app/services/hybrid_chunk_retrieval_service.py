@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import re
+from time import perf_counter
 from typing import Any, Callable, Dict, Iterable, List, Sequence
 
 import numpy as np
@@ -204,6 +205,7 @@ class HybridChunkRetrievalService:
         topic: str | None = None,
         level: str | None = None,
         extra_terms: Sequence[str] | None = None,
+        timings: Dict[str, float] | None = None,
     ) -> List[Dict[str, Any]]:
         if not chunks:
             return []
@@ -224,7 +226,14 @@ class HybridChunkRetrievalService:
             or query_payload.get("english_query")
             or str(query or "")
         )
+        started_embedding = perf_counter()
         query_vector = np.array(embed_fn(query_text), dtype=float)
+        if timings is not None:
+            timings["sentence_transformers_embedding_ms"] = round(
+                float(timings.get("sentence_transformers_embedding_ms", 0.0))
+                + (perf_counter() - started_embedding) * 1000.0,
+                3,
+            )
 
         scored: List[Dict[str, Any]] = []
         for chunk in chunks:
@@ -232,7 +241,9 @@ class HybridChunkRetrievalService:
             searchable_text = self._searchable_text(chunk)
             lexical_overlap = self._lexical_overlap_score(terms, searchable_text)
             lexical_backend = question_nlp_service.lexical_relevance(
-                searchable_text, terms[:10]
+                searchable_text,
+                terms[:10],
+                timings=timings,
             )
             lexical_score = self._clamp(max(lexical_overlap, lexical_backend))
 

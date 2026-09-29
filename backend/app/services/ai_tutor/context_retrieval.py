@@ -3,7 +3,7 @@ import os
 import logging
 import re
 import time
-from datetime import datetime
+from time import perf_counter
 from functools import lru_cache
 
 from backend.app.services.ai_tutor.answer_generation import (
@@ -23,6 +23,7 @@ from backend.app.services.ai_tutor.prompting import (
     build_prompt as build_ai_tutor_prompt,
 )
 from backend.app.utils.gemini import get_gemini_client, get_gemini_client_manager
+from backend.app.utils.performance import add_timing
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +293,7 @@ class RAGPipeline:
         goal: Optional[str] = None,
         level: Optional[str] = None,
         k: int = 5,
+        timings: Optional[Dict[str, float]] = None,
     ) -> List[Dict]:
         """
         Retrieve learning materials using semantic search.
@@ -315,6 +317,7 @@ class RAGPipeline:
         k = max(MIN_RESOURCES, min(k, MAX_RESOURCES))
 
         try:
+            started_at = perf_counter()
             logger.debug(
                 f"Retrieving: query={query[:50]}..., goal={goal}, level={level}, k={k}"
             )
@@ -327,7 +330,10 @@ class RAGPipeline:
                 topic=None,  # Disabled topic filter to allow semantic matching
                 level=level,
                 min_score=RETRIEVAL_MIN_SCORE,
+                timings=timings,
             )
+
+            add_timing(timings, "retrieval_total_ms", perf_counter() - started_at)
 
             logger.info(
                 f"Retrieved {len(resources)} resources from database (requested {k})"
@@ -657,7 +663,12 @@ class RAGPipeline:
 
         return None
 
-    def _call_llm_with_retry(self, prompt: str, retry_count: int = 0) -> Optional[str]:
+    def _call_llm_with_retry(
+        self,
+        prompt: str,
+        retry_count: int = 0,
+        timings: Optional[Dict[str, float]] = None,
+    ) -> Optional[str]:
         """
         Call LLM with retry logic.
         """
@@ -674,6 +685,7 @@ class RAGPipeline:
             )
 
             response = None
+            call_started = perf_counter()
 
             # Preferred: Gemini SDK (genai.Client)
             if hasattr(client, "models") and hasattr(client.models, "generate_content"):
@@ -689,6 +701,7 @@ class RAGPipeline:
 
             # Extract text
             text = self._extract_text_from_response(response)
+            add_timing(timings, "gemini_generation_ms", perf_counter() - call_started)
             if text:
                 logger.debug(f"LLM response received: {len(text)} chars")
                 return text.strip()
@@ -710,12 +723,21 @@ class RAGPipeline:
                 return None
             if retry_count < MAX_RETRIES:
                 time.sleep(1)  # Brief backoff before retry
-                return self._call_llm_with_retry(prompt, retry_count + 1)
+                return self._call_llm_with_retry(
+                    prompt,
+                    retry_count + 1,
+                    timings=timings,
+                )
 
             self.stats["llm_failures"] += 1
             return None
 
-    def generate(self, prompt: str, resources: List[Dict] = None) -> str:
+    def generate(
+        self,
+        prompt: str,
+        resources: List[Dict] = None,
+        timings: Optional[Dict[str, float]] = None,
+    ) -> str:
         """
         Generate answer using LLM with safe fallback to knowledge base.
 
@@ -742,7 +764,7 @@ class RAGPipeline:
             return self._generate_fallback_answer(prompt, resources)
 
         # Call LLM
-        answer = self._call_llm_with_retry(prompt)
+        answer = self._call_llm_with_retry(prompt, timings=timings)
 
         if answer:
             self.stats["successful_answers"] += 1
@@ -1206,11 +1228,12 @@ Python nổi tiếng vì cú pháp đơn giản và làm việc lần đầu r�
         goal: str,
         level: str,
         completed: Optional[List[str]] = None,
+        timings: Optional[Dict[str, float]] = None,
     ) -> Dict:
         """
         Execute full QA-RAG pipeline.
         """
-        start_time = time.time()
+        start_time = perf_counter()
         self.stats["total_runs"] += 1
 
         logger.info(
@@ -1229,7 +1252,11 @@ Python nổi tiếng vì cú pháp đơn giản và làm việc lần đầu r�
         try:
             # 1. Retrieve
             resources = self.retrieve_context(
-                query=question, goal=goal, level=level, k=RETRIEVAL_K
+                query=question,
+                goal=goal,
+                level=level,
+                k=RETRIEVAL_K,
+                timings=timings,
             )
 
             # 2. Kiểm tra xem có thể trả lời trực tiếp từ context không
@@ -1269,7 +1296,7 @@ Python nổi tiếng vì cú pháp đơn giản và làm việc lần đầu r�
                 prompt = self.build_prompt(question, context)
 
                 # 5. Generate answer with AI (pass resources for fallback)
-                answer_text = self.generate(prompt, resources)
+                answer_text = self.generate(prompt, resources, timings=timings)
                 if self._last_generation_mode == "fallback":
                     answer_method = "retrieval_fallback"
                 else:
@@ -1277,8 +1304,9 @@ Python nổi tiếng vì cú pháp đơn giản và làm việc lần đầu r�
                     self.stats["ai_answers"] += 1
 
             # 6. Return structured response
-            elapsed_ms = (time.time() - start_time) * 1000
+            elapsed_ms = (perf_counter() - start_time) * 1000
             self.stats["total_latency_ms"] += elapsed_ms
+            add_timing(timings, "rag_total_ms", elapsed_ms / 1000.0)
 
             logger.info(
                 f"RAG pipeline complete: "
@@ -1303,6 +1331,7 @@ Python nổi tiếng vì cú pháp đơn giản và làm việc lần đầu r�
                     for r in resources
                 ],
                 "latency_ms": round(elapsed_ms, 1),
+                "timings": dict(timings or {}),
             }
 
         except Exception as e:
@@ -1338,7 +1367,12 @@ Python nổi tiếng vì cú pháp đơn giản và làm việc lần đầu r�
             logger=logger,
         )
 
-    def generate(self, prompt: str, resources: List[Dict] = None) -> str:
+    def generate(
+        self,
+        prompt: str,
+        resources: List[Dict] = None,
+        timings: Optional[Dict[str, float]] = None,
+    ) -> str:
         return generate_ai_tutor_answer(
             self,
             prompt=prompt,
@@ -1348,6 +1382,7 @@ Python nổi tiếng vì cú pháp đơn giản và làm việc lần đầu r�
             llm_cooldown_until=LLM_COOLDOWN_UNTIL,
             retry_after_seconds=_rag_scope_retry_after_seconds(),
             logger=logger,
+            timings=timings,
         )
 
     def _generate_fallback_answer(

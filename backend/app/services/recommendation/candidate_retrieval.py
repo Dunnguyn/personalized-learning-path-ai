@@ -27,6 +27,11 @@ from backend.app.services.recommendation.explanations import (
 from backend.app.services.recommendation.reranking import (
     rerank_scored_items as rerank_recommendation_items,
 )
+from backend.app.services.recommendation.normalization import (
+    concept_match_score,
+    extract_goal_terms,
+    extract_resource_keys,
+)
 from backend.app.services.recommendation.scoring import (
     compute_final_score as compute_recommendation_final_score,
     concept_gap_fit as compute_recommendation_concept_gap_fit,
@@ -45,17 +50,19 @@ from backend.app.services.resource_quality_service import resource_quality_servi
 
 @dataclass(frozen=True)
 class ResourceRecommendationWeights:
-    semantic_match: float = 0.26
-    chunk_match_score: float = 0.17
-    chunk_coverage_score: float = 0.09
-    concept_gap_fit: float = 0.20
-    difficulty_fit: float = 0.10
-    goal_fit: float = 0.11
-    resource_type_fit: float = 0.04
-    time_budget_fit: float = 0.03
-    quality_score: float = 0.04
-    engagement_fit: float = 0.03
-    expected_learning_gain: float = 0.08
+    semantic_match: float = 0.20
+    chunk_match_score: float = 0.18
+    chunk_coverage_score: float = 0.10
+    concept_gap_fit: float = 0.16
+    target_concept_match: float = 0.11
+    lesson_context_match: float = 0.10
+    difficulty_fit: float = 0.09
+    goal_fit: float = 0.08
+    resource_type_fit: float = 0.03
+    time_budget_fit: float = 0.02
+    quality_score: float = 0.03
+    engagement_fit: float = 0.02
+    expected_learning_gain: float = 0.06
     fatigue_penalty: float = 0.03
 
 
@@ -81,37 +88,52 @@ class HybridRecommendationService:
         "glossary",
         "references",
         "bibliography",
+        "copyright",
+        "license",
+        "author bio",
+        "about the author",
+        "navigation",
+        "footer",
+        "header",
     )
     _MODE_OVERRIDES: Dict[str, Dict[str, float]] = {
         "continue_learning": {
             "semantic_match": 0.24,
-            "chunk_match_score": 0.19,
+            "chunk_match_score": 0.22,
             "chunk_coverage_score": 0.10,
-            "concept_gap_fit": 0.18,
-            "goal_fit": 0.11,
-            "engagement_fit": 0.04,
-            "expected_learning_gain": 0.08,
+            "concept_gap_fit": 0.12,
+            "target_concept_match": 0.10,
+            "lesson_context_match": 0.14,
+            "goal_fit": 0.07,
+            "quality_score": 0.03,
+            "engagement_fit": 0.02,
+            "expected_learning_gain": 0.06,
             "fatigue_penalty": 0.02,
         },
         "reinforce_weaknesses": {
-            "semantic_match": 0.23,
+            "semantic_match": 0.18,
             "chunk_match_score": 0.18,
             "chunk_coverage_score": 0.10,
-            "concept_gap_fit": 0.28,
-            "difficulty_fit": 0.10,
-            "goal_fit": 0.10,
-            "engagement_fit": 0.03,
-            "expected_learning_gain": 0.10,
+            "concept_gap_fit": 0.27,
+            "target_concept_match": 0.15,
+            "lesson_context_match": 0.06,
+            "difficulty_fit": 0.08,
+            "goal_fit": 0.06,
+            "quality_score": 0.03,
+            "engagement_fit": 0.02,
+            "expected_learning_gain": 0.12,
             "fatigue_penalty": 0.02,
         },
         "learn_new": {
-            "semantic_match": 0.30,
-            "chunk_match_score": 0.17,
+            "semantic_match": 0.24,
+            "chunk_match_score": 0.18,
             "chunk_coverage_score": 0.08,
-            "concept_gap_fit": 0.15,
-            "difficulty_fit": 0.13,
+            "concept_gap_fit": 0.11,
+            "target_concept_match": 0.10,
+            "lesson_context_match": 0.06,
+            "difficulty_fit": 0.14,
             "goal_fit": 0.13,
-            "quality_score": 0.04,
+            "quality_score": 0.03,
             "engagement_fit": 0.02,
             "expected_learning_gain": 0.07,
             "fatigue_penalty": 0.02,
@@ -236,8 +258,9 @@ class HybridRecommendationService:
                 str((resource.get("metadata") or {}).get("summary") or ""),
             ]
         ).lower()
-        matched = sum(1 for token in goal_tokens if token in text)
-        return self._clamp(matched / max(len(goal_tokens), 1))
+        lexical = sum(1 for token in goal_tokens if token in text) / max(len(goal_tokens), 1)
+        alias = concept_match_score(goal_tokens[:8], text)
+        return self._clamp(max(lexical, alias))
 
     @classmethod
     def _lexical_overlap_score(cls, terms: Sequence[str], text: str) -> float:
@@ -299,7 +322,19 @@ class HybridRecommendationService:
             noise += 0.5
         if any(heading_text.startswith(item) for item in cls._STRUCTURAL_NOISE_HEADINGS):
             noise += 0.45
-        if any(item in normalized_content for item in ("table of contents", "glossary", "bibliography")):
+        if any(
+            item in normalized_content
+            for item in (
+                "table of contents",
+                "glossary",
+                "bibliography",
+                "references",
+                "copyright",
+                "license",
+                "all rights reserved",
+                "about the author",
+            )
+        ):
             noise += 0.30
         if lines:
             noise += 0.25 * cls._clamp(index_like_lines / max(min(len(lines), 6), 1) * 2.0)
@@ -309,6 +344,10 @@ class HybridRecommendationService:
             noise -= 0.12
         if len(cls._tokenize(content)) <= 18:
             noise += 0.10
+        link_hits = len(re.findall(r"https?://|www\.", content))
+        empty_bullets = len(re.findall(r"^\s*(?:[-*]|\d+\.)\s*$", content, flags=re.MULTILINE))
+        if lines:
+            noise += 0.08 * cls._clamp((link_hits + empty_bullets) / len(lines))
         return cls._clamp(noise)
 
     def _difficulty_fit(self, learner_level: str, resource_level: str) -> float:
@@ -829,7 +868,10 @@ class HybridRecommendationService:
         if not normalized_terms:
             return False
         text = self._resource_text(resource)
-        return any(term in text for term in normalized_terms)
+        return any(term in text for term in normalized_terms) or concept_match_score(
+            normalized_terms,
+            text,
+        ) > 0.0
 
     def _build_relevance_query(
         self,
@@ -878,6 +920,102 @@ class HybridRecommendationService:
             ),
         ]
         return " ".join(part for part in parts if part).strip()
+
+    def _build_recommendation_query_context(
+        self,
+        *,
+        goal: str,
+        level: str,
+        mode: str,
+        learner_state: Dict[str, Any],
+        lesson_context: Dict[str, Any] | None,
+        profile_context: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        lesson_context = lesson_context or {}
+        profile_context = profile_context or {}
+        lesson_payload = lesson_semantic_query_service.build_query_payload(
+            title=str(lesson_context.get("title") or ""),
+            summary=str(lesson_context.get("summary") or ""),
+            objectives=[
+                str(item)
+                for item in lesson_context.get("learning_objectives", [])
+                if item
+            ],
+            keywords=[str(item) for item in lesson_context.get("keywords", []) if item],
+            subject_topic=str(lesson_context.get("topic") or ""),
+            goal=str(goal or ""),
+            extra_terms=[
+                str(item)
+                for item in learner_state.get("current_focus_concepts", [])
+                if item
+            ],
+        )
+        target_concepts = self._dedupe_terms(
+            [
+                *[str(item) for item in lesson_context.get("keywords", []) if item],
+                *lesson_payload.get("english_terms", []),
+            ],
+            limit=12,
+        )
+        weak_concepts = self._dedupe_terms(
+            [
+                str(item)
+                for item in learner_state.get("current_focus_concepts", [])
+                if item
+            ],
+            limit=10,
+        )
+        goal_terms = extract_goal_terms(goal)
+        anchor_phrases = self._dedupe_terms(
+            [
+                *target_concepts,
+                *weak_concepts,
+                *goal_terms,
+                str(lesson_context.get("title") or ""),
+                str(lesson_context.get("summary") or ""),
+            ],
+            limit=18,
+        )
+        if mode == "reinforce_weaknesses":
+            lead_terms = [*weak_concepts, *target_concepts, *goal_terms]
+            desired_role = "practice"
+        elif mode == "learn_new":
+            lead_terms = [*goal_terms, *target_concepts, *weak_concepts]
+            desired_role = "explanation"
+        else:
+            lead_terms = [*target_concepts, *weak_concepts, *goal_terms]
+            desired_role = "worked_example"
+        query_terms = self._dedupe_terms(
+            [
+                str(lesson_payload.get("bilingual_query") or ""),
+                *lead_terms,
+                str(profile_context.get("target_role") or ""),
+                str(profile_context.get("target_outcome") or ""),
+                str(level or ""),
+            ],
+            limit=32,
+        )
+        return {
+            "goal": str(goal or ""),
+            "level": str(level or ""),
+            "mode": mode,
+            "lesson": {
+                "lesson_id": str(lesson_context.get("lesson_id") or ""),
+                "title": str(lesson_context.get("title") or ""),
+                "summary": str(lesson_context.get("summary") or ""),
+            },
+            "target_concepts": target_concepts,
+            "weak_concepts": weak_concepts,
+            "focus_concepts": weak_concepts,
+            "preferred_resource_type": str(
+                profile_context.get("preferred_resource_type") or "mixed"
+            ),
+            "desired_resource_role": desired_role,
+            "query_text": " ".join(query_terms),
+            "anchor_phrases": anchor_phrases,
+            "negative_terms": [],
+            "lesson_query_payload": lesson_payload,
+        }
 
     def _apply_hard_filters(
         self,
@@ -1005,7 +1143,15 @@ class HybridRecommendationService:
             for item in progress_rows
         }
 
-        relevance_query = self._build_relevance_query(
+        query_context = self._build_recommendation_query_context(
+            goal=goal,
+            level=level,
+            mode=mode,
+            learner_state=learner_state,
+            lesson_context=lesson_context,
+            profile_context=profile_context,
+        )
+        relevance_query = query_context.get("query_text") or self._build_relevance_query(
             goal=goal,
             learner_state=learner_state,
             lesson_context=lesson_context,
@@ -1053,6 +1199,7 @@ class HybridRecommendationService:
                 "recommendation_mode": mode,
                 "query_debug": {
                     "relevance_query": relevance_query,
+                    "recommendation_query_context": query_context,
                     "lesson_query_payload": lesson_semantic_query_service.build_query_payload(
                         title=str((lesson_context or {}).get("title") or ""),
                         summary=str((lesson_context or {}).get("summary") or ""),
@@ -1085,13 +1232,19 @@ class HybridRecommendationService:
             goal_vector = np.array(embed_text(relevance_query or goal), dtype=float)
         except Exception:
             goal_vector = None
-        goal_tokens = self._goal_tokens(relevance_query or goal)
-        focus_concepts = [str(item).lower() for item in learner_state.get("current_focus_concepts", [])]
+        goal_tokens = extract_goal_terms(relevance_query or goal)
+        focus_concepts = [
+            str(item).lower()
+            for item in (
+                query_context.get("focus_concepts")
+                or learner_state.get("current_focus_concepts", [])
+            )
+        ]
         preferred_resource_type = str(
             profile_context.get("preferred_resource_type") or "mixed"
         )
         time_budget_minutes = int(profile_context.get("time_budget_minutes") or 0)
-        lesson_query_payload = lesson_semantic_query_service.build_query_payload(
+        lesson_query_payload = query_context.get("lesson_query_payload") or lesson_semantic_query_service.build_query_payload(
             title=str((lesson_context or {}).get("title") or ""),
             summary=str((lesson_context or {}).get("summary") or ""),
             objectives=[
@@ -1125,10 +1278,32 @@ class HybridRecommendationService:
             limit=limit,
         )
         weights = self._weights_for_mode(mode)
+        filter_debug = getattr(self, "_last_filter_debug", {})
+        feedback_signals = self.repository.get_recent_resource_feedback(user_id)
+        target_concepts = [
+            str(item)
+            for item in (
+                query_context.get("target_concepts")
+                or query_context.get("focus_concepts")
+                or []
+            )
+            if str(item).strip()
+        ]
+        lesson_terms = [
+            str((lesson_context or {}).get("title") or ""),
+            str((lesson_context or {}).get("summary") or ""),
+            *[
+                str(item)
+                for item in (lesson_context or {}).get("learning_objectives", [])
+                if item
+            ],
+            *[str(item) for item in (lesson_context or {}).get("keywords", []) if item],
+        ]
 
         scored_items: List[Dict[str, Any]] = []
         for resource in resources:
             resource_key = self.repository.get_resource_key(resource)
+            resource_aliases = extract_resource_keys(resource)
             metadata = resource.get("metadata") or {}
             concept_id = int(resource.get("concept_id") or metadata.get("concept_id") or 0)
             mastery = mastery_map.get(concept_id, 0.0)
@@ -1164,6 +1339,28 @@ class HybridRecommendationService:
                 learner_state=learner_state,
                 explanation_time=int(preview_explanation.get("estimated_time") or 12),
             )
+            target_concept_match = concept_match_score(
+                target_concepts or focus_concepts or goal_tokens[:6],
+                self._resource_text(resource),
+            )
+            lesson_context_match = max(
+                concept_match_score(lesson_terms, self._resource_text(resource)),
+                self._safe_float(chunk_signal.get("chunk_match_score"), 0.0),
+            )
+            feedback_signal = next(
+                (
+                    feedback_signals[key]
+                    for key in resource_aliases
+                    if key in feedback_signals
+                ),
+                {},
+            )
+            feedback_penalty = 0.0
+            feedback_boost = 0.0
+            if feedback_signal.get("negative"):
+                feedback_penalty = 0.35
+            elif feedback_signal.get("positive"):
+                feedback_boost = 0.04
 
             components = {
                 "semantic_match": round(self._semantic_match(goal_vector, resource), 6),
@@ -1174,6 +1371,8 @@ class HybridRecommendationService:
                     self._safe_float(chunk_signal.get("chunk_coverage_score"), 0.0), 6
                 ),
                 "concept_gap_fit": round(concept_gap_fit, 6),
+                "target_concept_match": round(target_concept_match, 6),
+                "lesson_context_match": round(lesson_context_match, 6),
                 "difficulty_fit": round(
                     self._difficulty_fit(level, str(resource.get("level") or level)),
                     6,
@@ -1192,9 +1391,11 @@ class HybridRecommendationService:
                 "quality_score": round(self._safe_float(quality.get("quality_score"), 0.0), 6),
                 "engagement_fit": round(self._engagement_fit(quality), 6),
                 "expected_learning_gain": round(expected_learning_gain, 6),
-                "fatigue_penalty": round(fatigue_penalty, 6),
+                "feedback_penalty": round(feedback_penalty, 6),
+                "fatigue_penalty": round(fatigue_penalty + feedback_penalty - feedback_boost, 6),
             }
             final_score = self._compute_final_score(components=components, weights=weights)
+            components["final_base_score"] = round(final_score, 6)
 
             scored_items.append(
                 {
@@ -1209,6 +1410,7 @@ class HybridRecommendationService:
                     "level": resource.get("level"),
                     "embedding": resource.get("embedding"),
                     "chunk_signal": chunk_signal,
+                    "filter_stage_used": filter_debug.get("filter_stage_used"),
                 }
             )
 
@@ -1247,6 +1449,15 @@ class HybridRecommendationService:
                 mode=mode,
                 level=level,
             )
+            cold_start = not progress_rows and not learner_state.get("recent_active_days")
+            payload["cold_start"] = bool(cold_start)
+            payload["personalization_confidence"] = "low" if cold_start else "medium"
+            if cold_start:
+                payload.setdefault("why_selected", [])
+                payload["why_selected"] = [
+                    "Gợi ý dựa trên mục tiêu và trình độ vì chưa có nhiều lịch sử học tập",
+                    *payload["why_selected"],
+                ][:5]
             recommended.append(payload)
             self._persist_explanation_record(
                 user_id=user_id,
@@ -1256,6 +1467,7 @@ class HybridRecommendationService:
             )
 
         progress_percentage = (len(completed) / len(goal_concepts) * 100.0) if goal_concepts else 0.0
+        cold_start = not progress_rows and not learner_state.get("recent_active_days")
         return {
             "recommended": recommended,
             "completed_concepts": len(completed),
@@ -1271,10 +1483,14 @@ class HybridRecommendationService:
                     "target_outcome": profile_context.get("target_outcome"),
                 },
                 "recommendation_mode": mode,
+                "cold_start": bool(cold_start),
+                "personalization_confidence": "low" if cold_start else "medium",
                 "query_debug": {
                     "relevance_query": relevance_query,
-                "lesson_query_payload": lesson_query_payload,
-            },
+                    "recommendation_query_context": query_context,
+                    "filter_stages": getattr(self, "_last_filter_debug", {}),
+                    "lesson_query_payload": lesson_query_payload,
+                },
         }
 
     def recommendation_debug_snapshot(
@@ -1307,7 +1523,20 @@ class HybridRecommendationService:
             },
             "learner_state": result.get("learner_state", {}),
             "profile_context": result.get("profile_context", {}),
+            "cold_start": result.get("cold_start", False),
+            "personalization_confidence": result.get("personalization_confidence"),
             "query_debug": result.get("query_debug", {}),
+            "filter_stages": (result.get("query_debug", {}) or {}).get("filter_stages", {}),
+            "resource_key_normalization": [
+                {
+                    "resource_id": item.get("resource_id"),
+                    "canonical_resource_key": item.get("canonical_resource_key"),
+                    "raw_resource_id": item.get("raw_resource_id"),
+                    "mongo_id": item.get("mongo_id"),
+                    "aliases": item.get("resource_key_aliases", [])[:6],
+                }
+                for item in result.get("recommended", [])[: min(limit, 10)]
+            ],
             "reranking": result.get("reranking", {}),
             "recommended_debug": result.get("recommended", []),
         }

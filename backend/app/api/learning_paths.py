@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from backend.app.api.auth import get_current_user
 from backend.app.api.schemas import (
@@ -60,6 +62,9 @@ def generate_learning_path(
                 else str(personalization.get("level") or "beginner")
             ),
             user_id=user_id,
+            curriculum_depth=payload.curriculum_depth,
+            target_chapter_count=payload.target_chapter_count,
+            target_lesson_count=payload.target_lesson_count,
         )
         initialized_states = knowledge_tracing_service.bootstrap_from_generated_path(
             user_id=user_id,
@@ -91,6 +96,16 @@ def generate_learning_path(
             mastery_threshold=result.get("mastery_threshold"),
             curriculum_source=result.get("curriculum_source", "fallback"),
             llm_status=result.get("llm_status"),
+            generation_status=result.get("generation_status", "completed"),
+            learner_model_version=result.get("learner_model_version"),
+            personalization_summary=result.get("personalization_summary", {}),
+            path_explanations=result.get("path_explanations", []),
+            degraded_mode=bool(result.get("degraded_mode", False)),
+            curriculum_size_policy=result.get("curriculum_size_policy", {}),
+            total_lessons=result.get("total_lessons"),
+            total_chapters=result.get("total_chapters"),
+            curriculum_depth=result.get("curriculum_depth"),
+            sizing_reason=result.get("sizing_reason"),
             message=result.get("message", ""),
         )
     except ValueError as exc:
@@ -107,6 +122,29 @@ def generate_learning_path(
         ) from exc
     except Exception as exc:
         logger.exception("Failed to generate hybrid learning path: %s", exc)
+        try:
+            failed_path = learning_path_service.learning_path_repository.collection.find_one(
+                {
+                    "user_id": user_id,
+                    "subject_id": subject_id,
+                    "goal": payload.goal or personalization.get("goal", ""),
+                    "generation_status": "generating",
+                },
+                sort=[("created_at", -1)],
+            )
+            if failed_path:
+                learning_path_service.learning_path_repository.collection.update_one(
+                    {"_id": failed_path["_id"]},
+                    {
+                        "$set": {
+                            "generation_status": "failed",
+                            "metadata.generation_status": "failed",
+                            "metadata.failure_reason": str(exc)[:500],
+                        }
+                    },
+                )
+        except Exception:
+            logger.debug("Could not mark failed learning path generation", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not generate learning path.",
@@ -365,6 +403,7 @@ def record_lesson_study_time(
             user_id=user_id,
             lesson_id=payload.lesson_id,
             seconds_spent=payload.seconds_spent,
+            tracked_date=payload.tracked_date,
         )
         knowledge_tracing_service.update_from_interaction(
             user_id=user_id,
@@ -400,12 +439,27 @@ def record_lesson_study_time(
     response_model=StudySummaryResponse,
     status_code=status.HTTP_200_OK,
 )
-def get_study_summary(current_user=Depends(get_current_user)):
+def get_study_summary(
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+    days: int = Query(default=7, ge=1, le=90),
+    current_user=Depends(get_current_user),
+):
     """Return aggregated study time and recent calendar data for the current user."""
     user_id = str(current_user.get("_id", ""))
     try:
-        result = learning_path_service.get_study_summary(user_id=user_id, days=7)
+        result = learning_path_service.get_study_summary(
+            user_id=user_id,
+            days=days,
+            start_date=start_date,
+            end_date=end_date,
+        )
         return StudySummaryResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     except Exception as exc:
         logger.exception("Failed to load study summary: %s", exc)
         raise HTTPException(
@@ -438,6 +492,16 @@ def get_learning_path(path_id: str, current_user=Depends(get_current_user)):
             mastery_threshold=result.get("mastery_threshold"),
             curriculum_source=result.get("curriculum_source", "fallback"),
             llm_status=result.get("llm_status"),
+            generation_status=result.get("generation_status", "completed"),
+            learner_model_version=result.get("learner_model_version"),
+            personalization_summary=result.get("personalization_summary", {}),
+            path_explanations=result.get("path_explanations", []),
+            degraded_mode=bool(result.get("degraded_mode", False)),
+            curriculum_size_policy=result.get("curriculum_size_policy", {}),
+            total_lessons=result.get("total_lessons"),
+            total_chapters=result.get("total_chapters"),
+            curriculum_depth=result.get("curriculum_depth"),
+            sizing_reason=result.get("sizing_reason"),
             message=result.get("message", ""),
         )
     except ValueError as exc:

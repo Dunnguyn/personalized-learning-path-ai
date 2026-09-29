@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,10 @@ from backend.app.services.progress_evaluation_service import progress_evaluation
 from backend.app.services.retry_strategy_service import retry_strategy_service
 
 logger = logging.getLogger(__name__)
+ADAPTIVE_QUIZ_LLM_ENABLED = (
+    os.getenv("ADAPTIVE_QUIZ_LLM_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 
 
 class AdaptiveLearningService:
@@ -700,7 +705,11 @@ class AdaptiveLearningService:
             ]
             or fallback_concepts,
             "allow_llm": bool(
-                lesson_plan.lesson_size in {"medium", "large"} or lesson_mastery >= 0.55
+                ADAPTIVE_QUIZ_LLM_ENABLED
+                and (
+                    lesson_plan.lesson_size in {"medium", "large"}
+                    or lesson_mastery >= 0.55
+                )
             ),
             "prefer_template": bool(
                 lesson_plan.lesson_size == "small" and lesson_mastery < 0.45

@@ -31,9 +31,32 @@ import type {
 
 const DEFAULT_GENERATED_AT = () => new Date().toISOString();
 export type ApiRecord = Record<string, unknown>;
+const MONGO_OBJECT_ID_TOKEN_RE = /\b[a-f0-9]{24}\b\s*/gi;
 
 export const asRecord = (value: unknown): ApiRecord =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as ApiRecord) : {};
+
+const asFiniteNumber = (value: unknown, fallback = 0): number => {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const asNullableFiniteNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const asStringList = (value: unknown): string[] =>
+  Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+
+const cleanGeneratedText = (value: unknown, fallback = ''): string =>
+  String(value ?? fallback)
+    .replace(MONGO_OBJECT_ID_TOKEN_RE, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 
 export const normalizeLessonStatus = (value: unknown): LessonStatus => {
   if (value === 'in_progress') {
@@ -95,7 +118,7 @@ const normalizeDistributionPlan = (value: unknown): DistributionPlan => {
   const normalizeNumberMap = (source: unknown) => {
     const sourceRecord = asRecord(source);
     return Object.fromEntries(
-      Object.entries(sourceRecord).map(([key, item]) => [key, Number(item ?? 0)]),
+      Object.entries(sourceRecord).map(([key, item]) => [key, asFiniteNumber(item)]),
     );
   };
 
@@ -103,8 +126,7 @@ const normalizeDistributionPlan = (value: unknown): DistributionPlan => {
     ratios: normalizeNumberMap(record.ratios),
     counts: normalizeNumberMap(record.counts),
     level_counts: normalizeNumberMap(record.level_counts),
-    mastery:
-      typeof record.mastery === 'number' ? record.mastery : Number(record.mastery ?? 0),
+    mastery: asFiniteNumber(record.mastery),
   };
 };
 
@@ -126,8 +148,8 @@ const normalizeLesson = (lesson: unknown): LearningPathLesson => {
 
   return {
     lesson_id: String(lessonRecord.lesson_id ?? ''),
-    title: String(lessonRecord.title ?? 'Bài học'),
-    summary: String(lessonRecord.summary ?? ''),
+    title: cleanGeneratedText(lessonRecord.title, 'Bài học'),
+    summary: cleanGeneratedText(lessonRecord.summary),
     resources: Array.isArray(lessonRecord.resources)
       ? lessonRecord.resources
           .filter((item: unknown): item is string => typeof item === 'string')
@@ -189,6 +211,7 @@ const normalizeLessonWithExtras = (lesson: unknown): LearningPathLesson => {
     unlock_strategy:
       typeof lessonRecord.unlock_strategy === 'string' ? lessonRecord.unlock_strategy : null,
     recommended_resources: recommendedResources,
+    recommended_resource_ids: asStringList(lessonRecord.recommended_resource_ids),
     adaptation_metadata:
       lessonRecord.adaptation_metadata &&
       typeof lessonRecord.adaptation_metadata === 'object' &&
@@ -209,8 +232,27 @@ const normalizeLessonWithExtras = (lesson: unknown): LearningPathLesson => {
         ? refinementRecord.actions.map((item) => asRecord(item))
         : [],
     } as LessonRefinementState,
+    missing_prerequisites: asStringList(
+      lessonRecord.missing_prerequisites ?? lessonRecord.missing_prerequisite_concepts,
+    ),
+    readiness_score: asNullableFiniteNumber(lessonRecord.readiness_score),
+    personalization_score: asNullableFiniteNumber(lessonRecord.personalization_score),
+    reason: typeof lessonRecord.reason === 'string' ? lessonRecord.reason : null,
+    explanation:
+      typeof lessonRecord.explanation === 'string' ? lessonRecord.explanation : null,
+    recommendation_reason:
+      typeof lessonRecord.recommendation_reason === 'string'
+        ? lessonRecord.recommendation_reason
+        : null,
+    degraded_mode: Boolean(lessonRecord.degraded_mode),
+    degraded_reason:
+      typeof lessonRecord.degraded_reason === 'string'
+        ? lessonRecord.degraded_reason
+        : typeof asRecord(lessonRecord.adaptation_metadata).degraded_reason === 'string'
+          ? String(asRecord(lessonRecord.adaptation_metadata).degraded_reason)
+          : null,
     last_confidence:
-      typeof lessonRecord.last_confidence === 'number' ? lessonRecord.last_confidence : null,
+      asNullableFiniteNumber(lessonRecord.last_confidence),
     confidence_updated_at:
       typeof lessonRecord.confidence_updated_at === 'string'
         ? lessonRecord.confidence_updated_at
@@ -245,7 +287,10 @@ const normalizeLessonWithExtras = (lesson: unknown): LearningPathLesson => {
       ? lessonRecord.bridge_recommendations.map((item) => asRecord(item))
       : [],
     mastery_threshold:
-      typeof lessonRecord.mastery_threshold === 'number' ? lessonRecord.mastery_threshold : null,
+      asNullableFiniteNumber(lessonRecord.mastery_threshold),
+    prerequisite_mastery_threshold: asNullableFiniteNumber(
+      lessonRecord.prerequisite_mastery_threshold,
+    ),
   };
 };
 
@@ -298,7 +343,7 @@ const normalizeChapter = (chapter: unknown): LearningPathChapter => {
 
   return {
     chapter_id: String(chapterRecord.chapter_id ?? ''),
-    title: String(chapterRecord.title ?? 'Chương học'),
+    title: cleanGeneratedText(chapterRecord.title, 'Chương học'),
     lessons: Array.isArray(chapterRecord.lessons)
       ? chapterRecord.lessons.map(normalizeLessonWithExtras)
       : [],
@@ -355,6 +400,18 @@ export const normalizeLearningPath = (payload: unknown): LearningPath => {
     curriculum_notice:
       typeof source.curriculum_notice === 'string' ? source.curriculum_notice : null,
     llm_status: normalizeLlmStatus(source.llm_status),
+    generation_status:
+      typeof source.generation_status === 'string' ? source.generation_status : null,
+    learner_model_version:
+      typeof source.learner_model_version === 'string' ? source.learner_model_version : null,
+    personalization_summary:
+      source.personalization_summary &&
+      typeof source.personalization_summary === 'object' &&
+      !Array.isArray(source.personalization_summary)
+        ? (source.personalization_summary as Record<string, unknown>)
+        : {},
+    path_explanations: asStringList(source.path_explanations),
+    degraded_mode: Boolean(source.degraded_mode),
     message: String(source.message ?? ''),
   };
 };
@@ -518,8 +575,7 @@ export const normalizeLessonAttemptStatistics = (
   fallbackLessonId?: string,
 ): LessonAttemptStatistics => {
   const response = asRecord(payload);
-  const asNullableNumber = (value: unknown): number | null =>
-    value == null ? null : Number(value);
+  const asNullableNumber = (value: unknown): number | null => asNullableFiniteNumber(value);
 
   return {
     lesson_id:
@@ -815,19 +871,41 @@ export const normalizeLessonQuestionGenerationResponse = (
         : {},
     lesson_size: normalizeLessonSize(response.lesson_size),
     target_count:
-      response.target_count === null || response.target_count === undefined
-        ? null
-        : Number(response.target_count),
+      asNullableFiniteNumber(response.target_count),
     target_count_auto:
-      response.target_count_auto === null || response.target_count_auto === undefined
-        ? null
-        : Number(response.target_count_auto),
+      asNullableFiniteNumber(response.target_count_auto),
     difficulty_mix: normalizeDistributionPlan(response.difficulty_mix),
     bloom_mix: normalizeDistributionPlan(response.bloom_mix),
-    concept_coverage_rate:
-      response.concept_coverage_rate === null || response.concept_coverage_rate === undefined
-        ? null
-        : Number(response.concept_coverage_rate),
+    concept_coverage_rate: asNullableFiniteNumber(response.concept_coverage_rate),
+    degraded_mode: Boolean(response.degraded_mode),
+    degraded_reason:
+      typeof response.degraded_reason === 'string' ? response.degraded_reason : null,
+    llm_status:
+      typeof response.llm_status === 'string'
+        ? response.llm_status
+        : response.llm_status &&
+            typeof response.llm_status === 'object' &&
+            !Array.isArray(response.llm_status)
+          ? (response.llm_status as Record<string, unknown>)
+          : null,
+    valid_target_concepts: asStringList(response.valid_target_concepts),
+    rejected_target_concepts: asStringList(response.rejected_target_concepts),
+    concept_coverage_status:
+      typeof response.concept_coverage_status === 'string'
+        ? response.concept_coverage_status
+        : null,
+    verification_diagnostics:
+      response.verification_diagnostics &&
+      typeof response.verification_diagnostics === 'object' &&
+      !Array.isArray(response.verification_diagnostics)
+        ? (response.verification_diagnostics as Record<string, unknown>)
+        : null,
+    next_action:
+      response.next_action &&
+      typeof response.next_action === 'object' &&
+      !Array.isArray(response.next_action)
+        ? (response.next_action as Record<string, unknown>)
+        : {},
     message: String(response.message ?? ''),
   };
 };

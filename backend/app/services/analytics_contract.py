@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Set
+from typing import Dict, List, Set
 
 EVENT_NAME_EQUIVALENTS: Dict[str, Set[str]] = {
     "lesson_opened": {"lesson_opened", "lesson_started"},

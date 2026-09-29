@@ -43,6 +43,7 @@ def generate_answer(
     llm_cooldown_until: float,
     retry_after_seconds: float,
     logger: Any,
+    timings: Dict[str, float] | None = None,
 ) -> str:
     if not (use_llm and client):
         logger.info("LLM unavailable - using knowledge base fallback")
@@ -62,7 +63,7 @@ def generate_answer(
         service._last_generation_mode = "fallback"
         return service._generate_fallback_answer(prompt, resources)
 
-    answer = service._call_llm_with_retry(prompt)
+    answer = service._call_llm_with_retry(prompt, timings=timings)
     if answer:
         service.stats["successful_answers"] += 1
         service._last_generation_mode = "llm"

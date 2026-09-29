@@ -7,7 +7,6 @@ import os
 import random
 import re
 import time
-from typing import Optional
 
 from backend.app.utils.gemini import (
     build_gemini_model_candidates,

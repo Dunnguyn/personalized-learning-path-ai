@@ -253,6 +253,8 @@ def find_focus_term(
             if keyword in service_cls._FALLBACK_STOP_WORDS:
                 continue
             if re.search(rf"\b{re.escape(keyword)}\b", excerpt):
+                if keyword in {"classes"}:
+                    return "classes"
                 if keyword in {"dictionary", "dictionaries"}:
                     return "dict"
                 if keyword in {"lists"}:

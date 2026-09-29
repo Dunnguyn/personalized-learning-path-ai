@@ -81,7 +81,7 @@ export const normalizeSubjectOption = (value: Record<string, unknown>): SubjectO
   const rawLevel = getSafeText(value.level);
   const rawSubjectId = getSafeText(value.subject_id);
 
-  const id = rawSubjectId || rawSlug || toSlug(rawTitle || rawTopic);
+  const id = rawSlug || rawTopic || rawSubjectId || toSlug(rawTitle || rawTopic);
   if (!id) {
     return null;
   }

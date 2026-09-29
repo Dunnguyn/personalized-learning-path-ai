@@ -23,6 +23,11 @@ from backend.app.services.learning_path.chapter_lesson_builder import (
 from backend.app.services.learning_path.concept_graph_builder import (
     stable_concept_numeric_id as build_stable_concept_numeric_id,
 )
+from backend.app.services.learning_path.curriculum_sizing import (
+    curriculum_size_metadata,
+    normalize_curriculum_size,
+    resolve_curriculum_size_policy,
+)
 from backend.app.services.learning_path.persistence import (
     build_recommended_path as build_learning_path_recommended_path,
     normalize_chapters as normalize_learning_path_chapters,
@@ -54,12 +59,15 @@ from backend.app.services.learner_profile_service import learner_profile_service
 
 logger = logging.getLogger(__name__)
 
-UNIFIED_CURRICULUM_ENRICH_MAX_OUTPUT_TOKENS = 2400
-UNIFIED_CURRICULUM_DYNAMIC_PLAN_MAX_OUTPUT_TOKENS = 2800
+UNIFIED_CURRICULUM_ENRICH_MAX_OUTPUT_TOKENS = 4200
+UNIFIED_CURRICULUM_DYNAMIC_PLAN_MAX_OUTPUT_TOKENS = 5200
 UNIFIED_CURRICULUM_GENERATION_MODE = (
     os.getenv("UNIFIED_LEARNING_PATH_CURRICULUM_MODE", "legacy_strict")
     .strip()
     .lower()
+)
+UNIFIED_CURRICULUM_CHAPTER_FAILURE_FALLBACK_THRESHOLD = int(
+    os.getenv("UNIFIED_LEARNING_PATH_CHAPTER_FAILURE_FALLBACK_THRESHOLD", "2")
 )
 
 
@@ -82,9 +90,20 @@ class UnifiedLearningPathService(HybridLearningPathService):
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
         try:
-            return float(value)
+            number = float(value)
         except Exception:
             return default
+        return number if math.isfinite(number) else default
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            number = float(value)
+        except Exception:
+            return default
+        if not math.isfinite(number):
+            return default
+        return int(number)
 
     @staticmethod
     def _dedupe(values: List[Any], *, limit: int = 5) -> List[str]:
@@ -751,14 +770,108 @@ class UnifiedLearningPathService(HybridLearningPathService):
         }
 
     def _generate_curriculum(self, *, subject_id: str, subject_label: str, goal: str, level: str, planner_input: Dict[str, Any]) -> Dict[str, Any]:
+        resource_count = self._resource_count_for_curriculum(
+            subject_id=subject_id,
+            goal=goal,
+        )
+        planner_input = {**planner_input, "resource_count": resource_count}
+        size_policy = resolve_curriculum_size_policy(
+            subject_id=subject_id,
+            goal=goal,
+            level=level,
+            planner_input=planner_input,
+            curriculum_depth=planner_input.get("curriculum_depth"),
+            target_chapter_count=planner_input.get("target_chapter_count"),
+            target_lesson_count=planner_input.get("target_lesson_count"),
+        )
+
+        def finalize(
+            chapters: List[Dict[str, Any]],
+            *,
+            source: str,
+            llm_status_payload: Dict[str, Any],
+            repaired_hint: bool = False,
+        ) -> Dict[str, Any]:
+            sized_chapters, size_metadata = normalize_curriculum_size(
+                chapters,
+                policy=size_policy,
+                subject_id=subject_id,
+                goal=goal,
+                level=level,
+            )
+            size_metadata["repaired"] = bool(
+                size_metadata.get("repaired") or repaired_hint
+            )
+            logger.info(
+                "curriculum_size_policy_applied | subject_id=%s goal_scope=%s depth=%s source=%s min_chapters=%s target_chapters=%s actual_chapters=%s min_lessons=%s target_lessons=%s actual_lessons=%s repaired=%s under_generated=%s reason=%s",
+                subject_id,
+                size_metadata.get("goal_scope"),
+                size_metadata.get("curriculum_depth"),
+                source,
+                size_metadata.get("min_chapters"),
+                size_metadata.get("target_chapters"),
+                size_metadata.get("actual_chapters"),
+                size_metadata.get("min_lessons"),
+                size_metadata.get("target_lessons"),
+                size_metadata.get("actual_lessons"),
+                size_metadata.get("repaired"),
+                size_metadata.get("under_generated"),
+                size_metadata.get("sizing_reason"),
+            )
+            if size_metadata.get("under_generated"):
+                logger.warning(
+                    "curriculum_under_generated | subject_id=%s source=%s actual_chapters=%s actual_lessons=%s min_chapters=%s min_lessons=%s",
+                    subject_id,
+                    source,
+                    size_metadata.get("actual_chapters"),
+                    size_metadata.get("actual_lessons"),
+                    size_metadata.get("min_chapters"),
+                    size_metadata.get("min_lessons"),
+                )
+            return {
+                "chapters": sized_chapters,
+                "source": source,
+                "llm_status": llm_status_payload,
+                "curriculum_size_policy": size_metadata,
+            }
+
         fallback = build_fallback_curriculum(
             subject_id, goal, level, planner_input=planner_input
         )
         llm_status = self.llm_client.status()
+        logger.info(
+            "learning_path_llm_status_before_generation | subject_id=%s enabled=%s cooldown=%s available_keys=%s total_keys=%s model=%s last_error=%s",
+            subject_id,
+            llm_status.get("enabled"),
+            llm_status.get("cooldown_active"),
+            llm_status.get("available_key_count"),
+            llm_status.get("total_key_count"),
+            llm_status.get("model"),
+            str(llm_status.get("last_error") or "")[:180],
+        )
         if not self.llm_client.is_available() or bool(llm_status.get("cooldown_active")):
-            return {"chapters": fallback, "source": "fallback", "llm_status": llm_status}
+            logger.info(
+                "learning_path_llm_skipped_using_fallback | subject_id=%s reason=%s enabled=%s cooldown=%s cooldown_remaining=%s",
+                subject_id,
+                llm_status.get("reason") or "provider_unavailable_or_cooldown",
+                llm_status.get("enabled"),
+                llm_status.get("cooldown_active"),
+                llm_status.get("cooldown_remaining_seconds"),
+            )
+            return finalize(
+                fallback,
+                source="fallback",
+                llm_status_payload=llm_status,
+            )
 
         generation_mode = self._curriculum_generation_mode(planner_input)
+        logger.info(
+            "learning_path_llm_generation_start | subject_id=%s mode=%s model=%s fallback_models=%s",
+            subject_id,
+            generation_mode,
+            llm_status.get("model"),
+            llm_status.get("fallback_models"),
+        )
         if generation_mode == "legacy_strict":
             strict_curriculum = self._generate_curriculum_legacy_strict(
                 subject_label=subject_label,
@@ -775,11 +888,22 @@ class UnifiedLearningPathService(HybridLearningPathService):
                     len(strict_curriculum),
                     sum(len(chapter.get("lessons", []) or []) for chapter in strict_curriculum),
                 )
-                return {
-                    "chapters": strict_curriculum,
-                    "source": "ai_legacy_strict",
-                    "llm_status": llm_status,
-                }
+                return finalize(
+                    strict_curriculum,
+                    source="ai_legacy_strict",
+                    llm_status_payload=llm_status,
+                    repaired_hint=bool(
+                        curriculum_size_metadata(
+                            policy=size_policy,
+                            chapters=strict_curriculum,
+                        ).get("under_generated")
+                    ),
+                )
+            logger.info(
+                "learning_path_llm_legacy_strict_unavailable | subject_id=%s last_error=%s",
+                subject_id,
+                str(self.llm_client.status().get("last_error") or "")[:240],
+            )
         else:
             dynamic_curriculum = self._generate_curriculum_dynamic_plan(
                 subject_label=subject_label,
@@ -796,11 +920,16 @@ class UnifiedLearningPathService(HybridLearningPathService):
                     len(dynamic_curriculum),
                     sum(len(chapter.get("lessons", []) or []) for chapter in dynamic_curriculum),
                 )
-                return {
-                    "chapters": dynamic_curriculum,
-                    "source": "ai",
-                    "llm_status": llm_status,
-                }
+                return finalize(
+                    dynamic_curriculum,
+                    source="ai",
+                    llm_status_payload=llm_status,
+                )
+            logger.info(
+                "learning_path_llm_dynamic_plan_unavailable | subject_id=%s last_error=%s",
+                subject_id,
+                str(self.llm_client.status().get("last_error") or "")[:240],
+            )
 
         enriched_curriculum = self._generate_curriculum_enrichment(
             subject_label=subject_label,
@@ -817,18 +946,43 @@ class UnifiedLearningPathService(HybridLearningPathService):
                 len(enriched_curriculum),
                 sum(len(chapter.get("lessons", []) or []) for chapter in enriched_curriculum),
             )
-            return {
-                "chapters": enriched_curriculum,
-                "source": "ai",
-                "llm_status": llm_status,
-            }
+            return finalize(
+                enriched_curriculum,
+                source="ai_enriched_fallback",
+                llm_status_payload=llm_status,
+            )
 
         llm_status = self.llm_client.status()
         logger.info(
-            "Unified curriculum enrichment unavailable; using fallback for subject_id=%s",
+            "Unified curriculum enrichment unavailable; using fallback for subject_id=%s last_error=%s",
             subject_id,
+            str(llm_status.get("last_error") or "")[:240],
         )
-        return {"chapters": fallback, "source": "fallback", "llm_status": llm_status}
+        return finalize(fallback, source="fallback", llm_status_payload=llm_status)
+
+    def _resource_count_for_curriculum(self, *, subject_id: str, goal: str) -> int:
+        try:
+            return int(
+                self.resource_repository.collection.count_documents(
+                    {
+                        "$or": [
+                            {"subject_id": subject_id},
+                            {"subject": subject_id},
+                            {"topic": subject_id},
+                            {"metadata.subject_id": subject_id},
+                            {"metadata.goal": {"$regex": re.escape(goal[:80]), "$options": "i"}},
+                        ]
+                    },
+                    limit=50,
+                )
+            )
+        except Exception:
+            logger.debug(
+                "resource_count_for_curriculum_unavailable | subject_id=%s",
+                subject_id,
+                exc_info=True,
+            )
+            return 0
 
     @staticmethod
     def _curriculum_generation_mode(planner_input: Optional[Dict[str, Any]]) -> str:
@@ -863,6 +1017,7 @@ class UnifiedLearningPathService(HybridLearningPathService):
         chapter_drafts: List[Dict[str, Any]] = []
         prior_titles: List[str] = []
         total_chapters = len(fallback or outline or [])
+        consecutive_chapter_failures = 0
         for chapter_index, fallback_chapter in enumerate(fallback or [], start=1):
             outline_item = (
                 outline[chapter_index - 1]
@@ -875,17 +1030,40 @@ class UnifiedLearningPathService(HybridLearningPathService):
                     "lesson_count": len(fallback_chapter.get("lessons") or []) or 3,
                 }
             )
-            generated_chapter = self._generate_curriculum_chapter(
-                subject_label=subject_label,
-                goal=goal,
-                level=level,
-                planner_input=planner_input,
-                outline_item=outline_item,
-                chapter_index=chapter_index,
-                total_chapters=total_chapters,
-                prior_chapter_titles=prior_titles,
-                fallback_chapter=fallback_chapter,
-            )
+            if (
+                UNIFIED_CURRICULUM_CHAPTER_FAILURE_FALLBACK_THRESHOLD > 0
+                and consecutive_chapter_failures
+                >= UNIFIED_CURRICULUM_CHAPTER_FAILURE_FALLBACK_THRESHOLD
+            ):
+                logger.info(
+                    "curriculum_llm_chapter_generation_skipped_after_failures | chapter_index=%s consecutive_failures=%s threshold=%s",
+                    chapter_index,
+                    consecutive_chapter_failures,
+                    UNIFIED_CURRICULUM_CHAPTER_FAILURE_FALLBACK_THRESHOLD,
+                )
+                generated_chapter = {
+                    "title": str(
+                        outline_item.get("title") or fallback_chapter.get("title") or ""
+                    ).strip(),
+                    "lessons": list(fallback_chapter.get("lessons") or []),
+                    "_source": "fallback",
+                }
+            else:
+                generated_chapter = self._generate_curriculum_chapter(
+                    subject_label=subject_label,
+                    goal=goal,
+                    level=level,
+                    planner_input=planner_input,
+                    outline_item=outline_item,
+                    chapter_index=chapter_index,
+                    total_chapters=total_chapters,
+                    prior_chapter_titles=prior_titles,
+                    fallback_chapter=fallback_chapter,
+                )
+            if generated_chapter.get("_source") == "fallback":
+                consecutive_chapter_failures += 1
+            else:
+                consecutive_chapter_failures = 0
             chosen_title = str(
                 generated_chapter.get("title")
                 or outline_item.get("title")
@@ -997,18 +1175,22 @@ class UnifiedLearningPathService(HybridLearningPathService):
         chapters: List[Dict[str, Any]],
         planner_input: Dict[str, Any],
     ) -> bool:
+        size_policy = resolve_curriculum_size_policy(
+            subject_id=str(planner_input.get("subject_id") or ""),
+            goal=str(planner_input.get("goal") or ""),
+            level=str(planner_input.get("level") or "beginner"),
+            planner_input=planner_input,
+        )
         chapter_count = len(chapters or [])
-        if chapter_count < 2 or chapter_count > 6:
+        if chapter_count < int(size_policy.get("min_chapters") or 4):
+            return False
+        if chapter_count > int(size_policy.get("max_chapters") or 7):
             return False
         total_lessons = sum(len(chapter.get("lessons", []) or []) for chapter in (chapters or []))
-        if total_lessons < 4 or total_lessons > 24:
+        if total_lessons < int(size_policy.get("min_lessons") or 8):
             return False
-        time_budget = int(cls._safe_float(planner_input.get("time_budget_minutes"), 0.0))
-        if time_budget > 0:
-            if time_budget <= 120 and total_lessons > 9:
-                return False
-            if time_budget >= 360 and total_lessons < 6:
-                return False
+        if total_lessons > int(size_policy.get("max_lessons") or 21):
+            return False
         return True
 
     def _generate_curriculum_enrichment(
@@ -1374,24 +1556,51 @@ class UnifiedLearningPathService(HybridLearningPathService):
         prompt: str,
         max_output_tokens: int,
     ) -> Dict[str, Any] | None:
+        logger.info(
+            "curriculum_llm_request_start | max_output_tokens=%s model=%s",
+            max_output_tokens,
+            self.llm_client.status().get("model"),
+        )
         raw_text = self.llm_client.generate(
             prompt,
             max_output_tokens=max_output_tokens,
             temperature=0.1,
         )
+        logger.info(
+            "curriculum_llm_response_received | raw_len=%s last_error=%s",
+            len(raw_text or ""),
+            str(self.llm_client.status().get("last_error") or "")[:240],
+        )
         json_text = extract_json_object(raw_text)
         if not json_text and raw_text:
-            repaired_text = self.llm_client.repair_json(raw_text)
-            repaired_json = extract_json_object(repaired_text)
-            if repaired_json:
-                raw_text = repaired_text
-                json_text = repaired_json
+            if self._should_attempt_curriculum_json_repair(raw_text):
+                logger.info(
+                    "curriculum_llm_json_extract_failed_repairing | raw_len=%s",
+                    len(raw_text or ""),
+                )
+                repaired_text = self.llm_client.repair_json(raw_text)
+                repaired_json = extract_json_object(repaired_text)
+                if repaired_json:
+                    raw_text = repaired_text
+                    json_text = repaired_json
+            else:
+                logger.info(
+                    "curriculum_llm_json_extract_failed_skipping_repair | raw_len=%s",
+                    len(raw_text or ""),
+                )
         if not json_text:
+            logger.info(
+                "curriculum_llm_no_json_payload | raw_len=%s last_error=%s",
+                len(raw_text or ""),
+                str(self.llm_client.status().get("last_error") or "")[:240],
+            )
             return None
         try:
             parsed = json.loads(json_text)
             return parsed if isinstance(parsed, dict) else None
         except json.JSONDecodeError:
+            if not self._should_attempt_curriculum_json_repair(raw_text):
+                return None
             repaired_text = self.llm_client.repair_json(raw_text)
             repaired_json = extract_json_object(repaired_text)
             if not repaired_json:
@@ -1401,6 +1610,15 @@ class UnifiedLearningPathService(HybridLearningPathService):
                 return parsed if isinstance(parsed, dict) else None
             except json.JSONDecodeError:
                 return None
+
+    @staticmethod
+    def _should_attempt_curriculum_json_repair(raw_text: str) -> bool:
+        text = str(raw_text or "").strip()
+        if not text:
+            return False
+        if any(marker in text for marker in ("{", "}", "[", "]")):
+            return True
+        return bool(re.search(r'"?(chapters|lessons)"?\s*:', text, re.IGNORECASE))
 
     def _generate_curriculum_outline(
         self,
@@ -1608,16 +1826,97 @@ class UnifiedLearningPathService(HybridLearningPathService):
             return int(normalized)
         return 900000 + order
 
-    def generate_learning_path(self, *, subject_id: str, goal: str, level: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+    @staticmethod
+    def _normalize_curriculum_source(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"ai", "ai_legacy_strict", "ai_enriched_fallback", "fallback"}:
+            return normalized
+        if normalized.startswith("ai_"):
+            return "ai_enriched_fallback"
+        return "fallback"
+
+    def _build_lesson_explanation(
+        self,
+        *,
+        lesson_payload: Dict[str, Any],
+        target_concepts: List[str],
+        prerequisite_concepts: List[str],
+        missing_prerequisites: List[str],
+        level: str,
+    ) -> str:
+        explicit = str(
+            lesson_payload.get("recommendation_reason")
+            or lesson_payload.get("explanation")
+            or lesson_payload.get("reason")
+            or lesson_payload.get("why_this_lesson_now")
+            or ""
+        ).strip()
+        if explicit:
+            return explicit
+        if missing_prerequisites:
+            return (
+                "Bai nay duoc xep de lap prerequisite "
+                + ", ".join(missing_prerequisites[:2])
+                + " truoc khi hoc concept tiep theo."
+            )
+        if prerequisite_concepts:
+            return (
+                "Bai nay la prerequisite cho cac concept lien quan va can dat mastery "
+                f"{self.PREREQUISITE_MASTERY_THRESHOLD:.0%} de mo khoa on dinh."
+            )
+        if target_concepts:
+            return (
+                "Bai nay tap trung vao concept "
+                + ", ".join(target_concepts[:2])
+                + f" voi do kho phu hop level {level}."
+            )
+        return f"Bai nay giu dung thu tu curriculum va phu hop level {level}."
+
+    @staticmethod
+    def _chunk_coverage_by_concept(recommendation: Dict[str, Any]) -> Dict[str, List[str]]:
+        coverage: Dict[str, List[str]] = {}
+        for item in recommendation.get("recommended_chunks") or []:
+            chunk_id = str(item.get("chunk_id") or "").strip()
+            if not chunk_id:
+                continue
+            for concept in item.get("covered_concepts") or item.get(
+                "matched_required_concepts"
+            ) or []:
+                concept_key = str(concept or "").strip()
+                if not concept_key:
+                    continue
+                coverage.setdefault(concept_key, [])
+                if chunk_id not in coverage[concept_key]:
+                    coverage[concept_key].append(chunk_id)
+        return coverage
+
+    def generate_learning_path(
+        self,
+        *,
+        subject_id: str,
+        goal: str,
+        level: str,
+        user_id: Optional[str] = None,
+        curriculum_depth: Optional[str] = None,
+        target_chapter_count: Optional[int] = None,
+        target_lesson_count: Optional[int] = None,
+    ) -> Dict[str, Any]:
         analysis = self.analyze_profile(user_id=user_id, subject_id=subject_id, goal=goal, level=level)
         subject_id = analysis["subject_id"]
         goal = analysis["goal"]
         level = analysis["level"]
         planner_input = dict(analysis["planner_input"])
+        if curriculum_depth:
+            planner_input["curriculum_depth"] = curriculum_depth
+        if target_chapter_count is not None:
+            planner_input["target_chapter_count"] = target_chapter_count
+        if target_lesson_count is not None:
+            planner_input["target_lesson_count"] = target_lesson_count
         snapshot = dict(analysis["learner_snapshot"])
         self._validate_inputs(subject_id=subject_id, goal=goal, level=level)
         subject_label = get_subject_label(subject_id) or ""
         curriculum = self._generate_curriculum(subject_id=subject_id, subject_label=subject_label, goal=goal, level=level, planner_input=planner_input)
+        curriculum_size_policy = dict(curriculum.get("curriculum_size_policy") or {})
         planned_curriculum = concept_graph_service.enrich_curriculum(
             subject_id=subject_id,
             goal=goal,
@@ -1629,9 +1928,37 @@ class UnifiedLearningPathService(HybridLearningPathService):
             learner_model=dict(planner_input.get("learner_model") or {}),
         )
         planned_curriculum["chapters"] = prioritized_chapters
-        curriculum_source = "ai" if curriculum.get("source") == "ai" else "fallback"
+        curriculum_source = self._normalize_curriculum_source(curriculum.get("source"))
         llm_status = curriculum.get("llm_status")
         path_id = uuid.uuid4().hex
+        generated_at = datetime.utcnow()
+        learner_model = dict(planner_input.get("learner_model") or {})
+        self.learning_path_repository.create(
+            {
+                "path_id": path_id,
+                "user_id": user_id,
+                "subject_id": subject_id,
+                "subject_label": subject_label,
+                "goal": goal,
+                "level": level,
+                "chapters": [],
+                "concept_graph": [],
+                "curriculum_source": curriculum_source,
+                "llm_status": llm_status,
+                "lesson_progress": {},
+                "lesson_confidence_log": {},
+                "concept_mastery": {},
+                "generation_status": "generating",
+                "generated_at": generated_at,
+                "metadata": {
+                    "pipeline": "unified_learning_path_v2_concept_graph",
+                    "learner_model_version": "v2",
+                    "generation_status": "generating",
+                    "planner_input": planner_input,
+                    "curriculum_size_policy": curriculum_size_policy,
+                },
+            }
+        )
         subject = self._ensure_subject(subject_id=subject_id, subject_label=subject_label, level=level)
         total_lessons = sum(
             len(chapter.get("lessons", []) or [])
@@ -1669,7 +1996,15 @@ class UnifiedLearningPathService(HybridLearningPathService):
                     list(lesson_payload.get("prerequisites") or []),
                     limit=4,
                 )
-                lesson_difficulty = max(1, min(int(lesson_payload.get("difficulty") or lesson_order), 10))
+                lesson_difficulty = max(
+                    1,
+                    min(
+                        self._safe_int(
+                            lesson_payload.get("difficulty"), lesson_order
+                        ),
+                        10,
+                    ),
+                )
                 lesson_kind = str(lesson_payload.get("lesson_kind") or "core").strip().lower() or "core"
                 lesson_keywords = self._build_keywords(subject_label=subject_label, chapter_title=chapter_payload["title"], lesson_title=lesson_payload["title"], lesson_summary=lesson_payload["summary"], goal=goal)
                 seed_resource_ids = self._select_resource_ids_for_lesson(subject_id=subject_id, subject_label=subject_label, chapter_title=chapter_payload["title"], lesson_title=lesson_payload["title"], lesson_summary=lesson_payload["summary"], goal=goal, level=level, limit=self.max_seed_resources_per_lesson, avoid_resource_ids=list(used_resource_ids))
@@ -1678,6 +2013,16 @@ class UnifiedLearningPathService(HybridLearningPathService):
                     {
                         "target_concepts": target_concepts,
                         "prerequisite_concepts": prerequisite_concepts,
+                        "missing_prerequisites": list(
+                            lesson_payload.get("missing_prerequisites") or []
+                        ),
+                        "readiness_score": self._safe_float(
+                            lesson_payload.get("readiness_score"), 1.0
+                        ),
+                        "personalization_score": self._safe_float(
+                            lesson_payload.get("personalization_score"),
+                            lesson_payload.get("priority_score"),
+                        ),
                         "difficulty": lesson_difficulty,
                         "lesson_kind": lesson_kind,
                         "priority_score": round(
@@ -1688,7 +2033,31 @@ class UnifiedLearningPathService(HybridLearningPathService):
                             lesson_payload.get("why_this_lesson_now")
                             or "Sequenced by learner model and prerequisite readiness."
                         ),
+                        "score_components": dict(
+                            lesson_payload.get("personalization_score_components")
+                            or {}
+                        ),
                     }
+                )
+                missing_prerequisites = list(
+                    lesson_payload.get("missing_prerequisites") or []
+                )
+                readiness_score = round(
+                    self._safe_float(lesson_payload.get("readiness_score"), 1.0), 4
+                )
+                personalization_score = round(
+                    self._safe_float(
+                        lesson_payload.get("personalization_score"),
+                        lesson_payload.get("priority_score"),
+                    ),
+                    4,
+                )
+                lesson_reason = self._build_lesson_explanation(
+                    lesson_payload=lesson_payload,
+                    target_concepts=target_concepts,
+                    prerequisite_concepts=prerequisite_concepts,
+                    missing_prerequisites=missing_prerequisites,
+                    level=level,
                 )
                 lesson = self.lesson_repository.create({
                     "subject_id": subject["_id"],
@@ -1715,6 +2084,12 @@ class UnifiedLearningPathService(HybridLearningPathService):
                         "lesson_kind": lesson_kind,
                         "unlock_strategy": "concept_mastery",
                         "prerequisite_mastery_threshold": self.PREREQUISITE_MASTERY_THRESHOLD,
+                        "missing_prerequisites": missing_prerequisites,
+                        "readiness_score": readiness_score,
+                        "personalization_score": personalization_score,
+                        "recommendation_reason": lesson_reason,
+                        "reason": lesson_reason,
+                        "explanation": lesson_reason,
                         "adaptation_metadata": adaptation_metadata,
                     },
                 })
@@ -1742,11 +2117,23 @@ class UnifiedLearningPathService(HybridLearningPathService):
                     recommended_resources = self._resource_payload(
                         recommended_resource_ids
                     )
+                chunk_coverage_by_concept = self._chunk_coverage_by_concept(
+                    recommendation if self.precompute_recommendations_on_generate else {}
+                )
+                degraded_mode = self.precompute_recommendations_on_generate and not bool(
+                    recommended_chunk_ids
+                )
+                degraded_reason = "no_recommended_chunks" if degraded_mode else None
                 self.lesson_repository.update(
                     lesson["_id"],
                     {
                         "recommended_chunk_ids": recommended_chunk_ids,
                         "recommended_resource_ids": recommended_resource_ids,
+                        "metadata.recommended_chunk_ids": recommended_chunk_ids,
+                        "metadata.recommended_resource_ids": recommended_resource_ids,
+                        "metadata.chunk_coverage_by_concept": chunk_coverage_by_concept,
+                        "metadata.degraded_mode": degraded_mode,
+                        "metadata.degraded_reason": degraded_reason,
                     },
                 )
                 used_resource_ids.update(recommended_resource_ids)
@@ -1769,14 +2156,74 @@ class UnifiedLearningPathService(HybridLearningPathService):
                         "difficulty": lesson_difficulty,
                         "lesson_kind": lesson_kind,
                         "unlock_strategy": "concept_mastery",
+                        "prerequisite_mastery_threshold": self.PREREQUISITE_MASTERY_THRESHOLD,
+                        "missing_prerequisites": missing_prerequisites,
+                        "readiness_score": readiness_score,
+                        "personalization_score": personalization_score,
+                        "reason": lesson_reason,
+                        "explanation": lesson_reason,
+                        "recommendation_reason": lesson_reason,
                         "recommended_resources": recommended_resources,
                         "adaptation_metadata": adaptation_metadata,
                         "recommended_chunk_ids": recommended_chunk_ids,
+                        "recommended_resource_ids": recommended_resource_ids,
+                        "chunk_coverage_by_concept": chunk_coverage_by_concept,
+                        "degraded_mode": degraded_mode,
+                        "degraded_reason": degraded_reason,
                         "status": "not_started",
                     }
                 )
             chapters_out.append({"chapter_id": str(chapter["_id"]), "title": chapter["title"], "lessons": lessons_out})
-        self.learning_path_repository.create(
+        degraded_lessons = [
+            lesson
+            for chapter in chapters_out
+            for lesson in chapter.get("lessons", [])
+            if lesson.get("degraded_mode")
+        ]
+        path_explanations = [
+            "Learning path duoc sap xep theo prerequisite va concept mastery.",
+            "Moi lesson co readiness_score va personalization_score de giai thich thu tu hoc.",
+        ]
+        if learner_model.get("weak_concepts"):
+            path_explanations.append(
+                "Uu tien cac concept yeu: "
+                + ", ".join(list(learner_model.get("weak_concepts") or [])[:4])
+            )
+        personalization_summary = {
+            "learner_model_version": "v2",
+            "weak_concepts": list(learner_model.get("weak_concepts") or []),
+            "focus_concepts": list(learner_model.get("focus_concepts") or []),
+            "risk_level": learner_model.get("risk_level"),
+            "pace": learner_model.get("pace"),
+            "time_budget": learner_model.get("time_budget"),
+            "preferred_resource_type": learner_model.get("preferred_resource_type"),
+            "degraded_lesson_count": len(degraded_lessons),
+        }
+        actual_chapters = len(chapters_out)
+        actual_lessons = sum(
+            len(chapter.get("lessons", []) or []) for chapter in chapters_out
+        )
+        curriculum_size_policy.update(
+            {
+                "actual_chapters": actual_chapters,
+                "actual_lessons": actual_lessons,
+                "under_generated": bool(
+                    actual_chapters < int(curriculum_size_policy.get("min_chapters") or 0)
+                    or actual_lessons < int(curriculum_size_policy.get("min_lessons") or 0)
+                ),
+            }
+        )
+        curriculum_under_generated = bool(curriculum_size_policy.get("under_generated"))
+        if curriculum_under_generated:
+            logger.warning(
+                "learning_path_curriculum_under_generated_after_persistence | path_id=%s actual_chapters=%s actual_lessons=%s min_chapters=%s min_lessons=%s",
+                path_id,
+                actual_chapters,
+                actual_lessons,
+                curriculum_size_policy.get("min_chapters"),
+                curriculum_size_policy.get("min_lessons"),
+            )
+        path_document = (
             {
                 "path_id": path_id,
                 "user_id": user_id,
@@ -1792,20 +2239,35 @@ class UnifiedLearningPathService(HybridLearningPathService):
                 "lesson_progress": lesson_progress,
                 "lesson_confidence_log": lesson_confidence_log,
                 "concept_mastery": {},
+                "generation_status": "completed",
+                "generated_at": generated_at,
                 "metadata": {
                     "pipeline": "unified_learning_path_v2_concept_graph",
+                    "learner_model_version": "v2",
+                    "generation_status": "completed",
                     "layers": {
                         "profile_analysis": "learner_snapshot_v1",
-                        "path_planning": "concept_graph_planner_v1 + learner_model_v1",
+                        "path_planning": "concept_graph_planner_v1 + learner_model_v2",
                         "path_refinement": "lesson_adaptation_v2",
                     },
                     "chapter_count": len(chapters_out),
-                    "lesson_count": total_lessons,
+                    "lesson_count": actual_lessons,
                     "concept_count": len(concept_graph),
                     "planner_input": planner_input,
-                    "concept_graph": concept_graph,
                     "lesson_concept_map": lesson_concept_map,
                     "mastery_threshold": self.PREREQUISITE_MASTERY_THRESHOLD,
+                    "personalization_summary": personalization_summary,
+                    "path_explanations": path_explanations,
+                    "curriculum_size_policy": curriculum_size_policy,
+                    "degraded_mode": bool(degraded_lessons) or curriculum_under_generated,
+                    "degraded_reason": (
+                        "curriculum_under_generated"
+                        if curriculum_under_generated
+                        else None
+                    ),
+                    "degraded_lesson_ids": [
+                        lesson.get("lesson_id") for lesson in degraded_lessons
+                    ],
                     "profile_analysis": {
                         "current_mastery": planner_input.get("current_mastery"),
                         "weak_concepts": planner_input.get("weak_concepts"),
@@ -1827,20 +2289,34 @@ class UnifiedLearningPathService(HybridLearningPathService):
                 },
             }
         )
+        self.learning_path_repository.collection.update_one(
+            {"path_id": path_id},
+            {"$set": {**path_document, "updated_at": datetime.utcnow()}},
+        )
         return {
             "path_id": path_id,
             "user_id": user_id,
             "subject_id": subject_id,
             "goal": goal,
             "level": level,
-            "generated_at": datetime.utcnow(),
+            "generated_at": generated_at,
             "chapters": chapters_out,
             "concept_graph": concept_graph,
             "concept_mastery": {},
             "mastery_threshold": self.PREREQUISITE_MASTERY_THRESHOLD,
             "curriculum_source": curriculum_source,
             "llm_status": llm_status,
-            "message": f"Unified learning path generated with {len(chapters_out)} chapters and {total_lessons} lessons.",
+            "generation_status": "completed",
+            "learner_model_version": "v2",
+            "personalization_summary": personalization_summary,
+            "path_explanations": path_explanations,
+            "degraded_mode": bool(degraded_lessons) or curriculum_under_generated,
+            "curriculum_size_policy": curriculum_size_policy,
+            "total_chapters": actual_chapters,
+            "total_lessons": actual_lessons,
+            "curriculum_depth": curriculum_size_policy.get("curriculum_depth"),
+            "sizing_reason": curriculum_size_policy.get("sizing_reason"),
+            "message": f"Unified learning path generated with {actual_chapters} chapters and {actual_lessons} lessons.",
         }
 
     def _serialize_learning_path(self, document: Dict[str, Any]) -> Dict[str, Any]:
@@ -1856,6 +2332,24 @@ class UnifiedLearningPathService(HybridLearningPathService):
             (document.get("metadata") or {}).get("mastery_threshold"),
             self.PREREQUISITE_MASTERY_THRESHOLD,
         )
+        metadata = document.get("metadata") if isinstance(document.get("metadata"), dict) else {}
+        size_policy = dict(metadata.get("curriculum_size_policy") or {})
+        payload["curriculum_size_policy"] = size_policy
+        payload["total_chapters"] = int(
+            size_policy.get("actual_chapters") or metadata.get("chapter_count") or 0
+        )
+        payload["total_lessons"] = int(
+            size_policy.get("actual_lessons") or metadata.get("lesson_count") or 0
+        )
+        payload["curriculum_depth"] = size_policy.get("curriculum_depth")
+        payload["sizing_reason"] = size_policy.get("sizing_reason")
+        payload["degraded_mode"] = bool(metadata.get("degraded_mode", False))
+        payload["learner_model_version"] = str(metadata.get("learner_model_version") or "v2")
+        payload["personalization_summary"] = dict(
+            metadata.get("personalization_summary") or {}
+        )
+        payload["path_explanations"] = list(metadata.get("path_explanations") or [])
+        payload["generation_status"] = str(document.get("generation_status") or "completed")
         return payload
 
     @staticmethod

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 import re
 import unicodedata
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 
 _NOISE_TOKENS = {

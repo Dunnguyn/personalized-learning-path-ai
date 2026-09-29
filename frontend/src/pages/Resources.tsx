@@ -3,13 +3,13 @@ import { useSearchParams } from 'react-router-dom';
 import { resourcesIcon, searchIcon, downArrowIcon } from '../assets';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import PDFViewer from '../components/PDFViewer';
+import ModalPortal from '../components/ui/ModalPortal';
 import PageHero from '../components/ui/PageHero';
 import StatusPanel from '../components/ui/StatusPanel';
 import { useAuth } from '../contexts/AuthContext';
 import { resourceService } from '../services/resourceService';
 import { recommendationInteractionService } from '../services/recommendationInteractionService';
 import type { Resource, SearchResponse } from '../types/resource';
-import { apiClient } from '../utils/apiClient';
 
 type ResourceLevel = Resource['level'];
 const PDF_PAGE_MARKER_REGEX = /\[Page\s+\d+\]\s*/gi;
@@ -251,8 +251,6 @@ export default function Resources() {
   const [deletingResourceId, setDeletingResourceId] = useState<string | null>(null);
   const [pendingDeleteResource, setPendingDeleteResource] = useState<Resource | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const [aiHealth, setAiHealth] = useState<Record<string, unknown> | null>(null);
-  const [aiHealthError, setAiHealthError] = useState<string | null>(null);
 
   const [playingVideo, setPlayingVideo] = useState<{
     videoId: string;
@@ -359,40 +357,6 @@ export default function Resources() {
   useEffect(() => {
     void fetchResources();
   }, [fetchResources]);
-
-  useEffect(() => {
-    if (!canManageResources) {
-      setAiHealth(null);
-      setAiHealthError(null);
-      return;
-    }
-
-    let active = true;
-    const loadAiHealth = async () => {
-      try {
-        const response =
-          ((await apiClient.get('/health/ai')) as Record<string, unknown>) || null;
-        if (!active) {
-          return;
-        }
-        setAiHealth(response);
-        setAiHealthError(null);
-      } catch (error) {
-        if (!active) {
-          return;
-        }
-        setAiHealth(null);
-        setAiHealthError(
-          error instanceof Error ? error.message : 'Không thể tải trạng thái AI stack.',
-        );
-      }
-    };
-
-    void loadAiHealth();
-    return () => {
-      active = false;
-    };
-  }, [canManageResources]);
 
   useEffect(() => {
     if (!toast) {
@@ -940,39 +904,6 @@ export default function Resources() {
             </article>
           </div>
         </PageHero>
-
-        {canManageResources && aiHealth && import.meta.env.DEV ? (
-          <StatusPanel
-            className="mb-6"
-            tone={
-              String(
-                ((aiHealth!.embedding as Record<string, unknown> | undefined)?.backend as
-                  | string
-                  | undefined) || '',
-              ) === 'hash_fallback'
-                ? 'error'
-                : 'info'
-            }
-            title="AI embedding stack"
-            description={
-              String(
-                ((aiHealth!.embedding as Record<string, unknown> | undefined)?.backend as
-                  | string
-                  | undefined) || 'unknown',
-              ) === 'hash_fallback'
-                ? 'Hệ thống đang chạy bằng hash_fallback. Nên chuyển sang sentence-transformers hoặc Gemini embeddings trước khi demo semantic recommendation.'
-                : `Embedding backend đang hoạt động: ${String(
-                    ((aiHealth!.embedding as Record<string, unknown> | undefined)?.backend as
-                      | string
-                      | undefined) || 'unknown',
-                  )}.`
-            }
-          />
-        ) : null}
-
-        {canManageResources && aiHealthError && import.meta.env.DEV ? (
-          <StatusPanel className="mb-6" tone="error" title="AI embedding stack" description={aiHealthError} />
-        ) : null}
 
         {error && (
           <StatusPanel
@@ -1615,6 +1546,7 @@ export default function Resources() {
       </div>
 
       {playingVideo && (
+        <ModalPortal>
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-[#1f0f17]/80 p-3 backdrop-blur-sm sm:p-4"
           onClick={() => setPlayingVideo(null)}
@@ -1664,6 +1596,7 @@ export default function Resources() {
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
 
       <PDFViewer
@@ -1691,6 +1624,7 @@ export default function Resources() {
       )}
 
       {canManageResources && pendingDeleteResource && (
+        <ModalPortal>
         <div
           className="ui-fade-in fixed inset-0 z-50 flex items-center justify-center bg-[#3d1f2c]/30 px-4 backdrop-blur-sm"
           onClick={() => {
@@ -1756,6 +1690,7 @@ export default function Resources() {
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </DashboardLayout>
   );

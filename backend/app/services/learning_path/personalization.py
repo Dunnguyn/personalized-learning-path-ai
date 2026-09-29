@@ -2,7 +2,26 @@
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Any, Dict, List, Optional
+
+from backend.app.services.learning_path_prompt_builder import resolve_subject_key
+
+
+def _finite(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return default
 
 
 def build_learner_model(
@@ -30,7 +49,7 @@ def build_learner_model(
     diagnostic_average = service._clamp(
         service._safe_float(diagnostic_summary.get("average_score"), current_mastery)
     )
-    recent_active_days = int(snapshot.get("recent_active_days") or 0)
+    recent_active_days = _safe_int(snapshot.get("recent_active_days"), 0)
     learning_velocity = service._clamp(
         service._safe_float(snapshot.get("learning_velocity"), 0.0)
     )
@@ -49,7 +68,7 @@ def build_learner_model(
     )
     friction_score = service._clamp(
         0.45 * frustration_score
-        + 0.25 * service._clamp(int(snapshot.get("fail_streak") or 0) / 4.0)
+        + 0.25 * service._clamp(_safe_int(snapshot.get("fail_streak"), 0) / 4.0)
         + 0.15 * service._clamp(1.0 - engagement_score)
         + 0.15
         * service._clamp(
@@ -62,6 +81,7 @@ def build_learner_model(
         "intensive": 0.85,
     }.get(str(profile.get("learning_pace") or "steady").strip().lower(), 0.6)
     pace_score = service._clamp((0.6 * pace_preference) + (0.4 * learning_velocity))
+    time_budget_minutes = _safe_int(time_budget_minutes, 0)
     time_budget_score = service._clamp(time_budget_minutes / 360.0)
 
     weak_pool = service._dedupe(
@@ -76,37 +96,75 @@ def build_learner_model(
         ],
         limit=6,
     )
+    focus_concepts = service._dedupe(
+        [
+            *list(snapshot.get("current_focus_concepts") or []),
+            *weak_pool,
+        ],
+        limit=6,
+    )
+    completion_rate = service._clamp(
+        service._safe_float(snapshot.get("completion_rate"), 0.0)
+    )
+    quiz_accuracy = service._clamp(
+        service._safe_float(snapshot.get("quiz_accuracy"), 0.0)
+    )
+    fail_streak = _safe_int(snapshot.get("fail_streak"), 0)
+    retry_count = _safe_int(snapshot.get("retry_count"), 0)
+    risk_level = str(snapshot.get("risk_level") or "low").strip().lower() or "low"
+    confidence = service._clamp(
+        service._safe_float(
+            snapshot.get("confidence_score")
+            or snapshot.get("confidence")
+            or diagnostic_average,
+            diagnostic_average,
+        )
+    )
+    bloom_mastery = {}
+    for source in (
+        snapshot.get("bloom_mastery"),
+        snapshot.get("bloom_accuracy_by_level"),
+        diagnostic_summary.get("bloom_mastery"),
+    ):
+        if isinstance(source, dict):
+            bloom_mastery.update(service._normalize_concept_score_map(source))
 
     return {
-        "version": "learner_model_v1",
+        "version": "learner_model_v2",
+        "learner_model_version": "v2",
         "subject_id": resolved_subject_id,
         "level": resolved_level,
+        "goal": str(profile.get("learning_goal") or "").strip(),
         "current_mastery": round(service._clamp(current_mastery), 4),
         "mastery_by_concept": mastery_by_concept,
         "combined_mastery_by_concept": combined_mastery_by_concept,
         "weak_concepts": weak_pool,
+        "focus_concepts": focus_concepts,
+        "pace": str(profile.get("learning_pace") or "steady"),
         "pace_score": round(pace_score, 4),
+        "time_budget": time_budget_minutes,
         "time_budget_score": round(time_budget_score, 4),
+        "preferred_resource_type": str(
+            profile.get("preferred_resource_type") or "mixed"
+        ),
         "diagnostic_baseline": round(diagnostic_average, 4),
         "diagnostic_baseline_by_concept": diagnostic_baseline_by_concept,
         "engagement_score": round(engagement_score, 4),
         "friction_score": round(friction_score, 4),
         "learning_velocity": round(learning_velocity, 4),
-        "risk_level": str(snapshot.get("risk_level") or "low"),
+        "risk_level": risk_level,
+        "confidence": round(confidence, 4),
         "recent_active_days": recent_active_days,
         "avg_session_duration": round(
             service._safe_float(snapshot.get("avg_session_duration"), 0.0), 2
         ),
-        "quiz_accuracy": round(
-            service._safe_float(snapshot.get("quiz_accuracy"), 0.0), 4
-        ),
-        "completion_rate": round(
-            service._safe_float(snapshot.get("completion_rate"), 0.0), 4
-        ),
-        "fail_streak": int(snapshot.get("fail_streak") or 0),
-        "retry_count": int(snapshot.get("retry_count") or 0),
+        "quiz_accuracy": round(quiz_accuracy, 4),
+        "completion_rate": round(completion_rate, 4),
+        "fail_streak": fail_streak,
+        "retry_count": retry_count,
         "preferred_time_window": str(snapshot.get("preferred_time_window") or "evening"),
         "recovery_need_flag": bool(snapshot.get("recovery_need_flag")),
+        "bloom_mastery": bloom_mastery,
     }
 
 
@@ -140,6 +198,11 @@ def lesson_priority_score(
         for item in (learner_model.get("weak_concepts") or [])
         if service._normalize_concept_key(item)
     }
+    focus_concepts = {
+        service._normalize_concept_key(item)
+        for item in (learner_model.get("focus_concepts") or [])
+        if service._normalize_concept_key(item)
+    }
     friction_score = service._safe_float(learner_model.get("friction_score"), 0.0)
     pace_score = service._safe_float(learner_model.get("pace_score"), 0.0)
     time_budget_score = service._safe_float(
@@ -148,12 +211,26 @@ def lesson_priority_score(
     diagnostic_baseline = service._safe_float(
         learner_model.get("diagnostic_baseline"), 0.0
     )
+    goal_tokens = {
+        token
+        for token in re.findall(
+            r"\w+", str(learner_model.get("goal") or "").lower()
+        )
+        if len(token) >= 3
+    }
+    bloom_mastery = service._normalize_concept_score_map(
+        learner_model.get("bloom_mastery")
+    )
     lesson_kind = str(lesson.get("lesson_kind") or "core").strip().lower() or "core"
-    difficulty = max(1, min(int(lesson.get("difficulty") or 1), 10))
+    difficulty = max(1, min(_safe_int(lesson.get("difficulty"), 1), 10))
     difficulty_norm = difficulty / 10.0
 
     weak_overlap = (
         sum(1 for concept in target_concepts if concept in weak_concepts)
+        / max(len(target_concepts), 1)
+    )
+    focus_overlap = (
+        sum(1 for concept in target_concepts if concept in focus_concepts)
         / max(len(target_concepts), 1)
     )
     prerequisite_gap = (
@@ -178,6 +255,53 @@ def lesson_priority_score(
         sum(1 for concept in target_concepts if concept not in planned_concepts)
         / max(len(target_concepts), 1)
     )
+    lesson_text_tokens = {
+        token
+        for token in re.findall(
+            r"\w+",
+            " ".join(
+                [
+                    str(lesson.get("title") or ""),
+                    str(lesson.get("summary") or ""),
+                    " ".join(str(item) for item in target_concepts),
+                ]
+            ).lower(),
+        )
+        if len(token) >= 3
+    }
+    goal_relevance = (
+        len(goal_tokens.intersection(lesson_text_tokens)) / max(len(goal_tokens), 1)
+        if goal_tokens
+        else 0.5
+    )
+    estimated_time = service._safe_float(
+        lesson.get("estimated_learning_time")
+        or lesson.get("estimated_read_time")
+        or (
+            lesson.get("metadata", {}).get("estimated_learning_time")
+            if isinstance(lesson.get("metadata"), dict)
+            else None
+        ),
+        20.0,
+    )
+    estimated_time = _finite(estimated_time, 20.0)
+    time_budget_minutes = max(
+        1.0, _finite(service._safe_float(learner_model.get("time_budget"), 90.0), 90.0)
+    )
+    estimated_time_fit = service._clamp(
+        1.0
+        - max(0.0, estimated_time - (time_budget_minutes / 4.0))
+        / max(time_budget_minutes, 1.0)
+    )
+    risk_friction_fit = service._clamp(
+        1.0 - (0.7 * friction_score + 0.3 * service._clamp(difficulty_norm - 0.55))
+    )
+    bloom_progression = (
+        sum(1.0 - bloom_mastery.get(level, 0.45) for level in bloom_mastery)
+        / max(len(bloom_mastery), 1)
+        if bloom_mastery
+        else 0.5
+    )
     prerequisite_ready_ratio = (
         sum(
             1
@@ -197,13 +321,18 @@ def lesson_priority_score(
     repeated_penalty = 0.1 if novelty_ratio < 0.34 and weak_overlap < 0.34 else 0.0
 
     score = (
-        0.32 * target_mastery_need
-        + 0.22 * weak_overlap
-        + 0.16 * prerequisite_gap
-        + 0.12 * novelty_ratio
+        0.26 * target_mastery_need
+        + 0.18 * weak_overlap
+        + 0.08 * focus_overlap
+        + 0.14 * prerequisite_gap
+        + 0.10 * novelty_ratio
+        + 0.08 * goal_relevance
+        + 0.06 * estimated_time_fit
+        + 0.05 * risk_friction_fit
+        + 0.02 * bloom_progression
         + 0.08 * bridge_bonus
         + 0.07 * (1.0 - abs(difficulty_norm - max(pace_score, 0.35)))
-        + 0.03 * time_budget_score
+        + 0.02 * time_budget_score
         + challenge_bonus
         - review_penalty
         - repeated_penalty
@@ -214,26 +343,61 @@ def lesson_priority_score(
     if friction_score >= 0.7 and difficulty_norm > 0.7:
         score -= 0.1
 
+    missing_prerequisites = [
+        concept
+        for concept in prerequisite_concepts
+        if mastery_by_concept.get(concept, diagnostic_by_concept.get(concept, 0.0))
+        < service.PREREQUISITE_MASTERY_THRESHOLD
+    ]
+    readiness_score = service._clamp(
+        0.55 * prerequisite_ready_ratio
+        + 0.25 * (1.0 - prerequisite_gap)
+        + 0.20 * risk_friction_fit
+    )
+
     reasons: List[str] = []
     if weak_overlap >= 0.34:
-        reasons.append("targets a current weak concept")
+        weak_names = [concept for concept in target_concepts if concept in weak_concepts]
+        reasons.append(
+            "Bai nay duoc de xuat vi nguoi hoc con yeu o concept "
+            + ", ".join(weak_names[:2])
+        )
     if prerequisite_gap >= 0.4:
-        reasons.append("repairs a prerequisite gap before later lessons")
+        reasons.append("Bai nay xu ly prerequisite gap truoc cac lesson nang cao hon")
+    if prerequisite_concepts and not missing_prerequisites:
+        reasons.append("Bai nay da san sang vi prerequisite chinh da dat nguong mastery")
     if lesson_kind == "bridge" and bridge_bonus >= 0.45:
-        reasons.append("acts as a bridge lesson for low baseline knowledge")
+        reasons.append("Bai nay la bridge lesson cho baseline knowledge con thap")
     if friction_score >= 0.65 and difficulty <= 4:
-        reasons.append("keeps difficulty controlled because recent friction is high")
+        reasons.append("Do kho duoc giu vua phai vi gan day friction cao")
     if time_budget_score <= 0.4 and difficulty <= 4:
-        reasons.append("fits the learner time budget")
+        reasons.append("Thoi luong uoc tinh phu hop voi time budget hien tai")
     if challenge_bonus > 0:
-        reasons.append("keeps momentum by adding more challenge")
+        reasons.append("Them do thu thach de giu learning momentum")
+    if goal_relevance >= 0.4:
+        reasons.append("Noi dung lien quan truc tiep den muc tieu hoc tap")
     if not reasons:
-        reasons.append("maintains concept order while matching the learner profile")
+        reasons.append("Giu dung thu tu concept va phu hop learner profile")
 
     return {
         "score": round(max(score, 0.05), 4),
         "reasons": reasons[:3],
+        "missing_prerequisites": missing_prerequisites,
+        "readiness_score": round(readiness_score, 4),
+        "personalization_score": round(max(score, 0.05), 4),
         "prerequisite_ready_ratio": round(service._clamp(prerequisite_ready_ratio), 4),
+        "score_components": {
+            "weak_concept_overlap": round(weak_overlap, 4),
+            "focus_concept_overlap": round(focus_overlap, 4),
+            "prerequisite_gap": round(prerequisite_gap, 4),
+            "current_mastery_need": round(target_mastery_need, 4),
+            "difficulty_fit": round(1.0 - abs(difficulty_norm - max(pace_score, 0.35)), 4),
+            "goal_relevance": round(goal_relevance, 4),
+            "novelty": round(novelty_ratio, 4),
+            "estimated_time_fit": round(estimated_time_fit, 4),
+            "learner_risk_friction_fit": round(risk_friction_fit, 4),
+            "bloom_progression": round(bloom_progression, 4),
+        },
     }
 
 
@@ -292,7 +456,10 @@ def prioritize_curriculum(
             if not unresolved:
                 eligible.append(lesson)
 
-        candidate_pool = eligible or remaining
+        candidate_pool = eligible or sorted(
+            remaining,
+            key=lambda item: int(item.get("_original_index") or 0),
+        )[:1]
         scored_candidates: List[tuple[float, int, Dict[str, Any], Dict[str, Any]]] = []
         for lesson in candidate_pool:
             score_payload = lesson_priority_score(
@@ -314,8 +481,19 @@ def prioritize_curriculum(
         _score, _neg_original_index, chosen, score_payload = scored_candidates[0]
         chosen_copy = dict(chosen)
         chosen_copy["priority_score"] = score_payload["score"]
+        chosen_copy["readiness_score"] = score_payload["readiness_score"]
+        chosen_copy["personalization_score"] = score_payload["personalization_score"]
+        chosen_copy["missing_prerequisites"] = list(
+            score_payload.get("missing_prerequisites") or []
+        )
         chosen_copy["priority_reasons"] = list(score_payload["reasons"])
         chosen_copy["why_this_lesson_now"] = "; ".join(score_payload["reasons"])
+        chosen_copy["recommendation_reason"] = chosen_copy["why_this_lesson_now"]
+        chosen_copy["explanation"] = chosen_copy["why_this_lesson_now"]
+        chosen_copy["reason"] = chosen_copy["why_this_lesson_now"]
+        chosen_copy["personalization_score_components"] = dict(
+            score_payload.get("score_components") or {}
+        )
         chosen_copy["prerequisite_ready_ratio"] = score_payload[
             "prerequisite_ready_ratio"
         ]
@@ -424,11 +602,13 @@ def subject_id(
 ) -> str:
     get_subject_label = service._get_subject_label_helper
     normalized = str(subject_id or "").strip().lower()
-    if get_subject_label(normalized):
-        return normalized
+    resolved = resolve_subject_key(normalized, goal=goal)
+    if resolved and get_subject_label(resolved):
+        return resolved
     latest_subject = str((latest_path or {}).get("subject_id") or "").strip().lower()
-    if get_subject_label(latest_subject):
-        return latest_subject
+    resolved_latest = resolve_subject_key(latest_subject, goal=goal)
+    if resolved_latest and get_subject_label(resolved_latest):
+        return resolved_latest
     haystack = " ".join(
         [str(goal or ""), str(profile.get("learning_goal") or "")]
     ).lower()

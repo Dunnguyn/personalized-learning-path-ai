@@ -31,7 +31,13 @@ LESSON_QA_PROMPT_MAX_CHARS_PER_CHUNK = int(
     os.getenv("LESSON_QUESTION_LLM_PROMPT_MAX_CHARS_PER_CHUNK", "900")
 )
 LESSON_QA_VALIDATION_REPAIR_ATTEMPTS = int(
-    os.getenv("LESSON_QUESTION_LLM_VALIDATION_REPAIR_ATTEMPTS", "2")
+    os.getenv("LESSON_QUESTION_LLM_VALIDATION_REPAIR_ATTEMPTS", "1")
+)
+LESSON_QA_ITERATIVE_CHUNK_FILL_ENABLED = (
+    os.getenv("LESSON_QUESTION_LLM_ITERATIVE_CHUNK_FILL_ENABLED", "false")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
 )
 LESSON_QA_REPAIR_SCOPE_EXCERPT_MAX_CHARS = int(
     os.getenv("LESSON_QUESTION_LLM_REPAIR_SCOPE_EXCERPT_MAX_CHARS", "160")
@@ -131,7 +137,11 @@ class QuestionLLMService:
                     if str(chunk.get("chunk_id") or "").strip() not in used_chunk_ids
                 ]
 
-                if target_count > len(initial_questions) and remaining_chunk_payload:
+                if (
+                    target_count > len(initial_questions)
+                    and remaining_chunk_payload
+                    and LESSON_QA_ITERATIVE_CHUNK_FILL_ENABLED
+                ):
                     result = self._generate_iteratively(
                         context=context,
                         chunk_payload=remaining_chunk_payload,

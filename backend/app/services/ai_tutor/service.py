@@ -1,9 +1,7 @@
 from typing import List, Dict, Optional
 import logging
 import numpy as np
-from datetime import datetime
-from functools import lru_cache
-import re
+from time import perf_counter
 
 from backend.app.services.ai_tutor.rag import RAGPipeline
 from backend.app.services.progress_tracking.progress import (
@@ -324,6 +322,9 @@ class AITutorService:
         Dict : full response with answer, path, adaptive info
         """
 
+        total_started_at = perf_counter()
+        timings: Dict[str, float] = {}
+
         logger.info(
             f"ASK: user={user_id}, goal={goal}, level={level}, "
             f"question_len={len(question)}"
@@ -331,7 +332,13 @@ class AITutorService:
 
         try:
             # ===== 1. RAG ANSWER =====
-            rag_result = self._get_rag_answer(question, goal, level, completed or [])
+            rag_result = self._get_rag_answer(
+                question,
+                goal,
+                level,
+                completed or [],
+                timings=timings,
+            )
             answer_text = rag_result.get("answer", "")
             sources = rag_result.get("sources", [])
             answer_method = rag_result.get(
@@ -400,6 +407,14 @@ class AITutorService:
                 },
                 "adaptive_info": adaptive_info,
                 "progress_updated": progress_updated,
+                "processing_metrics": {
+                    **rag_result.get("timings", {}),
+                    **timings,
+                    "total_ai_response_ms": round(
+                        (perf_counter() - total_started_at) * 1000.0,
+                        3,
+                    ),
+                },
             }
 
             logger.info(f"Ask completed: user={user_id}")
@@ -440,12 +455,21 @@ class AITutorService:
             }
 
     def _get_rag_answer(
-        self, question: str, goal: str, level: str, completed: List[str]
+        self,
+        question: str,
+        goal: str,
+        level: str,
+        completed: List[str],
+        timings: Optional[Dict[str, float]] = None,
     ) -> Dict:
         """Get RAG-based answer with fallback"""
         try:
             return self.rag.run(
-                question=question, goal=goal, level=level, completed=completed
+                question=question,
+                goal=goal,
+                level=level,
+                completed=completed,
+                timings=timings,
             )
         except Exception as e:
             logger.exception(f"RAG error: {e}")

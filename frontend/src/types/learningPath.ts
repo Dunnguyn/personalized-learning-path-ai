@@ -58,9 +58,18 @@ export interface LearningPathLesson {
   lesson_kind?: string | null;
   unlock_strategy?: string | null;
   recommended_resources?: RecommendedLessonResource[];
+  recommended_resource_ids?: string[];
   adaptation_metadata?: Record<string, unknown>;
   refinement?: LessonRefinementState;
   recommended_chunk_ids?: string[];
+  missing_prerequisites?: string[];
+  readiness_score?: number | null;
+  personalization_score?: number | null;
+  reason?: string | null;
+  explanation?: string | null;
+  recommendation_reason?: string | null;
+  degraded_mode?: boolean;
+  degraded_reason?: string | null;
   last_confidence?: number | null;
   confidence_updated_at?: string | null;
   is_locked?: boolean;
@@ -71,6 +80,7 @@ export interface LearningPathLesson {
   prerequisite_mastery?: Record<string, number>;
   bridge_recommendations?: Array<Record<string, unknown>>;
   mastery_threshold?: number | null;
+  prerequisite_mastery_threshold?: number | null;
 }
 
 export interface LearningPathChapter {
@@ -100,6 +110,11 @@ export interface LearningPath {
   curriculum_source?: 'ai' | 'fallback' | string;
   curriculum_notice?: string | null;
   llm_status?: LearningPathLlmStatus | null;
+  generation_status?: 'generating' | 'completed' | 'failed' | string | null;
+  learner_model_version?: string | null;
+  personalization_summary?: Record<string, unknown>;
+  path_explanations?: string[];
+  degraded_mode?: boolean;
   message: string;
 }
 
@@ -253,6 +268,14 @@ export interface LessonQuestionGenerationResponse {
   difficulty_mix?: DistributionPlan;
   bloom_mix?: DistributionPlan;
   concept_coverage_rate?: number | null;
+  degraded_mode?: boolean;
+  degraded_reason?: string | null;
+  llm_status?: string | Record<string, unknown> | null;
+  valid_target_concepts?: string[];
+  rejected_target_concepts?: string[];
+  concept_coverage_status?: string | null;
+  verification_diagnostics?: Record<string, unknown> | null;
+  next_action?: Record<string, unknown>;
   message: string;
 }
 
